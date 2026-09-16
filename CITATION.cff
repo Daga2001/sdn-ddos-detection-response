@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+title: "SDN DDoS Detection and Response"
+message: "If this repository supports your work, please cite the undergraduate research project."
+type: software
+version: 0.1.0
+date-released: 2026-09-16
+license: Apache-2.0
+authors:
+  - family-names: Corea
+    given-names: Natan Gabriel Medina
+    affiliation: Universidad del Valle
+  - family-names: Ardila
+    given-names: David Alberto Guzmán
+    affiliation: Universidad del Valle
+  - family-names: Sanchez
+    given-names: Deisy Chaves
+    name-suffix: PhD
+    affiliation: Universidad del Valle
+  - family-names: Uribe
+    given-names: Maria Patricia Trujillo
+    name-suffix: PhD
+    affiliation: Universidad del Valle
+repository-code: https://github.com/Daga2001/sdn-ddos-detection-response

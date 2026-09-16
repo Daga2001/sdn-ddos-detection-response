@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Models and experiment outputs are never committed without review
+*.pkl
+*.pickle
+*.joblib
+models/*
+!models/.gitkeep
+logs/
+results/
+captures/
+*.pcap
+*.pcapng
+
+# Generated proxy material and tool output
+proxy.txt
+*proxy*.log
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

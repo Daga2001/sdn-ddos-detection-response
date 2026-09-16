@@ -1,0 +1,26 @@
+name: Bug report
+description: Report a reproducible problem in the research baseline
+title: "bug: "
+labels: [bug]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Include the command and a safe, sanitized error message.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python, dependency versions, and whether this was in the isolated VM.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: I did not test against a public or unauthorized target.
+          required: true
