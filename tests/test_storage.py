@@ -26,6 +26,22 @@ def test_disabled_database_uses_null_store() -> None:
     store.close()
 
 
+def test_gui_run_tagging_is_parameterized_and_optional():
+    from uuid import uuid4
+
+    store = PostgreSQLMetricsStore.__new__(PostgreSQLMetricsStore)
+    store._run_id = str(uuid4())
+    query, rows = store._tag_run(
+        "INSERT INTO controller_stats (ts) VALUES (%(ts)s)", [{"ts": "now"}]
+    )
+    assert "(run_id, ts) VALUES (%(run_id)s, %(ts)s)" in query
+    assert store._run_id not in query
+    assert rows[0]["run_id"] == store._run_id
+    store._run_id = None
+    query, rows = store._tag_run("INSERT INTO t (ts) VALUES (%(ts)s)", [{"ts": "now"}])
+    assert "run_id" not in query and "run_id" not in rows[0]
+
+
 class FakeCursor:
     def __init__(self) -> None:
         self.executed = []

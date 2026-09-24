@@ -34,6 +34,7 @@ from sdn_ddos.controller.core import (
     build_model_sample,
     probability_is_attack,
 )
+from sdn_ddos.lab.telemetry import Telemetry
 from sdn_ddos.storage import MetricsStore, create_metrics_store
 
 
@@ -54,6 +55,7 @@ class EnterpriseDDoSController(app_manager.RyuApp):
             self.settings.block_seconds,
         )
         self.http = requests.Session()
+        self.telemetry = Telemetry()
         self.store: MetricsStore = create_metrics_store(
             DatabaseSettings.from_env(),
             flush_rows=self.settings.database_flush_rows,
@@ -201,13 +203,13 @@ class EnterpriseDDoSController(app_manager.RyuApp):
             observed_at = datetime.now(timezone.utc)
             for datapath in list(self.datapaths.values()):
                 self._request_stats(datapath)
-            self.store.add_controller_row(
-                {
-                    "ts": observed_at,
-                    "cpu_percent": float(process.cpu_percent(interval=None)),
-                    "rss_bytes": int(process.memory_info().rss),
-                }
-            )
+            resource_row = {
+                "ts": observed_at,
+                "cpu_percent": float(process.cpu_percent(interval=None)),
+                "rss_bytes": int(process.memory_info().rss),
+            }
+            self.telemetry.emit("controller", resource_row)
+            self.store.add_controller_row(resource_row)
             hub.sleep(self.settings.poll_interval_seconds)
 
     @staticmethod
@@ -271,6 +273,14 @@ class EnterpriseDDoSController(app_manager.RyuApp):
                 "duration_seconds": self.settings.block_seconds,
                 "affected_switches": affected,
             }
+        )
+        self.telemetry.emit(
+            "mitigation_requested",
+            {
+                "ipv4_src": source_ip,
+                "duration_seconds": self.settings.block_seconds,
+                "affected_switches": affected,
+            },
         )
         self.logger.warning(
             "MITIGATION temporary_drop ipv4_src=%s duration=%ss switches=%s",
@@ -389,7 +399,21 @@ class EnterpriseDDoSController(app_manager.RyuApp):
                     row["ipv4_dst"],
                     probability_value,
                 )
+                self.telemetry.emit(
+                    "detection",
+                    {
+                        "dpid": dpid,
+                        "ipv4_src": row["ipv4_src"],
+                        "ipv4_dst": row["ipv4_dst"],
+                        "probability": probability_value,
+                        "threshold": self.settings.detection_threshold,
+                    },
+                )
                 self._maybe_block(row["ipv4_src"], observed_at)
+        for offset in range(0, len(rows), 20):
+            self.telemetry.emit(
+                "flows", {"dpid": dpid, "rows": rows[offset : offset + 20]}
+            )
         self.store.add_flow_rows(rows)
 
     @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
@@ -428,5 +452,6 @@ class EnterpriseDDoSController(app_manager.RyuApp):
         try:
             self.store.close()
         finally:
+            self.telemetry.close()
             self.http.close()
             super().close()
