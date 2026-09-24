@@ -24,7 +24,7 @@ The application supports Python 3.9 through the current supported Python version
 ```bash
 python3.9 -m venv .venv-ryu
 source .venv-ryu/bin/activate
-python -m pip install --upgrade 'pip<24' 'setuptools<58'
+python -m pip install --upgrade 'pip<24' 'setuptools==57.5.0' 'wheel==0.45.1' 'pbr==5.11.1'
 python -m pip install --no-build-isolation -r requirements/ryu-legacy.txt
 ```
 

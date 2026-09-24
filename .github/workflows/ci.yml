@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11"]
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -40,5 +40,24 @@ jobs:
         run: uv run pytest
       - name: Validate shell and JSON artifacts
         run: |
-          bash -n scripts/*.sh
+          for script in scripts/*.sh containers/*.sh; do bash -n "$script"; done
           python -m json.tool config/topology.json >/dev/null
+
+  browser:
+    name: Browser workspace (mock lab only)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run format-check
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm test
