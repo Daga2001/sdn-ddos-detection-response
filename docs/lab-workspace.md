@@ -2,9 +2,13 @@
 
 The browser workspace keeps **Mininet, Open vSwitch, Ryu/OpenFlow 1.3, the existing inference API, and PostgreSQL**. It adds an editor and an observation layer, not a replacement simulator. The existing VM/CLI workflow remains available.
 
+This is a Docker deployment: `web` runs the GUI/backend, `runner` runs Mininet/OVS/Ryu and experiment tools, and `inference` runs the detector API. Your existing PostgreSQL container stays separate. You do not install Mininet, Ryu, Python libraries, or Node.js on the host for this option. `make lab-up` checks the host, then calls Docker Compose to build and start the three containers.
+
+On native Linux, a VM is not a runtime dependency. The runner does need the host kernel's Open vSwitch support because containers share that kernel. Only the runner uses privileged Docker access; the other two containers do not. The isolated-VM smoke test described below is the repository's verification policy, not an extra service needed to start Docker. For a plain-language walkthrough, start with the [README's Docker GUI instructions](../README.md#optional-graphical-container-workspace).
+
 ## Start with your existing database
 
-Requirements: native Linux, local rootful Docker Engine with Compose, OpenSSL, and kernel Open vSwitch support. The initial image build downloads Linux tools and Python packages; allow several minutes and several GB of disk space. macOS, Windows, Docker Desktop, rootless Docker, and remote Docker engines are not supported by this first version.
+Requirements: native Linux, local rootful Docker Engine with Compose, Bash, Make, OpenSSL, and kernel Open vSwitch support. The initial image build downloads Linux tools and Python packages; allow several minutes and several GB of disk space. macOS, Windows, Docker Desktop, rootless Docker, and remote Docker engines are not supported by this first version.
 
 1. Keep your existing `.env`. If you do not have one, copy `.env.example` and configure the database. Do not overwrite working credentials. `SDN_PG_PORT` remains your database's **host-published** port; lab containers use port 5432 on the Docker network.
 2. Set `SDN_LAB_DB_NETWORK` to the existing database container's network (default: `sdn-ddos-detection-response_default`), and `SDN_LAB_PG_HOST` to its network alias (default: `postgres`). Use the existing `SDN_PG_DB`, `SDN_PG_USER`, and `SDN_PG_PASSWORD`. This stack does not create, replace, or stop PostgreSQL.
