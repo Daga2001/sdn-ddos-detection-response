@@ -1,0 +1,28 @@
+{
+  "controller": {
+    "host": "127.0.0.1",
+    "port": 6653,
+    "protocol": "OpenFlow13"
+  },
+  "switches": {
+    "access": ["s1", "s2", "s3"],
+    "core": "s4"
+  },
+  "segments": [
+    {
+      "switch": "s1",
+      "subnet": "10.0.1.0/24",
+      "hosts": ["h1a", "h1b", "h1c"]
+    },
+    {
+      "switch": "s2",
+      "subnet": "10.0.2.0/24",
+      "hosts": ["h2a", "h2b", "h2c"]
+    },
+    {
+      "switch": "s3",
+      "subnet": "10.0.3.0/24",
+      "hosts": ["h3a", "h3b", "h3c"]
+    }
+  ]
+}

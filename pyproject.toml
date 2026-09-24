@@ -1,0 +1,83 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sdn-ddos-detection-response"
+version = "0.1.0"
+description = "Undergraduate research baseline for detecting and responding to DDoS attacks in simulated SDN networks."
+readme = "README.md"
+requires-python = ">=3.9,<3.14"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Natan Gabriel Medina Corea" },
+]
+keywords = ["sdn", "ddos", "mininet", "ryu", "openflow", "cybersecurity"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Topic :: System :: Networking",
+  "Topic :: Security",
+]
+dependencies = [
+  "fastapi>=0.115,<0.116",
+  "joblib>=1.4,<2",
+  "numpy>=1.26,<3",
+  "psutil>=6,<8",
+  "psycopg2-binary>=2.9,<3",
+  "pydantic>=2.10,<3",
+  "requests>=2.32,<3",
+  "scikit-learn==1.6.1",
+  "uvicorn[standard]>=0.34,<0.35",
+]
+
+[project.scripts]
+sdn-ddos-attack = "sdn_ddos.experiments.attack_launcher:main"
+sdn-ddos-topology = "sdn_ddos.topology.enterprise:main"
+
+[dependency-groups]
+dev = [
+  "httpx>=0.28,<0.29",
+  "mypy>=1.14,<2",
+  "pytest>=8.3,<9",
+  "pytest-cov>=6,<7",
+  "ruff>=0.9,<0.10",
+  "types-psutil>=6,<8",
+  "types-requests>=2.32,<3",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sdn_ddos"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers --cov=sdn_ddos --cov-report=term-missing --cov-fail-under=80"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+omit = [
+  "src/sdn_ddos/controller/app.py",
+  "src/sdn_ddos/topology/enterprise.py",
+]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+packages = ["sdn_ddos"]
+exclude = [
+  "src/sdn_ddos/controller/app.py",
+  "src/sdn_ddos/topology/enterprise.py",
+]
+ignore_missing_imports = true

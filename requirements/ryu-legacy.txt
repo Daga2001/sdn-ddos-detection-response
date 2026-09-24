@@ -1,0 +1,7 @@
+# Ryu is retained to match the approved research proposal. It is unmaintained,
+# supports Python through 3.9, and has known incompatibilities with newer
+# Eventlet releases. Install this file only inside the isolated lab VM.
+setuptools<58
+dnspython==2.2.1
+eventlet==0.30.2
+ryu==4.34

@@ -1,0 +1,25 @@
+name: Experiment proposal
+description: Propose a reproducible, authorized lab experiment
+title: "experiment: "
+labels: [experiment]
+body:
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: Hypothesis and success metrics
+    validations:
+      required: true
+  - type: textarea
+    id: protocol
+    attributes:
+      label: Protocol
+      description: Describe baseline, attack, recovery, topology, duration, and rate.
+    validations:
+      required: true
+  - type: checkboxes
+    id: authorization
+    attributes:
+      label: Authorization
+      options:
+        - label: This experiment will run only in an isolated, authorized lab.
+          required: true
