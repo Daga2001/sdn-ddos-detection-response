@@ -1,0 +1,484 @@
+"""Linux/Mininet boundary. Importing this module needs neither Mininet nor root."""
+
+from __future__ import annotations
+
+import functools
+import json
+import os
+import platform
+import queue
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from pathlib import Path
+from typing import Any, Optional
+
+import requests
+
+from sdn_ddos.config import ControllerSettings, validate_lab_target
+from sdn_ddos.experiments.attack_launcher import build_hping_command
+from sdn_ddos.lab.contracts import Capture, Diagnostic, Experiment
+from sdn_ddos.lab.events import RateCounters, utc_now
+from sdn_ddos.lab.processes import Emit, ManagedProcess
+from sdn_ddos.lab.topology import Topology
+
+PACKET_FIELDS = [
+    "frame.time_epoch",
+    "frame.len",
+    "eth.src",
+    "eth.dst",
+    "ip.src",
+    "ip.dst",
+    "ip.proto",
+    "tcp.srcport",
+    "tcp.dstport",
+    "tcp.flags",
+    "udp.srcport",
+    "udp.dstport",
+    "icmp.type",
+    "arp.opcode",
+]
+
+
+def packet_summary(line: str) -> Optional[dict[str, str]]:
+    fields = line.rstrip("\r\n").split("\t")
+    if len(fields) != len(PACKET_FIELDS):
+        return None
+    try:
+        float(fields[0])
+    except ValueError:
+        return None
+    return dict(zip(PACKET_FIELDS, fields))
+
+
+class MininetRuntime:
+    def __init__(
+        self, topology: Topology, run_id: str, mitigation: bool, emit: Emit
+    ) -> None:
+        self.topology = topology
+        self.run_id = run_id
+        self.emit = emit
+        self.mitigation = mitigation
+        self.network: Any = None
+        self.processes: list[ManagedProcess] = []
+        self.controller: Optional[ManagedProcess] = None
+        self.capture_process: Optional[ManagedProcess] = None
+        self.attack_process: Optional[ManagedProcess] = None
+        self.service_process: Optional[ManagedProcess] = None
+        self.interfaces: dict[str, str] = {}
+        self.counters = RateCounters()
+        self.temp = tempfile.TemporaryDirectory(prefix="sdn-lab-")
+        self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.socket.setblocking(False)
+        self.socket_path = str(Path(self.temp.name) / "telemetry.sock")
+        self.socket.bind(self.socket_path)
+        self.lock = threading.RLock()
+        self.queue: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue(maxsize=1024)
+        self.dropped = 0
+        self.last_health = 0.0
+        self.last_rules = 0.0
+        self.closed = False
+
+    def enqueue(self, kind: str, data: dict[str, Any]) -> None:
+        data = dict(data)
+        data.setdefault("observed_at", utc_now())
+        try:
+            self.queue.put_nowait((kind, data))
+        except queue.Full:
+            self.dropped += 1
+
+    def versions(self) -> dict[str, str]:
+        from mininet.net import VERSION
+
+        result = {
+            "python": platform.python_version(),
+            "kernel": platform.release(),
+            "mininet": VERSION,
+            "ryu": "4.34",
+            "poll_interval_seconds": os.environ.get("SDN_POLL_INTERVAL", "5"),
+            "model_sha256": os.environ.get("DDOS_MODEL_SHA256") or "not_configured",
+        }
+        result["ovs"] = subprocess.check_output(
+            ["ovs-vsctl", "--version"], text=True, timeout=3
+        ).splitlines()[0]
+        return result
+
+    def start(self) -> None:
+        from mininet.link import TCLink
+        from mininet.net import Mininet
+        from mininet.node import OVSSwitch, RemoteController
+
+        if os.environ.get("SDN_LAB_RUNNER") != "1":
+            raise RuntimeError(
+                "Mininet runtime is only enabled in the dedicated lab runner"
+            )
+        self.topology.validate_targets()
+        controller_env = dict(
+            os.environ,
+            SDN_TELEMETRY_SOCKET=self.socket_path,
+            SDN_RUN_ID=self.run_id,
+            SDN_MITIGATION_ENABLED=str(self.mitigation).lower(),
+        )
+        self.controller = self._spawn(
+            [
+                os.environ.get("SDN_RYU_MANAGER", "/opt/ryu/bin/ryu-manager"),
+                "--ofp-tcp-listen-port",
+                "6653",
+                "--ofp-listen-host",
+                "127.0.0.1",
+                "sdn_ddos.controller.app",
+            ],
+            "controller",
+            env=controller_env,
+        )
+        deadline = time.monotonic() + 15
+        while True:
+            if self.controller.process.poll() is not None:
+                raise RuntimeError("Ryu could not start; inspect command output")
+            try:
+                with socket.create_connection(("127.0.0.1", 6653), timeout=0.25):
+                    break
+            except OSError:
+                if time.monotonic() > deadline:
+                    raise RuntimeError(
+                        "Ryu did not open its OpenFlow listener"
+                    ) from None
+                time.sleep(0.1)
+        self.network = Mininet(
+            controller=None, switch=OVSSwitch, link=TCLink, autoSetMacs=True
+        )
+        self.network.addController(
+            "c0", controller=RemoteController, ip="127.0.0.1", port=6653
+        )
+        for switch in self.topology.switches:
+            self.network.addSwitch(
+                switch.name,
+                dpid=f"{switch.dpid:016x}",
+                protocols="OpenFlow13",
+                failMode="secure",
+            )
+        for host in self.topology.hosts:
+            self.network.addHost(host.name, ip=host.ip)
+        switch_names = {switch.name for switch in self.topology.switches}
+        for link in self.topology.links:
+            options: dict[str, Any] = {
+                "delay": f"{link.delay_ms}ms",
+                "loss": link.loss_percent,
+            }
+            if link.bandwidth_mbps is not None:
+                options["bw"] = link.bandwidth_mbps
+            created = self.network.addLink(link.source, link.target, **options)
+            interface = created.intf1 if link.source in switch_names else created.intf2
+            self.interfaces[link.id] = interface.name
+        self.network.start()
+        self.enqueue("versions", self.versions())
+
+    def _spawn(
+        self,
+        command: list[str],
+        node: str,
+        *,
+        env: Optional[dict[str, str]] = None,
+        line_handler: Any = None,
+    ) -> ManagedProcess:
+        self.processes = [
+            p for p in self.processes if p.process.poll() is None or p.reader.is_alive()
+        ]
+        spawn: Any = subprocess.Popen
+        if self.network is not None and node in {
+            host.name for host in self.topology.hosts
+        }:
+            host = self.network.get(node)
+            # Mininet's default mnexec -d detaches a session leader and makes
+            # Popen track the exited wrapper, not our owned process group.
+            spawn = functools.partial(host.popen, mncmd=["mnexec", "-a", str(host.pid)])
+        process = ManagedProcess(
+            command, node, self.enqueue, spawn=spawn, env=env, line_handler=line_handler
+        )
+        self.processes.append(process)
+        return process
+
+    def address(self, host_name: str) -> str:
+        host = next(
+            (host for host in self.topology.hosts if host.name == host_name), None
+        )
+        if host is None:
+            raise ValueError("select a host in this topology")
+        return str(
+            validate_lab_target(
+                host.ip.split("/")[0],
+                ControllerSettings.from_env().allowed_target_networks,
+            )
+        )
+
+    def serve(self, target: str) -> None:
+        self.service_process = self._spawn(
+            [
+                sys.executable,
+                "-m",
+                "sdn_ddos.lab.service",
+                "--bind",
+                self.address(target),
+            ],
+            target,
+        )
+
+    def attack(self, experiment: Experiment) -> ManagedProcess:
+        self.attack_process = self._spawn(
+            [
+                "timeout",
+                "--signal=TERM",
+                "--kill-after=2",
+                str(experiment.duration),
+                *build_hping_command(
+                    self.address(experiment.target),
+                    8080,
+                    experiment.rate,
+                    experiment.duration,
+                ),
+            ],
+            experiment.source,
+        )
+        return self.attack_process
+
+    def probe(self, client: str, target: str) -> None:
+        command = [
+            "curl",
+            "--silent",
+            "--output",
+            "/dev/null",
+            "--write-out",
+            "%{http_code} %{time_total}",
+            "--max-time",
+            "2",
+            "--noproxy",
+            "*",
+            f"http://{self.address(target)}:8080/",
+        ]
+        process = self.network.get(client).popen(
+            command, shell=False, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        )
+        try:
+            output, _ = process.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+            output = b"000 0"
+        fields = output.decode().split()
+        self.emit(
+            "service",
+            {
+                "client": client,
+                "target": target,
+                "success": process.returncode == 0 and fields[0:1] == ["200"],
+                "latency_ms": float(fields[1]) * 1000 if len(fields) == 2 else None,
+                "argv": command,
+            },
+        )
+
+    def sample(self) -> None:
+        if self.service_process and self.service_process.process.poll() is not None:
+            raise RuntimeError("victim service stopped unexpectedly")
+        if self.attack_process and self.attack_process.process.poll() not in (
+            None,
+            0,
+            124,
+        ):
+            raise RuntimeError("traffic generator failed")
+        if self.controller and self.controller.process.poll() is not None:
+            raise RuntimeError("controller stopped unexpectedly")
+        now = time.monotonic()
+        rows = json.loads(
+            subprocess.check_output(
+                ["ip", "-j", "-s", "link", "show"], text=True, timeout=3
+            )
+        )
+        interfaces = {row["ifname"]: row for row in rows}
+        rates = []
+        for link_id, interface in self.interfaces.items():
+            row = interfaces.get(interface)
+            if row:
+                stats = row.get("stats64", row.get("stats", {}))
+                rate = self.counters.observe(
+                    link_id, int(stats["rx"]["bytes"]), int(stats["tx"]["bytes"]), now
+                )
+                rates.append(
+                    {"link_id": link_id, "interface": interface, "rates": rate}
+                )
+        self.emit("links", {"links": rates, "interval_seconds": 1})
+        for _ in range(512):
+            try:
+                payload = json.loads(self.socket.recv(65536))
+            except BlockingIOError:
+                break
+            except (ValueError, OSError):
+                continue
+            if payload.get("run_id") == self.run_id and payload.get("kind") in {
+                "controller",
+                "flows",
+                "detection",
+                "mitigation_requested",
+            }:
+                if payload.get("dropped"):
+                    self.emit(
+                        "gap", {"count": payload["dropped"], "source": "controller"}
+                    )
+                self.emit(payload["kind"], payload["data"])
+        self.drain()
+        if self.mitigation and now - self.last_rules >= 5:
+            self.last_rules = now
+            for switch in self.topology.switches:
+                command = ["ovs-ofctl", "-O", "OpenFlow13", "dump-flows", switch.name]
+                output = subprocess.check_output(command, text=True, timeout=2)
+                rules = [
+                    line.strip()
+                    for line in output.splitlines()
+                    if "priority=100," in line and "actions=drop" in line
+                ]
+                self.emit(
+                    "mitigation_observed",
+                    {"switch": switch.name, "rules": rules[:100], "argv": command},
+                )
+        if now - self.last_health >= 5:
+            self.last_health = now
+            try:
+                url = (
+                    os.environ.get(
+                        "SDN_DDOS_SERVICE_URL", "http://inference:8000/predict"
+                    ).rsplit("/", 1)[0]
+                    + "/health"
+                )
+                response = requests.get(
+                    url,
+                    timeout=(0.5, 1),
+                    headers={"X-Api-Key": os.environ.get("SDN_DDOS_API_KEY", "")},
+                )
+                response.raise_for_status()
+                self.emit(
+                    "detector", {"status": response.json().get("status", "not_ready")}
+                )
+            except (requests.RequestException, ValueError):
+                self.emit("detector", {"status": "unavailable"})
+
+    def drain(self) -> None:
+        packets = []
+        for _ in range(256):
+            try:
+                kind, data = self.queue.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "packet":
+                packets.append(data)
+            else:
+                self.emit(kind, data)
+        if packets:
+            self.emit("packets", {"items": packets})
+        if self.dropped:
+            self.emit("gap", {"count": self.dropped, "source": "command/capture"})
+            self.dropped = 0
+
+    def diagnostic(self, request: Diagnostic) -> None:
+        with self.lock:
+            if self.closed or self.network is None:
+                raise ValueError("start a lab before running diagnostics")
+            hosts = {host.name for host in self.topology.hosts}
+            if request.action == "flows":
+                if request.node not in {
+                    switch.name for switch in self.topology.switches
+                }:
+                    raise ValueError("select a switch")
+                command = ["ovs-ofctl", "-O", "OpenFlow13", "dump-flows", request.node]
+            elif request.action == "interfaces":
+                if request.node not in hosts:
+                    raise ValueError("select a host")
+                command = ["ip", "-j", "address", "show"]
+            else:
+                if request.node not in hosts or request.target not in hosts:
+                    raise ValueError("select two hosts in this topology")
+                command = [
+                    "ping",
+                    "-n",
+                    "-c",
+                    "3",
+                    "-W",
+                    "1",
+                    self.address(request.target),
+                ]
+            process = self._spawn(command, request.node)
+            try:
+                process.wait(5)
+            finally:
+                process.close()
+
+    def capture(self, request: Capture) -> None:
+        with self.lock:
+            if self.closed or request.link_id not in self.interfaces:
+                raise ValueError("select a link in the running topology")
+            if self.capture_process and self.capture_process.process.poll() is None:
+                raise ValueError("a packet capture is already running")
+            command = [
+                "tshark",
+                "-n",
+                "-l",
+                "-i",
+                self.interfaces[request.link_id],
+                "-a",
+                f"duration:{request.duration}",
+                "-c",
+                str(request.packets),
+                "-s",
+                "256",
+                "-T",
+                "fields",
+                "-E",
+                "occurrence=f",
+            ]
+            if request.protocol != "all":
+                command += ["-f", request.protocol]
+            for field in PACKET_FIELDS:
+                command += ["-e", field]
+
+            def handle_line(line: str) -> None:
+                packet = packet_summary(line)
+                if packet:
+                    self.enqueue(
+                        "packet", {"link_id": request.link_id, "headers": packet}
+                    )
+                elif line:
+                    self.enqueue("capture_message", {"text": line[:500]})
+
+            self.capture_process = self._spawn(
+                command, "capture", line_handler=handle_line
+            )
+            self.enqueue(
+                "capture_started",
+                {
+                    "link_id": request.link_id,
+                    "duration": request.duration,
+                    "packet_limit": request.packets,
+                    "snaplen": 256,
+                },
+            )
+
+    def close(self) -> None:
+        with self.lock:
+            if self.closed:
+                return
+            self.closed = True
+            errors = []
+            cleanup = [process.close for process in reversed(self.processes)]
+            if self.network is not None:
+                cleanup.append(self.network.stop)
+            cleanup.extend([self.socket.close, self.temp.cleanup])
+            for operation in cleanup:
+                try:
+                    operation()
+                except Exception as error:
+                    errors.append(error)
+            if errors:
+                raise RuntimeError(
+                    "one or more lab resources could not be cleaned up"
+                ) from errors[0]
