@@ -1,5 +1,7 @@
 # Reproducible setup
 
+This guide covers the **manual VM/command-line workflow**. If you want the browser GUI with Mininet in Docker, follow the [Docker GUI startup instructions](../README.md#optional-graphical-container-workspace) instead. You do not need to install this guide's Mininet/Ryu packages or Python environments on the host for that option.
+
 ## Recommended environment
 
 Use an isolated Ubuntu VM as described in the proposal (VMware or another local hypervisor). Give the VM enough CPU and RAM for Open vSwitch, Mininet, PostgreSQL, and the controller. Do not bridge experiment traffic to an uncontrolled physical interface.
