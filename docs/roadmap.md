@@ -11,6 +11,12 @@
 
 ## Research implementation milestones
 
+The local graphical/container workspace is implemented as an alpha option;
+see [setup, limitations and the live release gate](lab-workspace.md). Next:
+complete the isolated-VM container smoke test, document measured overhead, and
+validate a project-owned model. Do not equate GUI screenshots, successful
+image builds, or synthetic browser fixtures with experimental DDoS evidence.
+
 1. Publish the model-training pipeline and approved model card.
 2. Add entropy calculations over source and destination distributions.
 3. Add consecutive-window confirmation and explicit suspicious-event state.

@@ -29,6 +29,19 @@ set -a; . .env; set +a
 
 Start the inference service, controller, and topology in separate terminals as described in the setup guide. A model is intentionally not included. Until a project-owned model is supplied with a verified `DDOS_MODEL_SHA256`, the service reports `not_ready` and the controller safely continues in monitoring-only mode.
 
+## Optional graphical container workspace
+
+A local browser workspace now adds topology editing, JSON/MiniEdit interchange,
+bounded baseline/attack/recovery scenarios, live observations, packet headers,
+command output, and recorded replay. It retains the current Mininet/Ryu stack
+and connects to your **existing** PostgreSQL container.
+
+See [the Linux container guide](docs/lab-workspace.md) for the explicit database
+migration, `make lab-setup`, `make lab-doctor`, and `make lab-up`. The runner needs
+privileged Docker and kernel Open vSwitch support. Container builds/unit tests
+do not replace the required isolated-VM live smoke test. The VM/CLI path above
+is unchanged.
+
 ## Repository map
 
 ```text
@@ -37,8 +50,11 @@ src/sdn_ddos/
 ├── detection/        # FastAPI API and verified model loading
 ├── topology/         # Mininet topology and topology specification
 ├── experiments/      # bounded, authorized lab experiment launcher
+├── lab/              # GUI API, validated topology, isolated runner, replay store
 └── storage.py        # PostgreSQL and no-op persistence implementations
 database/schema.sql   # canonical metrics/event schema
+web/                  # React/TypeScript topology and observation workspace
+compose.lab.yaml      # optional lab stack; existing database is external
 config/topology.json  # human-readable topology inventory
 tests/                # dependency-light unit tests
 docs/                 # research, architecture, setup, and experiment guides

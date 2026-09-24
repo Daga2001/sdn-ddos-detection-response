@@ -1,7 +1,10 @@
 # Ryu is retained to match the approved research proposal. It is unmaintained,
 # supports Python through 3.9, and has known incompatibilities with newer
-# Eventlet releases. Install this file only inside the isolated lab VM.
+# Eventlet releases. Install only inside the isolated VM or lab runner.
+# Eventlet 0.30.2 declares dnspython<2; 2.2.1 made this set unresolvable.
 setuptools<58
-dnspython==2.2.1
+dnspython==1.16.0
 eventlet==0.30.2
 ryu==4.34
+# Match the runner's OVS 2.17 series; later OVS Python builds need newer tooling.
+ovs==2.17.12

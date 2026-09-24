@@ -21,6 +21,22 @@ flowchart LR
 
 ## Boundaries
 
+The optional [graphical workspace](lab-workspace.md) adds a local authenticated
+web/API service, a separately authenticated privileged Mininet runner, and the
+existing inference service in containers. The runner owns topology/process
+lifetime, publishes bounded observations, and records projects/runs/events in
+the existing PostgreSQL database. Browser replay reads those records only.
+The original topology and six-feature model contract are unchanged. GUI runs
+tag legacy controller metrics with a nullable `run_id`; CLI runs without it
+retain the original insert contract. Schema changes are an explicit migration.
+
+Controller telemetry uses a nonblocking Unix datagram socket, while existing
+metric persistence remains independent. Link rates use elapsed-time counter
+deltas (roughly one second); controller/model sampling keeps its original
+interval. Queues are bounded and missing observations are reported. A recorder
+failure stops the run; a cleanup failure prevents another run until the runner
+container is recreated.
+
 The controller does not infer authorization, discover targets, or download threat data. Configuration is supplied through environment variables. The inference service does not accept arbitrary model files without a checksum. Experiment traffic is generated only by an explicit bounded command in an isolated namespace.
 
 ## Data lifecycle
