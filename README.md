@@ -37,76 +37,96 @@ Your **existing PostgreSQL container stays separate**. The GUI stack connects to
 
 ### What your computer still needs
 
-Use a dedicated, isolated Linux lab machine with local Docker Engine, Docker Compose, Bash, Make, and OpenSSL. Docker must run in its normal rootful mode, not rootless mode. This first version does not support Docker Desktop, macOS, Windows, or a remote Docker engine.
+Use a dedicated, isolated Linux lab machine with local Docker Engine, Docker Compose, Bash, Make, OpenSSL, and curl. Docker must run in its normal rootful mode, not rootless mode. This first version does not support Docker Desktop, macOS, Windows, or a remote Docker engine.
+
+If Docker is not installed yet, install [Docker Engine](https://docs.docker.com/engine/install/) and the [Docker Compose plugin](https://docs.docker.com/compose/install/linux/) for your Linux distribution. Confirm both are available before continuing:
+
+```bash
+docker info
+docker compose version
+```
 
 **A VM is not a runtime requirement on native Linux.** However, Docker containers share the host's Linux kernel. This runner needs the kernel's Open vSwitch networking support loaded on that host; that part is not provided by the container image. The command below enables that support, not a host installation of Mininet or Ryu.
 
 Only the runner uses privileged Docker access so it can create virtual networks. The GUI and detection containers do not. Because that privilege gives the runner broad access to the host, do not run this stack on a production or shared machine, or expose the GUI to the Internet.
 
-### First-time setup
+### First launch with the repository database
 
-Run these commands from the repository root, on the machine where Docker runs.
+Run the following from the repository root. This is the shortest setup path when you use the PostgreSQL service in `compose.yaml` and its local-only example credentials. If its existing volume contains experiment records you care about, back it up before applying the migration.
 
-1. **Keep your existing database and configuration.** Keep your working `.env`; if it is missing, copy `.env.example` to `.env` and configure it. Its `SDN_PG_DB`, `SDN_PG_USER`, and `SDN_PG_PASSWORD` must match your running database. These defaults connect to the repository's existing database container:
+```bash
+# Preserve an existing configuration; create one only when it is missing.
+test -f .env || cp .env.example .env
 
-   ```dotenv
-   SDN_LAB_DB_NETWORK=sdn-ddos-detection-response_default
-   SDN_LAB_PG_HOST=postgres
-   ```
+# Start PostgreSQL, wait for it to be healthy, and add the GUI tables.
+docker compose up -d --wait postgres
+docker compose exec -T postgres psql -U sdn_user -d sdn_monitor \
+  -v ON_ERROR_STOP=1 < database/migrations/002_lab.sql
 
-   For a different container, use its Docker network name and database network alias. Keep `SDN_PG_PORT` set to your database's host port; the lab containers use internal port 5432. If you have no database yet, follow the [database setup](docs/setup.md#database) first; you can skip that guide's manual Mininet/Ryu installation.
+# Generate ignored local login credentials. Re-running this keeps them.
+make lab-setup
 
-2. **Back up the database, then add the GUI's tables.** For the repository's database, run:
+# Load the host networking support required by the Mininet container.
+# Run this only on the intended isolated lab machine.
+sudo modprobe openvswitch
+make lab-doctor
 
-   ```bash
-   docker compose exec -T postgres psql -U sdn_user -d sdn_monitor \
-     -v ON_ERROR_STOP=1 < database/migrations/002_lab.sql
-   ```
+# Build and start the web, runner, and inference containers.
+make lab-up
+```
 
-   Use your own database/user names if different. This migration adds storage for saved topologies and experiment history; it does not delete existing records. A fresh database created from the current `database/schema.sql` already has these tables. Startup does not apply migrations for you.
+The migration is additive and safe to repeat for the repository database. It is still necessary for a database volume created before the GUI tables were added. `make lab-up` checks the host again and may take several minutes and several GB of disk space during the first image build.
 
-3. **Create login credentials and check the host:**
+Verify that the web service is ready:
 
-   ```bash
-   make lab-setup
-   make lab-doctor
-   ```
+```bash
+curl -fsS http://localhost:8080/health
+```
 
-   Setup creates private credentials in `.lab/env`; it keeps them if you run it again. Doctor only checks the environment. If it says Open vSwitch is not loaded, run the following **on the intended isolated lab host**, then repeat the check:
+The expected response is `{"status":"ready"}`. Open **http://localhost:8080**, then print the login token locally and paste it into the login screen:
 
-   ```bash
-   sudo modprobe openvswitch
-   make lab-doctor
-   ```
+```bash
+sed -n 's/^SDN_LAB_TOKEN=//p' .lab/env
+```
 
-   If that command reports a missing module, the host needs kernel support before this runner can start. Do not skip the check.
+Do not share the token or commit `.lab/env`. Choose the **small teaching topology** and click **Observe** to start Mininet without launching attack traffic.
 
-4. **Build and start the Docker containers:**
+### Using an existing or customized PostgreSQL container
 
-   ```bash
-   make lab-up
-   ```
+Do not replace a working `.env` or database. Back up the database, then make sure these values describe the database from the two different connection points:
 
-   This is a Docker shortcut, not a command that installs the lab on your host. After checking the environment, it runs:
+- `SDN_PG_DB`, `SDN_PG_USER`, and `SDN_PG_PASSWORD` match the database credentials.
+- `SDN_PG_PORT` is the port published to the Linux host.
+- `SDN_LAB_DB_NETWORK` is the database container's Docker network.
+- `SDN_LAB_PG_HOST` is its alias on that Docker network; the lab containers always connect to its internal port `5432`.
 
-   ```bash
-   docker compose --env-file .env --env-file .lab/env \
-     -f compose.lab.yaml up --build -d
-   ```
+The repository defaults are:
 
-   You do not need to run both commands. Allow several minutes and several GB of disk space for the first build.
+```dotenv
+SDN_LAB_DB_NETWORK=sdn-ddos-detection-response_default
+SDN_LAB_PG_HOST=postgres
+```
 
-5. **Open http://localhost:8080 in your browser.** Open `.lab/env` locally and paste only the value of `SDN_LAB_TOKEN` into the login screen. Do not share or commit that file. Choose the small teaching topology and click **Observe** to start a network without launching an attack. You can then inspect devices, capture bounded packet headers, and import/export topologies.
+Apply `database/migrations/002_lab.sql` explicitly with your database's container, user, and database names. Application startup never changes the schema automatically. After the migration, continue with `make lab-setup`, load `openvswitch`, run `make lab-doctor`, and then run `make lab-up` as shown above. See the [full GUI guide](docs/lab-workspace.md#start-with-your-existing-database) for the detailed database-network explanation.
 
 A trained model is not included. You can use the editor and observe traffic without one, but actual model-based detection remains `not_ready` until you supply a verified model. Mitigation is off by default.
 
 ### Starting again, stopping, and troubleshooting
 
-After the first-time setup, use `make lab-up` to start the workspace. If the host rebooted, you may need to load Open vSwitch again when the host check asks.
+After the first launch, use `make lab-up` to start the workspace. If the host rebooted, you may need to load Open vSwitch again when the host check asks.
 
 - `make lab-logs` shows the recent container logs if startup fails.
 - **Stop lab** in the GUI stops the active network. Closing the browser does not stop an experiment.
 - `make lab-down` stops and removes the GUI stack's containers, but leaves your separate PostgreSQL container and saved records in place.
+
+Common startup failures:
+
+| Message or symptom | Resolution |
+| --- | --- |
+| `Open vSwitch is not loaded` | On the isolated lab host, run `sudo modprobe openvswitch`, then `make lab-doctor` again. If the module is unavailable, install kernel Open vSwitch support before continuing. |
+| External database network does not exist | Start the repository database with `docker compose up -d postgres`, or correct `SDN_LAB_DB_NETWORK` for your existing container. |
+| http://localhost:8080 does not respond | Run `make lab-logs`. Also confirm another program is not already using local port 8080. |
+| Detector reports `not_ready` | This is expected without a project-owned model and verified checksum; topology editing and observation still work. |
 
 See the [full GUI guide](docs/lab-workspace.md) for topology editing, bounded experiments, replay, and limitations.
 
