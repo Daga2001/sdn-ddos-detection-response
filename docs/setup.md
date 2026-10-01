@@ -1,5 +1,7 @@
 # Reproducible setup
 
+This guide covers the **manual VM/command-line workflow**. If you want the browser GUI with Mininet in Docker, follow the [Docker GUI startup instructions](../README.md#optional-graphical-container-workspace) instead. You do not need to install this guide's Mininet/Ryu packages or Python environments on the host for that option.
+
 ## Recommended environment
 
 Use an isolated Ubuntu VM as described in the proposal (VMware or another local hypervisor). Give the VM enough CPU and RAM for Open vSwitch, Mininet, PostgreSQL, and the controller. Do not bridge experiment traffic to an uncontrolled physical interface.
@@ -24,7 +26,7 @@ The application supports Python 3.9 through the current supported Python version
 ```bash
 python3.9 -m venv .venv-ryu
 source .venv-ryu/bin/activate
-python -m pip install --upgrade 'pip<24' 'setuptools<58'
+python -m pip install --upgrade 'pip<24' 'setuptools==57.5.0' 'wheel==0.45.1' 'pbr==5.11.1'
 python -m pip install --no-build-isolation -r requirements/ryu-legacy.txt
 ```
 

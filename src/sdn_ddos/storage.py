@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Protocol
+from uuid import UUID
 
 from sdn_ddos.config import DatabaseSettings
 
@@ -66,6 +68,8 @@ class PostgreSQLMetricsStore:
     def __init__(self, settings: DatabaseSettings, flush_rows: int = 100) -> None:
         import psycopg2
 
+        raw_run_id = os.environ.get("SDN_RUN_ID", "")
+        self._run_id = str(UUID(raw_run_id)) if raw_run_id else None
         self._connection = psycopg2.connect(
             host=settings.host,
             port=settings.port,
@@ -105,8 +109,6 @@ class PostgreSQLMetricsStore:
         ):
             return
 
-        from psycopg2.extras import execute_batch
-
         flow_count = len(self._flow_rows)
         port_count = len(self._port_rows)
         controller_count = len(self._controller_rows)
@@ -115,7 +117,7 @@ class PostgreSQLMetricsStore:
         cursor = self._connection.cursor()
         try:
             if flow_count:
-                execute_batch(
+                self._execute_batch(
                     cursor,
                     """
                     INSERT INTO flow_stats (
@@ -137,7 +139,7 @@ class PostgreSQLMetricsStore:
                     page_size=500,
                 )
             if port_count:
-                execute_batch(
+                self._execute_batch(
                     cursor,
                     """
                     INSERT INTO port_stats (
@@ -155,7 +157,7 @@ class PostgreSQLMetricsStore:
                     page_size=500,
                 )
             if controller_count:
-                execute_batch(
+                self._execute_batch(
                     cursor,
                     """
                     INSERT INTO controller_stats (ts, cpu_percent, rss_bytes)
@@ -178,15 +180,36 @@ class PostgreSQLMetricsStore:
         del self._controller_rows[:controller_count]
 
     def _execute_event(self, query: str, values: Dict[str, Any]) -> None:
+        query, tagged = self._tag_run(query, [values])
         cursor = self._connection.cursor()
         try:
-            cursor.execute(query, values)
+            cursor.execute(query, tagged[0])
             self._connection.commit()
         except Exception:
             self._connection.rollback()
             raise
         finally:
             cursor.close()
+
+    def _tag_run(
+        self, query: str, rows: List[Dict[str, Any]]
+    ) -> tuple[str, List[Dict[str, Any]]]:
+        # Only internally defined INSERT statements enter this method. Legacy
+        # CLI runs without an ID keep working against the pre-GUI schema.
+        if self._run_id is None:
+            return query, rows
+        query = query.replace("(", "(run_id, ", 1).replace(
+            "VALUES (", "VALUES (%(run_id)s, ", 1
+        )
+        return query, [dict(row, run_id=self._run_id) for row in rows]
+
+    def _execute_batch(
+        self, cursor: Any, query: str, rows: List[Dict[str, Any]], page_size: int
+    ) -> None:
+        from psycopg2.extras import execute_batch
+
+        query, tagged = self._tag_run(query, rows)
+        execute_batch(cursor, query, tagged, page_size=page_size)
 
     def record_detection(self, row: Dict[str, Any]) -> None:
         self._execute_event(

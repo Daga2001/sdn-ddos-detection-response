@@ -11,6 +11,21 @@ def test_hping_command_is_bounded() -> None:
     assert command[command.index("--interval") + 1] == "u10000"
 
 
+def test_hping_command_supports_bounded_traffic_kinds() -> None:
+    syn = attack_launcher.build_hping_command("10.0.2.1", 80, 100, 20, "syn")
+    udp = attack_launcher.build_hping_command("10.0.2.1", 80, 100, 20, "udp")
+    icmp = attack_launcher.build_hping_command("10.0.2.1", 80, 100, 20, "icmp")
+    assert syn[:2] == ["hping3", "--syn"] and "--destport" in syn
+    assert udp[:2] == ["hping3", "--udp"] and "--destport" in udp
+    # An ICMP echo flood has no transport port, but the same hard ceiling holds.
+    assert icmp[:2] == ["hping3", "--icmp"] and "--destport" not in icmp
+    for command in (syn, udp, icmp):
+        assert "--flood" not in command
+        assert command[-2:] == ["2000", "10.0.2.1"]
+    with pytest.raises(ConfigurationError, match="traffic kind"):
+        attack_launcher.build_hping_command("10.0.2.1", 80, 100, 20, "fin")
+
+
 def test_dry_run_validates_without_confirmation(capsys) -> None:
     assert attack_launcher.main(["--target", "10.0.2.1", "--dry-run"]) == 0
     assert "Validated command" in capsys.readouterr().out

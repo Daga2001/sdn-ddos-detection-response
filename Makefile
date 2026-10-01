@@ -20,7 +20,7 @@ test:
 	uv run pytest
 
 check: format-check lint type-check test
-	bash -n scripts/*.sh
+	for script in scripts/*.sh containers/*.sh; do bash -n "$$script"; done
 	python -m json.tool config/topology.json >/dev/null
 
 db-up:
@@ -28,3 +28,17 @@ db-up:
 
 db-down:
 	docker compose down
+
+.PHONY: lab-setup lab-doctor lab-up lab-down lab-logs web-check
+lab-setup:
+	bash scripts/lab.sh setup
+lab-doctor:
+	bash scripts/lab.sh doctor
+lab-up:
+	bash scripts/lab.sh up
+lab-down:
+	bash scripts/lab.sh down
+lab-logs:
+	bash scripts/lab.sh logs
+web-check:
+	cd web && npm ci && npm run format-check && npm run build && npm test
