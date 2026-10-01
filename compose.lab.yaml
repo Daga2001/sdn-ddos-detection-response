@@ -1,0 +1,90 @@
+name: sdn-lab
+
+x-database: &database
+  SDN_DB_ENABLED: "true"
+  SDN_PG_HOST: ${SDN_LAB_PG_HOST:-postgres}
+  SDN_PG_PORT: "5432"
+  SDN_PG_DB: ${SDN_PG_DB:-sdn_monitor}
+  SDN_PG_USER: ${SDN_PG_USER:-sdn_user}
+  SDN_PG_PASSWORD: ${SDN_PG_PASSWORD:?Set SDN_PG_PASSWORD in .env}
+  SDN_PG_CONNECT_TIMEOUT: "3"
+
+x-access: &access
+  SDN_LAB_TOKEN: ${SDN_LAB_TOKEN:?Run make lab-setup}
+  SDN_RUNNER_TOKEN: ${SDN_RUNNER_TOKEN:?Run make lab-setup}
+  SDN_LAB_ORIGIN: http://localhost:8080
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: containers/web.Dockerfile
+    environment:
+      <<: [*database, *access]
+      SDN_RUNNER_URL: http://runner:9001
+      SDN_ALLOWED_TARGET_CIDRS: ${SDN_ALLOWED_TARGET_CIDRS:-10.0.0.0/8}
+    ports: ["127.0.0.1:8080:8080"]
+    networks: [control, database]
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on: [runner, inference]
+    mem_limit: 768m
+    cpus: 1.0
+    pids_limit: 128
+    init: true
+  runner:
+    build:
+      context: .
+      dockerfile: containers/runner.Dockerfile
+    # Required by Mininet network namespaces, veth pairs, and kernel OVS.
+    # This is NOT a sandbox for hostile users or untrusted code.
+    privileged: true
+    environment:
+      <<: [*database, *access]
+      SDN_LAB_RUNNER: "1"
+      SDN_DDOS_SERVICE_URL: http://inference:8000/predict
+      SDN_DDOS_API_KEY: ${SDN_LAB_INFERENCE_KEY:?Run make lab-setup}
+      SDN_POLL_INTERVAL: ${SDN_POLL_INTERVAL:-5}
+      SDN_DB_FLUSH_EVERY: ${SDN_DB_FLUSH_EVERY:-100}
+      SDN_FLOW_IDLE_TIMEOUT: ${SDN_FLOW_IDLE_TIMEOUT:-60}
+      SDN_DDOS_THRESHOLD: ${SDN_DDOS_THRESHOLD:-0.80}
+      SDN_BLOCK_SECONDS: ${SDN_BLOCK_SECONDS:-300}
+      SDN_ALLOWED_TARGET_CIDRS: ${SDN_ALLOWED_TARGET_CIDRS:-10.0.0.0/8}
+      SDN_MITIGATION_ENABLED: "false"
+      DDOS_MODEL_SHA256: ${DDOS_MODEL_SHA256:-}
+    networks: [control, database]
+    volumes: []
+    mem_limit: 2g
+    cpus: 2.0
+    pids_limit: 512
+    stop_grace_period: 45s
+    init: true
+  inference:
+    build:
+      context: .
+      dockerfile: containers/inference.Dockerfile
+    environment:
+      DDOS_API_KEY: ${SDN_LAB_INFERENCE_KEY:?Run make lab-setup}
+      DDOS_MODEL_PATH: ${SDN_LAB_MODEL_PATH:-}
+      DDOS_MODEL_SHA256: ${DDOS_MODEL_SHA256:-}
+      DDOS_MAX_BATCH_SIZE: ${DDOS_MAX_BATCH_SIZE:-500}
+    volumes:
+      - ./models:/models:ro
+    networks: [control]
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 128
+    init: true
+
+networks:
+  control:
+    internal: true
+  database:
+    external: true
+    name: ${SDN_LAB_DB_NETWORK:-sdn-ddos-detection-response_default}

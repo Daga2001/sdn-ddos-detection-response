@@ -14,20 +14,140 @@ This is an **alpha research baseline**, not a production defense and not the com
 
 ## Safety
 
-Run experiments only inside an isolated Mininet/VMware lab that you own or are explicitly authorized to test. The attack launcher refuses public targets, requires `--confirm-isolated-lab`, and has hard duration/rate limits. Never point it at an Internet, campus, corporate, or third-party address. See [`SECURITY.md`](SECURITY.md) and [`docs/experiments.md`](docs/experiments.md).
+Run experiments only inside an isolated Mininet lab that you own or are explicitly authorized to test. The attack launcher refuses public targets, requires `--confirm-isolated-lab`, and has hard duration/rate limits. Never point it at an Internet, campus, corporate, or third-party address. See [`SECURITY.md`](SECURITY.md) and [`docs/experiments.md`](docs/experiments.md).
 
 ## Quick start
 
-The normal development environment is Python 3.9+ with [`uv`](https://docs.astral.sh/uv/). Mininet, Open vSwitch, Ryu, `hping3`, and PostgreSQL are lab prerequisites; see [`docs/setup.md`](docs/setup.md).
+Choose one way to run the lab. You do not need to follow both:
+
+- **Browser GUI with Docker:** follow the section below to edit topologies, watch traffic and command output, and replay recorded experiments.
+- **Manual VM/command-line setup:** use the [VM/CLI instructions](#manual-vmcommand-line-setup) if you want to start each component yourself.
+
+## Optional graphical container workspace
+
+**The GUI and Mininet lab run in Docker. You do not install Mininet, Ryu, Python libraries, or Node.js on your computer for this option.** Docker builds the application images and installs those dependencies inside them.
+
+The [Docker Compose file](compose.lab.yaml) starts three containers together:
+
+- **`web`:** the GUI and its backend, accessed in your browser at http://localhost:8080.
+- **`runner`:** Mininet, Open vSwitch, Ryu, and the tools used for lab experiments.
+- **`inference`:** the existing attack-detection API.
+
+Your **existing PostgreSQL container stays separate**. The GUI stack connects to it; it does not replace it. The containers keep the current technologies rather than introducing a different network simulator.
+
+### What your computer still needs
+
+Use a dedicated, isolated Linux lab machine with local Docker Engine, Docker Compose, Bash, Make, OpenSSL, and curl. Docker must run in its normal rootful mode, not rootless mode. This first version does not support Docker Desktop, macOS, Windows, or a remote Docker engine.
+
+If Docker is not installed yet, install [Docker Engine](https://docs.docker.com/engine/install/) and the [Docker Compose plugin](https://docs.docker.com/compose/install/linux/) for your Linux distribution. Confirm both are available before continuing:
 
 ```bash
-cp .env.example .env
+docker info
+docker compose version
+```
+
+**A VM is not a runtime requirement on native Linux.** However, Docker containers share the host's Linux kernel. This runner needs the kernel's Open vSwitch networking support loaded on that host; that part is not provided by the container image. The command below enables that support, not a host installation of Mininet or Ryu.
+
+Only the runner uses privileged Docker access so it can create virtual networks. The GUI and detection containers do not. Because that privilege gives the runner broad access to the host, do not run this stack on a production or shared machine, or expose the GUI to the Internet.
+
+### First launch with the repository database
+
+Run the following from the repository root. This is the shortest setup path when you use the PostgreSQL service in `compose.yaml` and its local-only example credentials. If its existing volume contains experiment records you care about, back it up before applying the migration.
+
+```bash
+# Preserve an existing configuration; create one only when it is missing.
+test -f .env || cp .env.example .env
+
+# Start PostgreSQL, wait for it to be healthy, and add the GUI tables.
+docker compose up -d --wait postgres
+docker compose exec -T postgres psql -U sdn_user -d sdn_monitor \
+  -v ON_ERROR_STOP=1 < database/migrations/002_lab.sql
+
+# Generate ignored local login credentials. Re-running this keeps them.
+make lab-setup
+
+# Load the host networking support required by the Mininet container.
+# Run this only on the intended isolated lab machine.
+sudo modprobe openvswitch
+make lab-doctor
+
+# Build and start the web, runner, and inference containers.
+make lab-up
+```
+
+The migration is additive and safe to repeat for the repository database. It is still necessary for a database volume created before the GUI tables were added. `make lab-up` checks the host again and may take several minutes and several GB of disk space during the first image build.
+
+Verify that the web service is ready:
+
+```bash
+curl -fsS http://localhost:8080/health
+```
+
+The expected response is `{"status":"ready"}`. Open **http://localhost:8080**, then print the login token locally and paste it into the login screen:
+
+```bash
+sed -n 's/^SDN_LAB_TOKEN=//p' .lab/env
+```
+
+Do not share the token or commit `.lab/env`. Choose the **small teaching topology** and click **Observe** to start Mininet without launching attack traffic.
+
+### Using an existing or customized PostgreSQL container
+
+Do not replace a working `.env` or database. Back up the database, then make sure these values describe the database from the two different connection points:
+
+- `SDN_PG_DB`, `SDN_PG_USER`, and `SDN_PG_PASSWORD` match the database credentials.
+- `SDN_PG_PORT` is the port published to the Linux host.
+- `SDN_LAB_DB_NETWORK` is the database container's Docker network.
+- `SDN_LAB_PG_HOST` is its alias on that Docker network; the lab containers always connect to its internal port `5432`.
+
+The repository defaults are:
+
+```dotenv
+SDN_LAB_DB_NETWORK=sdn-ddos-detection-response_default
+SDN_LAB_PG_HOST=postgres
+```
+
+Apply `database/migrations/002_lab.sql` explicitly with your database's container, user, and database names. Application startup never changes the schema automatically. After the migration, continue with `make lab-setup`, load `openvswitch`, run `make lab-doctor`, and then run `make lab-up` as shown above. See the [full GUI guide](docs/lab-workspace.md#start-with-your-existing-database) for the detailed database-network explanation.
+
+A trained model is not included. You can use the editor and observe traffic without one, but actual model-based detection remains `not_ready` until you supply a verified model. Mitigation is off by default.
+
+### Starting again, stopping, and troubleshooting
+
+After the first launch, use `make lab-up` to start the workspace. If the host rebooted, you may need to load Open vSwitch again when the host check asks.
+
+- `make lab-logs` shows the recent container logs if startup fails.
+- **Stop lab** in the GUI stops the active network. Closing the browser does not stop an experiment.
+- `make lab-down` stops and removes the GUI stack's containers, but leaves your separate PostgreSQL container and saved records in place.
+
+Common startup failures:
+
+| Message or symptom | Resolution |
+| --- | --- |
+| `Open vSwitch is not loaded` | On the isolated lab host, run `sudo modprobe openvswitch`, then `make lab-doctor` again. If the module is unavailable, install kernel Open vSwitch support before continuing. |
+| External database network does not exist | Start the repository database with `docker compose up -d postgres`, or correct `SDN_LAB_DB_NETWORK` for your existing container. |
+| http://localhost:8080 does not respond | Run `make lab-logs`. Also confirm another program is not already using local port 8080. |
+| Detector reports `not_ready` | This is expected without a project-owned model and verified checksum; topology editing and observation still work. |
+
+See the [full GUI guide](docs/lab-workspace.md) for topology editing, bounded experiments, replay, and limitations.
+
+### What has actually been tested?
+
+The images have been built and the automated tests have passed. The full live-network check—starting Mininet, sending bounded lab traffic, and checking monitoring and cleanup—has **not** been completed. The repository requires that privileged smoke test in an isolated VM before live integration is considered verified. That is a testing policy, not a requirement to install a VM for the native Linux container deployment. See the [verification record](docs/lab-verification.md).
+
+## Manual VM/command-line setup
+
+This is the separate, non-GUI workflow. Skip it if you are using the Docker GUI above.
+
+The development environment uses Python 3.9+ with [`uv`](https://docs.astral.sh/uv/). Mininet, Open vSwitch, Ryu, `hping3`, and PostgreSQL are lab prerequisites; see [`docs/setup.md`](docs/setup.md).
+
+```bash
+test -e .env || cp .env.example .env
 uv sync --group dev
 docker compose up -d postgres
 set -a; . .env; set +a
 ```
 
-Start the inference service, controller, and topology in separate terminals as described in the setup guide. A model is intentionally not included. Until a project-owned model is supplied with a verified `DDOS_MODEL_SHA256`, the service reports `not_ready` and the controller safely continues in monitoring-only mode.
+Start the inference service, controller, and topology in separate terminals as described in the setup guide. Until a project-owned model is supplied with a verified `DDOS_MODEL_SHA256`, the service reports `not_ready` and the controller safely continues in monitoring-only mode.
 
 ## Repository map
 
@@ -37,8 +157,11 @@ src/sdn_ddos/
 ├── detection/        # FastAPI API and verified model loading
 ├── topology/         # Mininet topology and topology specification
 ├── experiments/      # bounded, authorized lab experiment launcher
+├── lab/              # GUI API, validated topology, isolated runner, replay store
 └── storage.py        # PostgreSQL and no-op persistence implementations
 database/schema.sql   # canonical metrics/event schema
+web/                  # React/TypeScript topology and observation workspace
+compose.lab.yaml      # optional lab stack; existing database is external
 config/topology.json  # human-readable topology inventory
 tests/                # dependency-light unit tests
 docs/                 # research, architecture, setup, and experiment guides

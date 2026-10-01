@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: sdn_user
       POSTGRES_PASSWORD: local-lab-only
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${SDN_PG_PORT:-5432}:5432"
     volumes:
       - sdn-postgres-data:/var/lib/postgresql/data
       - ./database/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
