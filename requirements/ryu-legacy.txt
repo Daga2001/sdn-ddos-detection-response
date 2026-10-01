@@ -2,7 +2,7 @@
 # supports Python through 3.9, and has known incompatibilities with newer
 # Eventlet releases. Install only inside the isolated VM or lab runner.
 # Eventlet 0.30.2 declares dnspython<2; 2.2.1 made this set unresolvable.
-setuptools<58
+setuptools<85
 dnspython==1.16.0
 eventlet==0.30.2
 ryu==4.34
