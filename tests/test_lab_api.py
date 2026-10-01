@@ -180,3 +180,110 @@ def test_sse_observations_gaps_unavailable_and_expiry(monkeypatch):
         assert "private internal" not in content
         content = asyncio.run(read({}))
         assert "event: expired" in content
+
+
+def test_rejections_are_one_readable_sentence_not_a_validation_dump():
+    """The workspace shows `detail` verbatim, so it must always be prose."""
+
+    client, settings = client_for_lab()
+    with client:
+        client.post("/api/session", json={"token": settings.access_token})
+        data = presets()[2].model_dump()
+        data["hosts"].append(
+            {"name": "h9", "ip": "10.0.0.9/24", "position": {"x": 0, "y": 0}}
+        )
+        for path, payload in (
+            ("/api/runs", {"topology": data}),
+            ("/api/validate", data),
+            ("/api/export/miniedit", data),
+            ("/api/projects", data),
+        ):
+            detail = client.post(path, json=payload).json()["detail"]
+            assert isinstance(detail, str), path
+            assert "h9 has no link yet" in detail, path
+            assert "drag from" in detail.lower(), path
+
+
+def test_import_failures_say_what_the_file_got_wrong():
+    from sdn_ddos.lab.topology import export_miniedit
+
+    client, settings = client_for_lab()
+    with client:
+        client.post("/api/session", json={"token": settings.access_token})
+        miniedit = export_miniedit(presets()[2])
+        miniedit["hosts"][0]["opts"]["startCommand"] = "curl http://example.invalid"
+        detail = client.post("/api/import", json=miniedit).json()["detail"]
+        assert "MiniEdit file" in detail and "startCommand" in detail
+
+        broken = presets()[2].model_dump()
+        broken["hosts"][1]["name"] = broken["hosts"][0]["name"]
+        detail = client.post("/api/import", json=broken).json()["detail"]
+        assert "used by more than one device" in detail
+
+        detail = client.post("/api/import", json={"note": "grocery list"}).json()
+        assert "does not look like a network topology" in detail["detail"]
+
+
+def test_experiment_limits_name_the_field_and_the_bound():
+    client, settings = client_for_lab()
+    with client:
+        client.post("/api/session", json={"token": settings.access_token})
+        response = client.post(
+            "/api/runs",
+            json={
+                "topology": presets()[2].model_dump(),
+                "experiment": {
+                    "attackers": ["h1"],
+                    "victims": ["h2"],
+                    "rate": 50000,
+                    "confirm_isolated_lab": True,
+                },
+            },
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"] == (
+            "Experiment · rate (packets per second): use a value at most 1000."
+        )
+
+
+def test_every_preset_downloads_and_imports_again_unchanged():
+    client, settings = client_for_lab()
+    with client:
+        client.post("/api/session", json={"token": settings.access_token})
+        for preset in presets():
+            original = preset.model_dump()
+            restored = client.post("/api/import", json=original).json()["topology"]
+            assert restored == original, preset.name
+            miniedit = client.post("/api/export/miniedit", json=original).json()
+            restored = client.post("/api/import", json=miniedit).json()["topology"]
+            assert restored == original, preset.name
+
+
+def test_api_paths_never_fall_through_to_the_static_bundle(tmp_path):
+    """A wrong method once reached StaticFiles and answered a bare "Not Found"."""
+
+    (tmp_path / "index.html").write_text("<html></html>")
+    repository = MemoryRepository()
+    settings = LabSettings(
+        access_token=secrets.token_urlsafe(32),
+        runner_token=secrets.token_urlsafe(32),
+        origin="http://testserver",
+        static_dir=str(tmp_path),
+    )
+    manager = LabManager(repository, FakeRuntime)
+    client = TestClient(create_app(settings, repository, manager))
+    with client:
+        client.post("/api/session", json={"token": settings.access_token})
+        assert client.post("/api/stop").status_code == 200
+        for method, path in (
+            ("GET", "/api/stop"),
+            ("POST", "/api/status"),
+            ("GET", "/api/does-not-exist"),
+        ):
+            response = client.request(method, path)
+            assert response.status_code == 404, (method, path)
+            detail = response.json()["detail"]
+            assert detail.startswith(f"{method} {path} is not an operation"), detail
+            assert "Reload the workspace" in detail
+        # The built web bundle is still served from the same mount.
+        assert client.get("/").status_code == 200

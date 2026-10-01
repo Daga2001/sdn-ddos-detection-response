@@ -142,17 +142,55 @@ small {
 .notice {
   background: #fff2dc;
   border: 1px solid #dfc194;
+  border-left-width: 4px;
   color: #714e23;
   padding: 12px 18px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: 16px;
   line-height: 1.5;
+}
+.notice strong {
+  display: block;
+  font-size: 13px;
+}
+.notice p,
+.notice > div > span {
+  display: block;
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: inherit;
+  opacity: 0.92;
+  line-height: 1.55;
+}
+.notice small {
+  margin-top: 5px;
+  color: inherit;
+  opacity: 0.78;
+}
+.notice.error {
+  background: #fdeae2;
+  border-color: #dda88e;
+  color: #7d3318;
+}
+.notice.success {
+  background: #e8f1dc;
+  border-color: #a8c383;
+  color: #3d5a28;
+}
+.notice.info {
+  background: #e6eff0;
+  border-color: #9cc0c2;
+  color: #24545a;
 }
 .notice button {
   background: transparent;
   border: 0;
   padding: 0 5px;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
 }
 .footnote {
   font-size: 11px;
@@ -333,6 +371,26 @@ hr {
   padding: 16px 22px;
   border-right: 1px solid var(--line);
 }
+.metrics > div[title],
+.controller-readout[title],
+.observations .tabs button[title],
+.inspector .tabs button[title] {
+  cursor: help;
+}
+.error-detail {
+  margin: 8px 0 0;
+  padding: 9px 11px;
+  background: #fbeae0;
+  border: 1px solid #e0b79f;
+  border-radius: 5px;
+  color: #7c2d16;
+  font:
+    11px ui-monospace,
+    monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
 .metrics > div:last-child {
   border-right: 0;
 }
@@ -398,58 +456,152 @@ hr {
   color: #71847a;
 }
 .device {
-  border: 1.5px solid #8fa69d;
-  border-radius: 7px;
+  border: 1.5px solid #9cb0a7;
+  border-radius: 9px;
   background: #fcfcf6;
-  padding: 10px 14px;
+  padding: 9px 8px 8px;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 10px;
   position: relative;
-  min-width: 135px;
+  width: 88px;
   box-shadow: 0 3px 0 #d8e0d3;
+}
+.device-icon svg {
+  display: block;
+  width: 36px;
+  height: 36px;
+}
+.device .icon-body {
+  fill: #3f6f69;
+}
+.device .icon-screen {
+  fill: #dde9dc;
 }
 .device.switch {
   background: #1d555b;
   color: #e6efe0;
-  border-color: #1d555b;
+  border-color: #16464b;
+  box-shadow: 0 3px 0 #cdd8cd;
 }
 .device.switch small {
   color: #b5d0c4;
 }
-.device.selected {
-  outline: 3px solid #bfce8c;
-  outline-offset: 3px;
+.device .icon-top {
+  fill: #9dcdbd;
 }
-.device-symbol {
-  font-size: 25px;
-  line-height: 1;
+.device .icon-left {
+  fill: #2d666b;
+}
+.device .icon-right {
+  fill: #58979a;
+}
+.device .icon-mark {
+  fill: #11373c;
+  stroke: #11373c;
+}
+.device .icon-stem {
+  fill: none;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+}
+.device .icon-head {
+  stroke-width: 0.7;
+  stroke-linejoin: round;
+}
+.device.victim .icon-body {
+  fill: #7d5d2b;
+}
+.device.victim .icon-screen {
+  fill: #f2e6cd;
+}
+.device.victim .icon-led {
+  fill: #d7a13f;
+}
+.device.source .icon-alert {
+  fill: #c06c46;
+}
+.device.source .icon-alert-mark {
+  stroke: #fdf3ec;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+}
+.device.selected {
+  outline: 3px solid #a8bd6d;
+  outline-offset: 3px;
+  box-shadow: 0 3px 0 #c3cfb1;
 }
 .device strong {
   font:
-    600 14px ui-monospace,
+    600 13px ui-monospace,
     monospace;
+  margin-top: 5px;
 }
 .device small {
   font:
     9px ui-monospace,
     monospace;
-  margin-top: 4px;
+  margin-top: 2px;
+  text-align: center;
 }
 .device em {
   position: absolute;
   bottom: -19px;
-  left: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
   text-transform: uppercase;
   font: 8px monospace;
   letter-spacing: 1px;
   color: #5c7869;
+  font-style: normal;
+  background: #f2f5ec;
+  padding: 1px 5px;
+  border-radius: 3px;
 }
 .device.source {
   border-color: #c87a54;
 }
+.device.source em {
+  color: #9c4e2b;
+}
 .device.victim {
   border-color: #ac7f3b;
+}
+/* Dashed frame: the lab supplies this one, so there is nothing to edit. */
+.device.controller {
+  border-style: dashed;
+  border-color: var(--teal);
+  background: #eef5f1;
+  box-shadow: none;
+}
+.device.controller .icon-body {
+  fill: none;
+  stroke: #0b6a6f;
+  stroke-width: 2.4;
+}
+.device.controller .icon-screen {
+  fill: #0b6a6f;
+}
+.device.controller .icon-wire {
+  fill: none;
+  stroke: #0b6a6f;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+}
+.device.controller em {
+  color: #3f7a72;
+}
+.react-flow__edge.control-edge {
+  pointer-events: none;
+}
+.react-flow__edge.control-edge .react-flow__edge-path {
+  opacity: 0.75;
+}
+.device.victim em {
+  color: #8a6221;
 }
 .react-flow__handle {
   background: #709087;
@@ -718,6 +870,7 @@ td pre {
 .inspector {
   align-self: start;
   min-height: 790px;
+  overflow: visible;
 }
 @media (min-width: 1550px) {
   .main-grid {
@@ -825,4 +978,491 @@ td pre {
   .react-flow__edge-path {
     animation: none !important;
   }
+}
+
+/* ---- explanatory tooltips ------------------------------------------- */
+.field {
+  position: relative;
+  margin: 16px 0;
+}
+.field > label {
+  margin: 0;
+}
+.field-label {
+  display: block;
+  padding-right: 22px;
+}
+.check-field > label {
+  padding-right: 22px;
+}
+.field-pair .field {
+  margin: 8px 0;
+}
+.hint-button {
+  position: absolute;
+  top: 0;
+  right: 0;
+  border: 1px solid #b6c6bb;
+  background: #eef2e9;
+  color: #4c6b62;
+  border-radius: 50%;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  font:
+    bold 10px/1 Georgia,
+    serif;
+  vertical-align: 1px;
+  margin-left: 5px;
+  cursor: help;
+}
+.hint-button:hover:not(:disabled) {
+  background: var(--teal);
+  border-color: var(--teal);
+  color: #fff;
+}
+.hint-bubble {
+  position: absolute;
+  z-index: 40;
+  left: 0;
+  right: 0;
+  top: 21px;
+  background: #22484a;
+  color: #eaf2e4;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 11px;
+  font-weight: normal;
+  line-height: 1.6;
+  letter-spacing: 0;
+  box-shadow: 0 6px 18px #16303030;
+}
+.field.confirmation .hint-button {
+  top: 19px;
+}
+.field-pair .field:nth-child(odd) .hint-bubble {
+  right: auto;
+  width: 240px;
+}
+.field-pair .field:nth-child(even) .hint-bubble {
+  left: auto;
+  width: 240px;
+}
+fieldset:disabled .hint-button {
+  opacity: 1;
+  cursor: help;
+}
+
+/* ---- one download button with the formats folded in ------------------ */
+.split-button {
+  position: relative;
+  display: inline-flex;
+}
+.split-button button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: 11px;
+}
+.split-main {
+  border-radius: 5px 0 0 5px;
+}
+.split-toggle {
+  border-radius: 0 5px 5px 0;
+  margin-left: -1px;
+  padding: 6px 5px;
+}
+.ui-icon {
+  width: 13px;
+  height: 13px;
+  display: block;
+  flex: 0 0 auto;
+}
+.split-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 235px;
+  background: var(--paper);
+  border: 1px solid #c2cec3;
+  border-radius: 6px;
+  padding: 5px;
+  box-shadow: 0 8px 22px #1d3a3a26;
+}
+.split-menu button {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  text-align: left;
+  padding: 8px 10px;
+}
+.split-menu strong {
+  display: block;
+  font-size: 12px;
+}
+.split-menu small {
+  margin-top: 2px;
+  font-size: 10px;
+}
+
+/* ---- select / pan tool ---------------------------------------------- */
+.mode-switch {
+  display: inline-flex;
+  border: 1px solid #c2cec3;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--paper);
+}
+.mode-switch button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  border-radius: 0;
+  padding: 6px 9px;
+  font-size: 11px;
+  background: none;
+  color: #5d7268;
+}
+.mode-switch button + button {
+  border-left: 1px solid #dbe3da;
+}
+.mode-switch button.active {
+  background: #dfe9d7;
+  color: var(--ink);
+  font-weight: bold;
+}
+
+/* ---- what is wrong with this network -------------------------------- */
+.problem-list {
+  background: #fdf1e4;
+  border: 1px solid #e3c4a1;
+  border-left: 4px solid #d19a63;
+  border-radius: 5px;
+  padding: 12px 14px;
+  margin: 16px 0;
+  color: #74461f;
+}
+.problem-list strong {
+  font-size: 12px;
+  display: block;
+}
+.problem-list ul {
+  margin: 8px 0 0;
+  padding-left: 17px;
+  font-size: 11px;
+  line-height: 1.65;
+}
+.problem-list li + li {
+  margin-top: 6px;
+}
+.footer-problems {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: #9a5a22;
+  text-decoration: underline;
+}
+.footer-problems:hover:not(:disabled) {
+  background: none;
+  color: #7d4415;
+}
+
+/* ---- multi-selection ------------------------------------------------- */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 14px;
+}
+.chip {
+  padding: 4px 9px;
+  border-radius: 20px;
+  font:
+    11px ui-monospace,
+    monospace;
+  background: #eaf0e5;
+}
+.react-flow__selection {
+  background: #8aad7f26;
+  border: 1px solid #7d9f72;
+}
+
+/* ---- read-only property readouts ------------------------------------ */
+.readout {
+  margin: 16px 0;
+  border-top: 1px solid var(--line);
+}
+.readout > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+}
+.readout dt {
+  font-size: 11px;
+  font-weight: 600;
+}
+.readout dd {
+  margin: 0;
+  font:
+    11px ui-monospace,
+    monospace;
+  color: #55706a;
+  text-align: right;
+}
+
+/* ---- run clock ------------------------------------------------------ */
+.run-clock {
+  padding: 7px 12px;
+  border-radius: 20px;
+  border: 1px solid #b8c8b7;
+  background: #eef3e7;
+  font:
+    11px ui-monospace,
+    monospace;
+  letter-spacing: 1px;
+  color: #3c5b53;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- attacker / victim role pickers --------------------------------- */
+.role-empty {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: #63746c;
+}
+.role-empty.warn {
+  color: #973a24;
+}
+.picker-open {
+  margin-top: 8px;
+}
+.client-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.client-chip {
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: #eef3e7;
+  border: 1px solid #c7d6c2;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: #3c5b53;
+}
+button.client-chip.removable {
+  cursor: pointer;
+  font-weight: 600;
+}
+button.client-chip.removable:hover {
+  background: #f7dfcb;
+  border-color: #d1a886;
+  color: #973a24;
+}
+
+/* ---- host picker modal + datatable ---------------------------------- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(24, 44, 46, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.modal {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  width: min(560px, 94vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 18px 50px rgba(16, 32, 32, 0.35);
+  overflow: hidden;
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  background: #eef2e9;
+}
+.modal-head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.modal-count {
+  margin-left: auto;
+  font:
+    11px ui-monospace,
+    monospace;
+  color: #4c6b62;
+}
+.modal-close {
+  border: none;
+  background: none;
+  font-size: 22px;
+  line-height: 1;
+  padding: 0 4px;
+  color: #4c6b62;
+}
+.data-table-wrap {
+  overflow: auto;
+  flex: 1;
+}
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.data-table th,
+.data-table td {
+  text-align: left;
+  padding: 9px 14px;
+  border-bottom: 1px solid #e8ede2;
+}
+.data-table thead th {
+  position: sticky;
+  top: 0;
+  background: #f3f6ef;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: #566b62;
+}
+.data-table td.mono {
+  font-family: ui-monospace, monospace;
+}
+.data-table tr.on td {
+  background: #e7f1e9;
+}
+.data-table tr.blocked td {
+  color: #97a49d;
+}
+.data-table .col-check {
+  text-align: center;
+  width: 78px;
+}
+.data-table .col-check input {
+  width: 16px;
+  height: 16px;
+}
+.blocked-note {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #97845f;
+}
+.empty-cell {
+  text-align: center;
+  color: #63746c;
+  padding: 22px;
+}
+.modal-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+  background: #f3f6ef;
+  flex-wrap: wrap;
+}
+.per-page {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #4c6b62;
+}
+.per-page select {
+  padding: 5px 7px;
+}
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font:
+    11px ui-monospace,
+    monospace;
+  color: #3c5b53;
+}
+.pager button {
+  padding: 6px 10px;
+}
+.modal-foot .primary {
+  margin-left: auto;
+}
+
+/* ---- traffic kind picker -------------------------------------------- */
+.traffic-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.traffic-choice {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid #c1cdc1;
+  background: #fff;
+  cursor: pointer;
+  font-size: 12px;
+}
+.traffic-choice.on {
+  background: #e2efe4;
+  border-color: #87b593;
+  font-weight: 600;
+}
+.traffic-choice input {
+  flex: 0 0 auto;
+}
+
+/* ---- measured phase legend under the chart -------------------------- */
+.phase-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 16px 0;
+}
+.phase-band {
+  padding: 3px 10px;
+  border-radius: 4px;
+  font:
+    10px ui-monospace,
+    monospace;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+  font-variant-numeric: tabular-nums;
+}
+.phase-band.baseline {
+  background: rgba(8, 126, 131, 0.1);
+  border-color: #a6cdcf;
+  color: #2c5f61;
+}
+.phase-band.attack {
+  background: #f7dfcb;
+  border-color: #d1a886;
+  color: #973a24;
+}
+.phase-band.recovery {
+  background: rgba(90, 120, 150, 0.12);
+  border-color: #a9bccf;
+  color: #3f5871;
 }

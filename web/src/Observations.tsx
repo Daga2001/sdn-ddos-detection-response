@@ -7,8 +7,8 @@ import {
   LegendComponent,
 } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
-import type { Observation } from "./types";
-import { packets } from "./types";
+import type { Observation, PhaseSpan } from "./types";
+import { packets, phaseSpans } from "./types";
 echarts.use([
   LineChart,
   GridComponent,
@@ -17,7 +17,34 @@ echarts.use([
   CanvasRenderer,
 ]);
 
-function Chart({ events }: { events: Observation[] }) {
+// Plain-language reasons each observation view exists, shown on hover. Each
+// answers: what you see here, how to read it, and why it is useful.
+const tabHints: Record<string, string> = {
+  Traffic:
+    "WHAT: a live time chart — the teal line is how much data is crossing the links each second, the orange line is how long the web service takes to answer a normal request, and the shaded bands mark the baseline, attack and recovery phases. HOW TO READ: during an attack the traffic line climbs and the latency line rises or its points drop out when a probe fails. WHY: it is the headline picture of an attack's impact building up and fading away.",
+  Packets:
+    "WHAT: a sample of individual packets — source, destination and protocol — captured from one link you pick. HOW TO READ: each row is one packet; click it for its header fields. WHY: it confirms what kind of traffic is really flowing (SYN vs UDP vs ICMP). It is empty until you start a capture: the experiment does not record packets on its own. Pick a link in the Inspect tab and start a bounded capture; payloads are never kept.",
+  Commands:
+    "WHAT: every command the lab ran on your behalf, with a timestamp and its output. HOW TO READ: each line is one real command on one node (the controller, a host running traffic, the victim's web service). WHY: nothing runs on a hidden shell, so you can see and trust exactly what happened — and when a run fails, this is where the underlying error appears.",
+  Timeline:
+    "WHAT: a plain, time-ordered log of the notable moments in a run. HOW TO READ: top is most recent; each entry names an event — a phase change, the attack starting or stopping, a detection, an error. WHY: it is the quick answer to “what happened, and in what order?” without reading every command.",
+  Flows:
+    "WHAT: the switches' OpenFlow forwarding tables as the controller last polled them (every few seconds), one row per flow with its packet and byte counters. HOW TO READ: high packet/byte counts on a flow toward the victim are the flood; a drop rule would appear here too. WHY: it shows how the network is actually forwarding — or dropping — traffic underneath the chart. It is not a packet capture.",
+};
+
+const bandColor: Record<string, string> = {
+  baseline: "rgba(8, 126, 131, 0.06)",
+  attack: "rgba(193, 107, 65, 0.12)",
+  recovery: "rgba(90, 120, 150, 0.08)",
+};
+
+function Chart({
+  events,
+  spans,
+}: {
+  events: Observation[];
+  spans: PhaseSpan[];
+}) {
   const element = useRef<HTMLDivElement>(null);
   const chart = useRef<echarts.EChartsType | null>(null);
   useEffect(() => {
@@ -57,6 +84,26 @@ function Chart({ events }: { events: Observation[] }) {
           type: "line",
           showSymbol: false,
           areaStyle: { opacity: 0.09 },
+          markArea: {
+            silent: true,
+            data: spans.map((span) => [
+              {
+                xAxis: span.start,
+                itemStyle: { color: bandColor[span.state] ?? "transparent" },
+                label: {
+                  show: true,
+                  position: "insideTop",
+                  distance: 4,
+                  fontSize: 10,
+                  color: "#5b6b60",
+                  formatter: `${span.state} · ${Math.round(
+                    (span.end - span.start) / 1000,
+                  )}s`,
+                },
+              },
+              { xAxis: span.end },
+            ]),
+          },
           data: traffic.map((e) => [
             Date.parse(e.ts),
             e.data.links.reduce(
@@ -79,7 +126,7 @@ function Chart({ events }: { events: Observation[] }) {
         },
       ],
     });
-  }, [events]);
+  }, [events, spans]);
   return (
     <div
       className="traffic-chart"
@@ -100,6 +147,10 @@ export function Observations({
 }) {
   const [expanded, setExpanded] = useState(-1);
   const packetRows = packets(events);
+  const endMs = events.length
+    ? Date.parse(events[events.length - 1].ts)
+    : Date.now();
+  const spans = phaseSpans(events, endMs);
   const controller = events.findLast((e) => e.kind === "controller")?.data;
   const meaningful = events.filter(
     (e) =>
@@ -123,8 +174,11 @@ export function Observations({
   );
   return (
     <section className="observations">
-      <div className="controller-readout">
-        Controller CPU{" "}
+      <div
+        className="controller-readout"
+        title="CPU and memory used by the Ryu controller process alone — the ryu-manager program that runs the network's control logic. This is NOT your whole computer, the Docker container, or Mininet: just that one process, measured with psutil. CPU is a percentage of a single core, so brief spikes above 100% are possible on a multi-core machine. It is sampled every few seconds; the number shown is the latest sample. Watch it climb when the controller is under load."
+      >
+        Ryu controller process · CPU{" "}
         {controller ? `${Number(controller.cpu_percent).toFixed(1)}%` : "—"}{" "}
         <span> / </span> RAM{" "}
         {controller
@@ -138,6 +192,7 @@ export function Observations({
             <button
               key={value}
               className={tab === value ? "active" : ""}
+              title={tabHints[value]}
               onClick={() => setTab(value)}
             >
               {value}
@@ -153,11 +208,25 @@ export function Observations({
         {tab === "Traffic" &&
           (events.some((e) => e.kind === "links") ? (
             <>
-              <Chart events={events} />
+              <Chart events={events} spans={spans} />
+              {spans.length > 0 && (
+                <div
+                  className="phase-legend"
+                  aria-label="Measured phase durations"
+                >
+                  {spans.map((span, i) => (
+                    <span key={i} className={`phase-band ${span.state}`}>
+                      {span.state} ·{" "}
+                      {Math.round((span.end - span.start) / 1000)}s
+                    </span>
+                  ))}
+                </div>
+              )}
               <p className="footnote">
-                Traffic is summed across measured links, not unique end-to-end
-                throughput. A missing latency point means the service probe
-                failed.
+                Shaded bands mark the measured baseline, attack, and recovery
+                phases against the clock. Traffic is summed across measured
+                links, not unique end-to-end throughput. A missing latency point
+                means the service probe failed.
               </p>
             </>
           ) : (
@@ -219,10 +288,16 @@ export function Observations({
             </table>
           ) : (
             <div className="empty">
-              <strong>No packet headers captured.</strong>
+              <strong>No packets captured yet.</strong>
               <p>
-                Select a link, then start a bounded capture. Payloads are not
-                retained.
+                Capturing packets is a separate, on-demand step — an experiment
+                does not record them on its own, so this stays empty until you
+                ask for a capture (even while a run is in progress).
+              </p>
+              <p>
+                Open the <b>Inspect</b> tab, select a link, and start a bounded
+                capture. A sample of packet headers then appears here; payloads
+                are never retained.
               </p>
             </div>
           ))}

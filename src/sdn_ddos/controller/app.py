@@ -75,8 +75,14 @@ class EnterpriseDDoSController(app_manager.RyuApp):
             self.datapaths[datapath.id] = datapath
             self.logger.info("Switch connected: dpid=%016x", datapath.id)
         elif event.state == DEAD_DISPATCHER:
-            self.datapaths.pop(datapath.id, None)
-            self.logger.info("Switch disconnected: dpid=%016x", datapath.id)
+            # A datapath can reach DEAD_DISPATCHER before it ever reported an id
+            # (a connection dropped during handshake); guard the %x formatting so
+            # a teardown never raises a logging TypeError on a None dpid.
+            if datapath.id is None:
+                self.logger.info("Switch disconnected before it reported a dpid")
+            else:
+                self.datapaths.pop(datapath.id, None)
+                self.logger.info("Switch disconnected: dpid=%016x", datapath.id)
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, event: Any) -> None:

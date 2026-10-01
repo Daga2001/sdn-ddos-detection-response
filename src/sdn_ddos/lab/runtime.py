@@ -20,7 +20,7 @@ import requests
 
 from sdn_ddos.config import ControllerSettings, validate_lab_target
 from sdn_ddos.experiments.attack_launcher import build_hping_command
-from sdn_ddos.lab.contracts import Capture, Diagnostic, Experiment
+from sdn_ddos.lab.contracts import Capture, Diagnostic, Experiment, attack_plan
 from sdn_ddos.lab.events import RateCounters, utc_now
 from sdn_ddos.lab.processes import Emit, ManagedProcess
 from sdn_ddos.lab.topology import Topology
@@ -66,8 +66,8 @@ class MininetRuntime:
         self.processes: list[ManagedProcess] = []
         self.controller: Optional[ManagedProcess] = None
         self.capture_process: Optional[ManagedProcess] = None
-        self.attack_process: Optional[ManagedProcess] = None
-        self.service_process: Optional[ManagedProcess] = None
+        self.attack_processes: list[ManagedProcess] = []
+        self.service_processes: list[ManagedProcess] = []
         self.interfaces: dict[str, str] = {}
         self.counters = RateCounters()
         self.temp = tempfile.TemporaryDirectory(prefix="sdn-lab-")
@@ -214,35 +214,42 @@ class MininetRuntime:
             )
         )
 
-    def serve(self, target: str) -> None:
-        self.service_process = self._spawn(
-            [
-                sys.executable,
-                "-m",
-                "sdn_ddos.lab.service",
-                "--bind",
-                self.address(target),
-            ],
-            target,
-        )
+    def serve(self, targets: list[str]) -> None:
+        self.service_processes = [
+            self._spawn(
+                [
+                    sys.executable,
+                    "-m",
+                    "sdn_ddos.lab.service",
+                    "--bind",
+                    self.address(target),
+                ],
+                target,
+            )
+            for target in targets
+        ]
 
-    def attack(self, experiment: Experiment) -> ManagedProcess:
-        self.attack_process = self._spawn(
-            [
-                "timeout",
-                "--signal=TERM",
-                "--kill-after=2",
-                str(experiment.duration),
-                *build_hping_command(
-                    self.address(experiment.target),
-                    8080,
-                    experiment.rate,
-                    experiment.duration,
-                ),
-            ],
-            experiment.source,
-        )
-        return self.attack_process
+    def attack(self, experiment: Experiment) -> list[ManagedProcess]:
+        self.attack_processes = [
+            self._spawn(
+                [
+                    "timeout",
+                    "--signal=TERM",
+                    "--kill-after=2",
+                    str(experiment.duration),
+                    *build_hping_command(
+                        self.address(victim),
+                        8080,
+                        experiment.rate,
+                        experiment.duration,
+                        kind,
+                    ),
+                ],
+                attacker,
+            )
+            for attacker, victim, kind in attack_plan(experiment)
+        ]
+        return self.attack_processes
 
     def probe(self, client: str, target: str) -> None:
         command = [
@@ -280,14 +287,20 @@ class MininetRuntime:
         )
 
     def sample(self) -> None:
-        if self.service_process and self.service_process.process.poll() is not None:
-            raise RuntimeError("victim service stopped unexpectedly")
-        if self.attack_process and self.attack_process.process.poll() not in (
-            None,
-            0,
-            124,
+        if any(
+            service.process.poll() is not None for service in self.service_processes
         ):
-            raise RuntimeError("traffic generator failed")
+            raise RuntimeError("victim service stopped unexpectedly")
+        # A generator that is still running polls None; one we tore down exits via
+        # a signal (negative code) or the bounded `timeout` (124). Only a positive,
+        # non-124 exit is the generator itself reporting an error (e.g. 127 when
+        # hping3 is missing), so treat just that as a real failure.
+        for attack in self.attack_processes:
+            code = attack.process.poll()
+            if code is not None and code > 0 and code != 124:
+                raise RuntimeError(
+                    f"traffic generator on {attack.node} exited with code {code}"
+                )
         if self.controller and self.controller.process.poll() is not None:
             raise RuntimeError("controller stopped unexpectedly")
         now = time.monotonic()

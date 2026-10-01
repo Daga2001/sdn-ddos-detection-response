@@ -80,7 +80,7 @@ def test_guided_commands_and_capture(runtime, monkeypatch):
     runtime.interfaces = {"link-1": "s1-eth1"}
     with pytest.raises(ValueError):
         runtime.address("external")
-    runtime.serve("h2")
+    runtime.serve(["h2"])
     assert constructor.call_args.args[0][-1] == "10.0.0.2"
     host_spawn = constructor.call_args.kwargs["spawn"]
     assert host_spawn.keywords["mncmd"] == [
@@ -88,7 +88,7 @@ def test_guided_commands_and_capture(runtime, monkeypatch):
         "-a",
         str(runtime.network.get("h2").pid),
     ]
-    runtime.attack(Experiment(source="h1", target="h2", client="h3"))
+    runtime.attack(Experiment(attackers=["h1"], victims=["h2"]))
     assert "--flood" not in constructor.call_args.args[0]
     assert constructor.call_args.args[0][:4] == [
         "timeout",
@@ -172,13 +172,17 @@ def test_sample_counters_controller_events_and_failures(runtime, monkeypatch):
     response.raise_for_status.side_effect = module.requests.RequestException()
     runtime.sample()
     assert runtime.events[-1] == ("detector", {"status": "unavailable"})
-    for attribute in ("controller", "service_process", "attack_process"):
+    for attribute, empty in (
+        ("controller", None),
+        ("service_processes", []),
+        ("attack_processes", []),
+    ):
         process = MagicMock()
         process.process.poll.return_value = 1
-        setattr(runtime, attribute, process)
+        setattr(runtime, attribute, process if attribute == "controller" else [process])
         with pytest.raises(RuntimeError):
             runtime.sample()
-        setattr(runtime, attribute, None)
+        setattr(runtime, attribute, empty)
 
 
 def test_queue_is_bounded_and_reports_gaps(runtime):

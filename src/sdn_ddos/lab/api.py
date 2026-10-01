@@ -14,13 +14,15 @@ from typing import Any, Optional, Union
 from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from sdn_ddos.config import DatabaseSettings
 from sdn_ddos.lab.client import RunnerClient
 from sdn_ddos.lab.contracts import Capture, Diagnostic, StartRequest
+from sdn_ddos.lab.explain import describe, describe_exception
 from sdn_ddos.lab.manager import LabManager
 from sdn_ddos.lab.repository import PostgreSQLRepository, Repository
 from sdn_ddos.lab.security import BodyLimit, Sessions
@@ -80,9 +82,20 @@ def create_app(
         )
         return response
 
+    @app.exception_handler(RequestValidationError)
+    async def malformed(
+        request: Request, error: RequestValidationError
+    ) -> JSONResponse:
+        return JSONResponse({"detail": describe(error.errors())}, status_code=422)
+
     @app.exception_handler(ValueError)
     async def invalid(request: Request, error: ValueError) -> JSONResponse:
-        return JSONResponse({"detail": str(error)}, status_code=409)
+        detail = (
+            describe(error.errors())
+            if isinstance(error, ValidationError)
+            else str(error)
+        )
+        return JSONResponse({"detail": detail}, status_code=409)
 
     @app.exception_handler(Exception)
     async def unavailable(request: Request, error: Exception) -> JSONResponse:
@@ -135,19 +148,32 @@ def create_app(
 
     @app.post("/api/import")
     def import_topology(payload: dict[str, Any]) -> dict[str, Any]:
+        miniedit = str(payload.get("version")) == "2"
+        if not miniedit and not {"hosts", "switches", "links"} & set(payload):
+            raise HTTPException(
+                422,
+                "This file does not look like a network topology. Export one with "
+                "the Download button in this workspace, or save a MiniEdit v2 file.",
+            )
         try:
-            if payload.get("version") == "2":
+            if miniedit:
                 topology, warnings = import_miniedit(payload)
             else:
                 topology, warnings = Topology.model_validate(payload), []
             topology.validate_targets()
             return {"topology": topology.model_dump(), "warnings": warnings}
-        except (ValueError, TypeError, KeyError, AttributeError, IndexError):
+        except (ValueError, TypeError, KeyError, AttributeError, IndexError) as error:
+            reason = (
+                describe(error.errors())
+                if isinstance(error, ValidationError)
+                else describe_exception(error) + "."
+            )
+            source = "MiniEdit file" if miniedit else "topology file"
             raise HTTPException(
                 422,
-                "Unsupported or malformed topology. Use project JSON or MiniEdit v2 "
-                "with basic hosts, OVS switches and links; remove custom commands "
-                "and external interfaces.",
+                f"This {source} could not be imported. {reason} "
+                "The workspace reads its own project JSON and MiniEdit v2 files "
+                "that use plain hosts, OVS switches, and links.",
             ) from None
 
     @app.post("/api/export/miniedit")
@@ -282,6 +308,26 @@ def create_app(
             headers={
                 "Content-Disposition": f'attachment; filename="run-{run_id}.{format}"'
             },
+        )
+
+    # Registered after every API route and before the static files. Without it
+    # a wrong method or a stale path is matched by the StaticFiles mount below
+    # and answered with a bare "Not Found" that explains nothing.
+    @app.api_route(
+        "/api/{rest:path}",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        include_in_schema=False,
+    )
+    def unknown_operation(rest: str, request: Request) -> JSONResponse:
+        return JSONResponse(
+            {
+                "detail": (
+                    f"{request.method} /api/{rest} is not an operation this lab "
+                    "provides. Reload the workspace; if this keeps happening, the "
+                    "page and the lab service are running different versions."
+                )
+            },
+            status_code=404,
         )
 
     static = Path(settings.static_dir)

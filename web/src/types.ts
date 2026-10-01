@@ -1,5 +1,11 @@
 export type Position = { x: number; y: number };
-export type Task = (action: () => Promise<void>) => Promise<void>;
+// Not a device the user owns: the lab supplies one managed Ryu controller. The
+// id cannot collide with a host or switch, whose names must start with h or s.
+export const CONTROLLER_ID = "__controller__";
+export type Task = (
+  action: () => Promise<void>,
+  failureTitle?: string,
+) => Promise<void>;
 export const activeStates = [
   "starting",
   "running",
@@ -26,10 +32,29 @@ export type Topology = {
   switches: Switch[];
   links: Link[];
 };
+export type TrafficKind = "syn" | "udp" | "icmp";
+export const trafficKinds: { id: TrafficKind; label: string; hint: string }[] =
+  [
+    {
+      id: "syn",
+      label: "TCP SYN flood",
+      hint: "Half-open TCP connection requests to the victim's service port. The classic flood the first scenarios study.",
+    },
+    {
+      id: "udp",
+      label: "UDP flood",
+      hint: "A stream of UDP datagrams at the victim's service port, the volumetric flood the multi-host scenario combines with SYN.",
+    },
+    {
+      id: "icmp",
+      label: "ICMP echo flood",
+      hint: "A ping flood of ICMP echo requests. It carries no port, only raw echo traffic toward the victim.",
+    },
+  ];
 export type Experiment = {
-  source: string;
-  target: string;
-  client: string;
+  attackers: string[];
+  victims: string[];
+  traffic: TrafficKind[];
   rate: number;
   duration: number;
   baseline: number;
@@ -37,6 +62,121 @@ export type Experiment = {
   mitigation: boolean;
   confirm_isolated_lab: boolean;
 };
+
+export const emptyExperiment: Experiment = {
+  attackers: [],
+  victims: [],
+  traffic: ["syn"],
+  rate: 100,
+  duration: 20,
+  baseline: 30,
+  recovery: 30,
+  mitigation: false,
+  confirm_isolated_lab: false,
+};
+
+/**
+ * Accept both the current attacker/victim shape and the older
+ * source/target/client records a saved run may still carry, so replaying an
+ * experiment recorded before this change never crashes the workspace.
+ */
+export function normalizeExperiment(settings: unknown): Experiment {
+  const value = (settings ?? {}) as Record<string, any>;
+  if (Array.isArray(value.attackers) || Array.isArray(value.victims)) {
+    return {
+      ...emptyExperiment,
+      ...value,
+      attackers: value.attackers ?? [],
+      victims: value.victims ?? [],
+      traffic: value.traffic?.length ? value.traffic : ["syn"],
+    };
+  }
+  return {
+    ...emptyExperiment,
+    attackers: value.source ? [value.source] : [],
+    victims: value.target ? [value.target] : [],
+    traffic: ["syn"],
+    rate: value.rate ?? emptyExperiment.rate,
+    duration: value.duration ?? emptyExperiment.duration,
+    baseline: value.baseline ?? emptyExperiment.baseline,
+    recovery: value.recovery ?? emptyExperiment.recovery,
+    mitigation: !!value.mitigation,
+    confirm_isolated_lab: !!value.confirm_isolated_lab,
+  };
+}
+
+function subnetKey(ip: string): string {
+  const [addr, prefixText] = ip.split("/");
+  const prefix = Number(prefixText ?? 32);
+  const asInt =
+    addr.split(".").reduce((total, octet) => total * 256 + Number(octet), 0) >>>
+    0;
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  return `${(asInt & mask) >>> 0}/${prefix}`;
+}
+
+/**
+ * Mirror of the server's rule: legitimate clients are inferred, not chosen —
+ * every host in the victims' subnet that is neither an attacker nor a victim.
+ */
+export function legitimateClients(
+  topology: Topology | null,
+  experiment: Experiment,
+): string[] {
+  if (!topology) return [];
+  const involved = new Set([...experiment.attackers, ...experiment.victims]);
+  const victimSubnets = new Set(
+    experiment.victims
+      .map((name) => topology.hosts.find((h) => h.name === name))
+      .filter((host): host is Host => !!host)
+      .map((host) => subnetKey(host.ip)),
+  );
+  return topology.hosts
+    .filter((host) => !involved.has(host.name))
+    .filter((host) => victimSubnets.has(subnetKey(host.ip)))
+    .map((host) => host.name);
+}
+
+/** The switch a host is wired to, for the picker's "switch parent" column. */
+export function hostSwitch(
+  topology: Topology | null,
+  hostName: string,
+): string {
+  if (!topology) return "—";
+  const switches = new Set(topology.switches.map((s) => s.name));
+  for (const link of topology.links) {
+    if (link.source === hostName && switches.has(link.target))
+      return link.target;
+    if (link.target === hostName && switches.has(link.source))
+      return link.source;
+  }
+  return "—";
+}
+
+export type PhaseSpan = { state: string; start: number; end: number };
+
+/** Measured baseline/attack/recovery intervals, read straight off phase events. */
+export function phaseSpans(events: Observation[], endMs: number): PhaseSpan[] {
+  const phases = events.filter((e) => e.kind === "phase");
+  const spans: PhaseSpan[] = [];
+  for (let i = 0; i < phases.length; i++) {
+    const state = phases[i].data.state as string;
+    if (!["baseline", "attack", "recovery"].includes(state)) continue;
+    const start = Date.parse(phases[i].ts);
+    const end = i + 1 < phases.length ? Date.parse(phases[i + 1].ts) : endMs;
+    if (Number.isFinite(start) && end > start)
+      spans.push({ state, start, end });
+  }
+  return spans;
+}
+
+export function formatElapsed(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const hours = Math.floor(seconds / 3600);
+  const rest = `${pad(Math.floor((seconds % 3600) / 60))}:${pad(seconds % 60)}`;
+  return hours > 0 ? `${hours}:${rest}` : rest;
+}
 // Observation data is open-ended JSON; individual views only read documented keys.
 export type Observation = {
   run_id: string;
@@ -59,23 +199,75 @@ export type Status = {
   persistence_error?: boolean;
 };
 
+export type Notice = {
+  tone: "error" | "warning" | "success" | "info";
+  title: string;
+  detail?: string;
+  hint?: string;
+};
+
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+const statusMessages: Record<number, string> = {
+  400: "The workspace sent a request this lab could not read. Reload the page and try again.",
+  401: "Your workspace session has expired. Sign in again with your local access token.",
+  403: "This request came from an address the lab does not trust. Open the workspace at the address the lab printed when it started.",
+  404: "That record no longer exists. Refresh the history list to see what is still stored.",
+  409: "The lab is already busy with another run. Stop the current run before starting a new one.",
+  413: "That file is larger than the 1 MiB the workspace accepts.",
+  429: "Too many attempts in a short time. Wait a minute, then try again.",
+  500: "The lab hit an unexpected internal error. Check the runner logs for the details.",
+  503: "A lab service is not answering. Check that the runner and database containers are running.",
+};
+
+/** Read whatever the server sent, and never show the user a bare status code. */
+function explain(payload: unknown, status: number): string {
+  const detail = (payload as { detail?: unknown } | null)?.detail;
+  if (typeof detail === "string" && detail.trim()) return detail.trim();
+  if (Array.isArray(detail) && detail.length) {
+    return detail
+      .map((item) => {
+        const path = (item?.loc ?? [])
+          .filter((part: unknown) => part !== "body" && part !== "query")
+          .join(" · ");
+        return path ? `${path}: ${item?.msg}` : String(item?.msg ?? "");
+      })
+      .filter(Boolean)
+      .join(" ");
+  }
+  return (
+    statusMessages[status] ??
+    `The lab answered with an unexpected error (HTTP ${status}).`
+  );
+}
+
 export async function api<T>(
   path: string,
   body?: unknown,
   method?: string,
 ): Promise<T> {
-  const response = await fetch("/api" + path, {
-    method: method ?? (body === undefined ? "GET" : "POST"),
-    headers: body === undefined ? {} : { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    throw new Error(
-      typeof error.detail === "string"
-        ? error.detail
-        : "Please check the selected values. The server rejected this request.",
+  let response: Response;
+  try {
+    response = await fetch("/api" + path, {
+      method: method ?? (body === undefined ? "GET" : "POST"),
+      headers: body === undefined ? {} : { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch {
+    throw new ApiError(
+      0,
+      "The workspace cannot reach the local lab service. Check that the lab containers are still running, then try again.",
     );
+  }
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    throw new ApiError(response.status, explain(payload, response.status));
   }
   return response.json();
 }
@@ -89,6 +281,102 @@ export function download(name: string, data: unknown) {
   link.download = name;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function listed(names: string[]) {
+  const items = [...new Set(names)].sort();
+  const shown = items.slice(0, 6);
+  const text =
+    shown.length > 1
+      ? `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}`
+      : shown[0];
+  return items.length > 6 ? `${text}, and ${items.length - 6} more` : text;
+}
+
+/**
+ * Mirror of the server's topology rules, so the editor can warn about a broken
+ * network while it is still being drawn instead of only when a run is refused.
+ */
+export function topologyProblems(topology: Topology | null): string[] {
+  if (!topology) return [];
+  const problems: string[] = [];
+  const hostNames = new Set(topology.hosts.map((h) => h.name));
+  const nodes = [...topology.hosts, ...topology.switches].map((n) => n.name);
+  const repeated = (values: string[]) =>
+    values.filter((value, index) => values.indexOf(value) !== index);
+
+  const sameName = repeated(nodes);
+  if (sameName.length)
+    problems.push(
+      `The name ${listed(sameName)} is used by more than one device. Give every host and switch its own name.`,
+    );
+  const sameAddress = repeated(topology.hosts.map((h) => h.ip.split("/")[0]));
+  if (sameAddress.length)
+    problems.push(
+      `The address ${listed(sameAddress)} is used by more than one host. Give every host its own IPv4 address.`,
+    );
+  const sameDpid = repeated(topology.switches.map((s) => String(s.dpid)));
+  if (sameDpid.length)
+    problems.push(
+      `The datapath ID (DPID) ${listed(sameDpid)} is used by more than one switch. Every switch needs its own DPID.`,
+    );
+
+  const degree = new Map(nodes.map((name) => [name, 0]));
+  const parent = new Map(nodes.map((name) => [name, name]));
+  const root = (name: string): string => {
+    let current = name;
+    while (parent.get(current) !== current) current = parent.get(current)!;
+    return current;
+  };
+  for (const link of topology.links) {
+    const missing = [link.source, link.target].filter((n) => !parent.has(n));
+    if (missing.length) {
+      problems.push(
+        `Link ${link.id} points at ${listed(missing)}, which is not a device here. Delete the link or add the device back.`,
+      );
+      continue;
+    }
+    if (hostNames.has(link.source) && hostNames.has(link.target))
+      problems.push(
+        `Link ${link.id} joins two hosts (${link.source} and ${link.target}). Every host connects to a switch instead.`,
+      );
+    degree.set(link.source, degree.get(link.source)! + 1);
+    degree.set(link.target, degree.get(link.target)! + 1);
+    const [left, right] = [root(link.source), root(link.target)];
+    if (left === right)
+      problems.push(
+        `Link ${link.id} repeats a connection or closes a loop between ${link.source} and ${link.target}. This lab needs exactly one path between any two devices.`,
+      );
+    else parent.set(left, right);
+  }
+  const alone = [...hostNames].filter((name) => degree.get(name) === 0);
+  if (alone.length)
+    problems.push(
+      alone.length === 1
+        ? `${listed(alone)} has no link yet. Drag from its handle to a switch so it can reach the network.`
+        : `${listed(alone)} have no link yet. Drag from each handle to a switch so they can reach the network.`,
+    );
+  const crowded = [...hostNames].filter((name) => degree.get(name)! > 1);
+  if (crowded.length)
+    problems.push(
+      `${listed(crowded)} uses more than one link. A host here has a single network interface, so keep exactly one link per host.`,
+    );
+  const groups = new Map(nodes.map((name) => [name, root(name)]));
+  const distinct = new Set(groups.values());
+  if (nodes.length && distinct.size > 1) {
+    const size = (group: string) =>
+      [...groups.values()].filter((value) => value === group).length;
+    const largest = [...distinct].sort((a, b) => size(b) - size(a))[0];
+    // A host with no link at all was already reported; do not say it twice.
+    const stranded = nodes.filter(
+      (name) => groups.get(name) !== largest && !alone.includes(name),
+    );
+    if (stranded.length)
+      problems.push(
+        `${listed(stranded)} cannot reach the rest of the network. Add a link so every device belongs to one connected network.`,
+      );
+  }
+  return problems;
 }
 
 export function formatRate(value: number) {

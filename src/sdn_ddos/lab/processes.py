@@ -27,6 +27,7 @@ class ManagedProcess:
         line_handler: Optional[Callable[[str], None]] = None,
     ) -> None:
         self.id = str(uuid4())
+        self.node = node
         self.started_at = utc_now()
         self.ended_at: Optional[str] = None
         self.emit = emit
