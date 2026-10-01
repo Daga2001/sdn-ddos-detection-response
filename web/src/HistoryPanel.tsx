@@ -30,7 +30,15 @@ export function HistoryPanel({
         Replay uses recorded observations. It does not restart Mininet or send
         packets.
       </p>
-      <button disabled={busy} onClick={() => void task(refreshHistory)}>
+      <button
+        disabled={busy}
+        onClick={() =>
+          void task(
+            refreshHistory,
+            "The workspace could not refresh saved records.",
+          )
+        }
+      >
         Refresh records
       </button>
       <h3>Saved topologies</h3>
@@ -60,7 +68,12 @@ export function HistoryPanel({
           <div>
             <button
               disabled={busy || active || activeStates.includes(run.status)}
-              onClick={() => void task(() => openReplay(run.id))}
+              onClick={() =>
+                void task(
+                  () => openReplay(run.id),
+                  "This record could not be opened for replay.",
+                )
+              }
             >
               Replay
             </button>

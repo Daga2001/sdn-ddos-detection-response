@@ -1,4 +1,5 @@
 import copy
+import re
 
 import pytest
 
@@ -101,3 +102,77 @@ def test_miniedit_link_properties_are_editable_and_no_fraction_is_lost():
     topology.links[0].bandwidth_mbps = 0.5
     with pytest.raises(ValueError, match="whole-number"):
         export_miniedit(topology)
+
+
+def test_miniedit_round_trip_keeps_the_project_name_and_notes():
+    topology = presets()[1]
+    exported = export_miniedit(topology)
+    assert exported["lab_name"] == topology.name
+    restored, warnings = import_miniedit(exported)
+    assert restored.name == topology.name
+    assert restored.description == topology.description
+    assert not warnings
+
+
+def test_unnamed_miniedit_files_still_import():
+    data = export_miniedit(presets()[2])
+    del data["lab_name"], data["lab_description"]
+    restored, _ = import_miniedit(data)
+    assert restored.name == "Imported MiniEdit network"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    [
+        ("unlinked", "h9 has no link yet"),
+        ("duplicate_name", "the name h1 is used by more than one device"),
+        ("duplicate_address", "the address 10.0.0.1 is used by more than one host"),
+        ("duplicate_dpid", "the datapath ID (DPID) 1 is used by more than one switch"),
+        ("host_to_host", "joins two hosts"),
+        ("loop", "repeats an existing connection or closes a loop"),
+        ("split", "cannot reach the rest of the network"),
+        ("public", "hosts must use private IPv4 addresses"),
+        ("off_limits", "outside the networks this lab may touch"),
+    ],
+)
+def test_rejections_name_the_device_and_the_fix(mutation, expected):
+    """A student must read what is wrong, not that something is wrong."""
+
+    data = presets()[2].model_dump()
+    blank = {"x": 0, "y": 0}
+    wire = {"bandwidth_mbps": None, "delay_ms": 0, "loss_percent": 0}
+    if mutation == "unlinked":
+        data["hosts"].append({"name": "h9", "ip": "10.0.0.9/24", "position": blank})
+    elif mutation == "duplicate_name":
+        data["hosts"][1]["name"] = "h1"
+    elif mutation == "duplicate_address":
+        data["hosts"][1]["ip"] = "10.0.0.1/24"
+    elif mutation == "duplicate_dpid":
+        data["switches"].append({"name": "s2", "dpid": 1, "position": blank})
+        data["links"].append({"id": "join", "source": "s1", "target": "s2", **wire})
+    elif mutation == "host_to_host":
+        data["links"].append({"id": "peer", "source": "h1", "target": "h2", **wire})
+    elif mutation == "loop":
+        data["links"].append({"id": "again", "source": "s1", "target": "h1", **wire})
+    elif mutation == "split":
+        data["switches"].append({"name": "s2", "dpid": 2, "position": blank})
+    elif mutation == "public":
+        data["hosts"][0]["ip"] = "8.8.8.8/24"
+    else:
+        # Private, so the field accepts it, but outside SDN_ALLOWED_TARGET_CIDRS.
+        data["hosts"][0]["ip"] = "192.168.1.5/24"
+
+    if mutation == "off_limits":
+        topology = Topology.model_validate(data)
+        with pytest.raises(ValueError, match=re.escape(expected)):
+            topology.validate_targets()
+    else:
+        with pytest.raises(ValueError, match=re.escape(expected)):
+            Topology.model_validate(data)
+
+
+def test_miniedit_import_names_the_node_that_cannot_be_read():
+    data = export_miniedit(presets()[2])
+    del data["hosts"][1]["opts"]["ip"]
+    with pytest.raises(ValueError, match="h2 has no IP address"):
+        import_miniedit(data)

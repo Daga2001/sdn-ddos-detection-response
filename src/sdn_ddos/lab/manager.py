@@ -14,9 +14,10 @@ from sdn_ddos.lab.contracts import (
     Capture,
     Diagnostic,
     StartRequest,
+    probe_pairs,
     validate_experiment,
 )
-from sdn_ddos.lab.events import EventJournal
+from sdn_ddos.lab.events import EventJournal, utc_now
 from sdn_ddos.lab.repository import Repository
 from sdn_ddos.lab.runtime import MininetRuntime
 
@@ -41,6 +42,7 @@ class LabManager:
         self.stop_event = threading.Event()
         self.lock = threading.RLock()
         self.thread: Optional[threading.Thread] = None
+        self.probe_index = 0
 
     def status(self) -> dict[str, Any]:
         with self.lock:
@@ -105,11 +107,20 @@ class LabManager:
     def _observe(self, seconds: float, request: StartRequest) -> None:
         deadline = time.monotonic() + seconds
         next_probe = 0.0
+        pairs = (
+            probe_pairs(request.topology, request.experiment)
+            if request.experiment
+            else []
+        )
         while not self.stop_event.is_set() and time.monotonic() < deadline:
             tick = time.monotonic()
             self.runtime.sample()
-            if request.experiment and tick >= next_probe:
-                self.runtime.probe(request.experiment.client, request.experiment.target)
+            if pairs and tick >= next_probe:
+                # One probe per interval, cycling client→victim pairs, so probing
+                # cost never grows with the size of the experiment.
+                client, target = pairs[self.probe_index % len(pairs)]
+                self.probe_index += 1
+                self.runtime.probe(client, target)
                 next_probe = tick + 3
             self.stop_event.wait(
                 max(0, min(1 - (time.monotonic() - tick), deadline - time.monotonic()))
@@ -135,7 +146,7 @@ class LabManager:
                 self.journal.emit("session_limit", {"seconds": 3600})
                 self._observe(3600, request)
             else:
-                self.runtime.serve(experiment.target)
+                self.runtime.serve(experiment.victims)
                 self._phase("baseline")
                 self._observe(experiment.baseline, request)
                 if self.stop_event.is_set():
@@ -144,36 +155,55 @@ class LabManager:
                 if self.stop_event.is_set():
                     return
                 attack_deadline = time.monotonic() + experiment.duration
-                process = self.runtime.attack(experiment)
+                processes = self.runtime.attack(experiment)
                 self.journal.emit(
                     "attack_started",
-                    dict(experiment.model_dump(), observed_at=process.started_at),
+                    dict(
+                        experiment.model_dump(),
+                        observed_at=min(
+                            (p.started_at for p in processes), default=utc_now()
+                        ),
+                    ),
                 )
                 try:
                     self._observe(max(0, attack_deadline - time.monotonic()), request)
                 finally:
-                    process.close()
-                    self.runtime.attack_process = None
+                    for process in processes:
+                        process.close()
+                    self.runtime.attack_processes = []
                     self.journal.emit(
                         "attack_stopped",
                         {
-                            "source": experiment.source,
-                            "target": experiment.target,
-                            "observed_at": process.ended_at,
+                            "sources": experiment.attackers,
+                            "targets": experiment.victims,
+                            "observed_at": max(
+                                (p.ended_at for p in processes if p.ended_at),
+                                default=utc_now(),
+                            ),
                         },
                     )
-                if (
-                    process.process.returncode not in (0, 124, -15)
-                    and not self.stop_event.is_set()
-                ):
-                    raise RuntimeError("traffic generator failed")
+                # We deliberately tear the generators down at the deadline, so a
+                # signal death (negative code) or the bounded `timeout` (124/137)
+                # is expected. Only a positive, non-124 exit is the generator
+                # reporting a real error of its own.
+                broken = [
+                    p
+                    for p in processes
+                    if (p.process.returncode or 0) > 0
+                    and p.process.returncode not in (124, 137, 143)
+                ]
+                if broken and not self.stop_event.is_set():
+                    raise RuntimeError(
+                        f"traffic generator on {broken[0].node} exited with "
+                        f"code {broken[0].process.returncode}"
+                    )
                 if self.stop_event.is_set():
                     return
                 self._phase("recovery")
                 self._observe(experiment.recovery, request)
                 if not self.stop_event.is_set():
                     result = "completed"
-        except Exception:
+        except Exception as error:
             LOGGER.exception("Lab run failed")
             result = "failed"
             with contextlib.suppress(Exception):
@@ -181,7 +211,10 @@ class LabManager:
                     "error",
                     {
                         "message": "The lab stopped because a component failed. "
-                        "Check commands and service logs; this run is not successful."
+                        "Check commands and service logs; this run is not successful.",
+                        # The exact reason, shown to the local operator so a failed
+                        # run can be debugged without digging through the log.
+                        "detail": str(error) or error.__class__.__name__,
                     },
                 )
         finally:

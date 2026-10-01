@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+from collections.abc import Iterable
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -15,6 +16,25 @@ from sdn_ddos.topology.spec import ACCESS_SWITCHES, CORE_SWITCH, HOSTS
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
+def _repeated(values: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    repeats: list[str] = []
+    for value in values:
+        if value in seen and value not in repeats:
+            repeats.append(value)
+        seen.add(value)
+    return repeats
+
+
+def _listed(values: Iterable[str]) -> str:
+    """Join names the way a sentence would, and stop before a wall of text."""
+
+    items = sorted(set(values))
+    shown = items[:6]
+    text = ", ".join(shown[:-1]) + " and " + shown[-1] if len(shown) > 1 else shown[0]
+    return text + f", and {len(items) - 6} more" if len(items) > 6 else text
 
 
 class Position(StrictModel):
@@ -70,14 +90,26 @@ class Topology(StrictModel):
     @model_validator(mode="after")
     def graph_is_supported(self) -> Self:
         names = [host.name for host in self.hosts] + [s.name for s in self.switches]
-        if len(set(names)) != len(names):
-            raise ValueError("node names must be unique")
-        if len({host.ip.split("/")[0] for host in self.hosts}) != len(self.hosts):
-            raise ValueError("host addresses must be unique")
-        if len({switch.dpid for switch in self.switches}) != len(self.switches):
-            raise ValueError("switch DPIDs must be unique")
-        if len({link.id for link in self.links}) != len(self.links):
-            raise ValueError("link identifiers must be unique")
+        if repeats := _repeated(names):
+            raise ValueError(
+                f"the name {_listed(repeats)} is used by more than one device; "
+                "give every host and switch its own name"
+            )
+        if repeats := _repeated(host.ip.split("/")[0] for host in self.hosts):
+            raise ValueError(
+                f"the address {_listed(repeats)} is used by more than one host; "
+                "give every host its own IPv4 address"
+            )
+        if repeats := _repeated(str(switch.dpid) for switch in self.switches):
+            raise ValueError(
+                f"the datapath ID (DPID) {_listed(repeats)} is used by more than "
+                "one switch; every switch needs its own DPID"
+            )
+        if repeats := _repeated(link.id for link in self.links):
+            raise ValueError(
+                f"the link identifier {_listed(repeats)} appears more than once; "
+                "every link needs its own identifier"
+            )
         host_names = {host.name for host in self.hosts}
         degree = dict.fromkeys(names, 0)
         parent = {name: name for name in names}
@@ -88,39 +120,78 @@ class Topology(StrictModel):
             return name
 
         for link in self.links:
-            if link.source not in parent or link.target not in parent:
-                raise ValueError("link endpoint does not exist")
+            if unknown := [n for n in (link.source, link.target) if n not in parent]:
+                raise ValueError(
+                    f"link {link.id} points at {_listed(unknown)}, which is not a "
+                    "device in this topology; delete the link or add the device"
+                )
             if link.source in host_names and link.target in host_names:
-                raise ValueError("hosts must connect to switches")
+                raise ValueError(
+                    f"link {link.id} joins two hosts ({link.source} and "
+                    f"{link.target}); every host connects to a switch instead"
+                )
             left, right = root(link.source), root(link.target)
             if left == right:
-                raise ValueError("switching loops and duplicate links are unsupported")
+                raise ValueError(
+                    f"link {link.id} between {link.source} and {link.target} repeats "
+                    "an existing connection or closes a loop; this lab needs exactly "
+                    "one path between any two devices"
+                )
             parent[left] = right
             degree[link.source] += 1
             degree[link.target] += 1
-        if any(degree[name] != 1 for name in host_names):
-            raise ValueError("each host needs exactly one link")
-        if len({root(name) for name in names}) != 1:
-            raise ValueError("connect every node into one network")
+        if alone := sorted(name for name in host_names if degree[name] == 0):
+            raise ValueError(
+                f"{_listed(alone)} has no link yet; drag from a host handle to a "
+                "switch so every host reaches the network"
+                if len(alone) == 1
+                else f"{_listed(alone)} have no link yet; drag from each host "
+                "handle to a switch so every host reaches the network"
+            )
+        if crowded := sorted(name for name in host_names if degree[name] > 1):
+            raise ValueError(
+                f"{_listed(crowded)} uses more than one link; a host here has a "
+                "single network interface, so keep exactly one link per host"
+            )
+        groups = {name: root(name) for name in names}
+        if len(set(groups.values())) != 1:
+            largest = max(
+                set(groups.values()),
+                key=lambda group: sum(1 for value in groups.values() if value == group),
+            )
+            stranded = sorted(n for n, group in groups.items() if group != largest)
+            raise ValueError(
+                f"{_listed(stranded)} cannot reach the rest of the network; add a "
+                "link so all devices belong to one connected network"
+            )
         return self
 
     def validate_targets(self) -> None:
         networks = ControllerSettings.from_env().allowed_target_networks
         for host in self.hosts:
-            validate_lab_target(host.ip.split("/")[0], networks)
+            address = host.ip.split("/")[0]
+            try:
+                validate_lab_target(address, networks)
+            except ValueError as error:
+                allowed = ", ".join(str(network) for network in networks)
+                raise ValueError(
+                    f"host {host.name} uses {address}, which is outside the "
+                    f"networks this lab may touch ({allowed}); change the address "
+                    "or widen SDN_ALLOWED_TARGET_CIDRS"
+                ) from error
 
 
 def presets() -> list[Topology]:
     switches = [
-        Switch(name=name, dpid=i + 1, position=Position(x=200 + i * 260, y=250))
+        Switch(name=name, dpid=i + 1, position=Position(x=200 + i * 300, y=250))
         for i, name in enumerate(ACCESS_SWITCHES)
     ]
-    switches.append(Switch(name=CORE_SWITCH, dpid=4, position=Position(x=460, y=90)))
+    switches.append(Switch(name=CORE_SWITCH, dpid=4, position=Position(x=500, y=90)))
     hosts = [
         Host(
             name=host.name,
             ip=host.ip,
-            position=Position(x=80 + (i // 3) * 260 + (i % 3) * 85, y=440),
+            position=Position(x=95 + (i // 3) * 300 + (i % 3) * 105, y=440),
         )
         for i, host in enumerate(HOSTS)
     ]
@@ -168,7 +239,7 @@ def presets() -> list[Topology]:
                 name=f"h{i}",
                 ip=f"10.0.0.{i}/24",
                 position=Position(
-                    x=120 + ((i - 1) // 2) * 250 + ((i - 1) % 2) * 100, y=360
+                    x=125 + ((i - 1) // 2) * 250 + ((i - 1) % 2) * 105, y=360
                 ),
             )
             for i in range(1, 7)
@@ -204,6 +275,8 @@ def export_miniedit(topology: Topology) -> dict[str, Any]:
         )
     return {
         "version": "2",
+        "lab_name": topology.name,
+        "lab_description": topology.description,
         "application": {
             "openFlowVersions": {
                 "ovsOf10": "0",
@@ -214,8 +287,19 @@ def export_miniedit(topology: Topology) -> dict[str, Any]:
         },
         "controllers": [
             {
-                "x": "460",
-                "y": "0",
+                # Where the workspace draws it: centred above the switch row.
+                "x": str(
+                    round(
+                        (
+                            min(s.position.x for s in topology.switches)
+                            + max(s.position.x for s in topology.switches)
+                        )
+                        / 2
+                    )
+                ),
+                "y": str(
+                    max(0, round(min(s.position.y for s in topology.switches) - 135))
+                ),
                 "opts": {
                     "hostname": "c0",
                     "controllerType": "remote",
@@ -269,7 +353,10 @@ def export_miniedit(topology: Topology) -> dict[str, Any]:
 
 def import_miniedit(data: dict[str, Any]) -> tuple[Topology, list[str]]:
     if str(data.get("version")) != "2":
-        raise ValueError("only MiniEdit version 2 is supported")
+        raise ValueError(
+            "this is not a MiniEdit version 2 file; save it again from MiniEdit, "
+            "or import project JSON exported by this workspace"
+        )
     warnings: list[str] = []
     hosts: list[Host] = []
     switches: list[Switch] = []
@@ -282,44 +369,73 @@ def import_miniedit(data: dict[str, Any]) -> tuple[Topology, list[str]]:
         ("host", data.get("hosts", [])),
         ("switch", data.get("switches", [])),
     ):
-        if not isinstance(entries, list) or len(entries) > 32:
-            raise ValueError("invalid or oversized MiniEdit node collection")
+        if not isinstance(entries, list):
+            raise ValueError(f"the “{kind}s” section of this file is not a list")
+        if len(entries) > 32:
+            raise ValueError(
+                f"this file holds {len(entries)} {kind}s; the lab supports at most 32"
+            )
         for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("opts"), dict):
+                raise ValueError(f"a {kind} in this file has no readable settings")
             opts = dict(entry["opts"])
+            label = opts.get("hostname") or f"{kind} {entry.get('number', '?')}"
             harmless = (
                 {"sched": "host"} if kind == "host" else {"sflow": "0", "netflow": "0"}
             )
             for key, default in harmless.items():
                 if opts.get(key) == default:
                     del opts[key]
-            if any(
-                value not in (None, "", [], {})
+            extra = [
+                key
                 for key, value in opts.items()
-                if key not in allowed[kind]
-            ):
+                if key not in allowed[kind] and value not in (None, "", [], {})
+            ]
+            if extra:
                 raise ValueError(
-                    "unsupported MiniEdit node settings; remove startup commands, "
-                    "routes, external interfaces, or other custom settings"
+                    f"{label} uses the unsupported MiniEdit setting "
+                    f"“{extra[0]}”; this lab runs plain hosts and OVS switches, so "
+                    "remove startup commands, routes, external interfaces, and "
+                    "other custom settings before importing"
                 )
+            if "x" not in entry or "y" not in entry:
+                raise ValueError(f"{label} has no canvas position in this file")
             position = Position(x=float(entry["x"]), y=float(entry["y"]))
-            name = opts.get("hostname", f"{kind[0]}{entry['number']}")
+            name = opts.get("hostname", f"{kind[0]}{entry.get('number', '')}")
             if kind == "host":
+                if not opts.get("ip"):
+                    raise ValueError(
+                        f"{label} has no IP address; give every MiniEdit host a "
+                        "private address such as 10.0.0.1/24"
+                    )
                 hosts.append(Host(name=name, ip=opts["ip"], position=position))
             else:
                 if opts.get("switchType", "ovs") not in ("ovs", "default"):
-                    raise ValueError("unsupported MiniEdit switch type")
+                    raise ValueError(
+                        f"{label} is a “{opts['switchType']}” switch; this lab runs "
+                        "Open vSwitch datapaths only"
+                    )
+                digits = "".join(re.findall(r"\d", name))
+                if not opts.get("dpid") and not digits:
+                    raise ValueError(
+                        f"{label} has no datapath ID and no number in its name; "
+                        "set a DPID in MiniEdit or rename the switch to s1, s2, …"
+                    )
                 switches.append(
                     Switch(
                         name=name,
                         dpid=int(str(opts["dpid"]).replace(":", ""), 16)
                         if opts.get("dpid")
-                        else int("".join(re.findall(r"\d", name))),
+                        else int(digits),
                         position=position,
                     )
                 )
     controllers = data.get("controllers", [])
     if len(controllers) != 1:
-        raise ValueError("exactly one MiniEdit controller is supported")
+        raise ValueError(
+            f"this file declares {len(controllers)} controllers; the lab runs one "
+            "managed Ryu controller, so keep exactly one controller in MiniEdit"
+        )
     controller = dict(controllers[0]["opts"])
     if controller.get("controllerProtocol") == "tcp":
         del controller["controllerProtocol"]
@@ -336,12 +452,17 @@ def import_miniedit(data: dict[str, Any]) -> tuple[Topology, list[str]]:
         warnings.append(
             "Controller settings will be mapped to this lab's managed Ryu controller."
         )
-    if any(
-        key not in {"hostname", "controllerType", "remoteIP", "remotePort"}
-        and value not in (None, "", [], {})
+    extra_controller = [
+        key
         for key, value in controller.items()
-    ):
-        raise ValueError("unsupported MiniEdit controller settings")
+        if key not in {"hostname", "controllerType", "remoteIP", "remotePort"}
+        and value not in (None, "", [], {})
+    ]
+    if extra_controller:
+        raise ValueError(
+            f"the controller uses the unsupported setting “{extra_controller[0]}”; "
+            "this lab always supplies its own Ryu controller"
+        )
     application = data.get("application", {})
     if any(
         key != "openFlowVersions" and value not in (None, "", [], {})
@@ -353,11 +474,18 @@ def import_miniedit(data: dict[str, Any]) -> tuple[Topology, list[str]]:
         )
     for entry in data.get("links", []):
         opts = entry.get("opts", {})
-        if set(opts) - {"bw", "delay", "loss", "lab_id"}:
-            raise ValueError("unsupported MiniEdit link settings")
+        if unsupported := sorted(set(opts) - {"bw", "delay", "loss", "lab_id"}):
+            raise ValueError(
+                f"the link {entry.get('src', '?')} ↔ {entry.get('dest', '?')} uses "
+                f"the unsupported setting “{unsupported[0]}”; this lab reads "
+                "bandwidth, delay, and loss only"
+            )
         delay = str(opts.get("delay", "0ms"))
         if not delay.endswith("ms"):
-            raise ValueError("MiniEdit link delay must use milliseconds")
+            raise ValueError(
+                f"the link {entry.get('src', '?')} ↔ {entry.get('dest', '?')} sets a "
+                f"delay of “{delay}”; write link delays in milliseconds, like 5ms"
+            )
         links.append(
             Link(
                 id=opts.get("lab_id", f"link-{len(links) + 1}"),
@@ -368,6 +496,14 @@ def import_miniedit(data: dict[str, Any]) -> tuple[Topology, list[str]]:
                 loss_percent=opts.get("loss", 0),
             )
         )
+    name = data.get("lab_name")
+    description = data.get("lab_description")
     return Topology(
-        name="Imported MiniEdit network", hosts=hosts, switches=switches, links=links
+        name=name[:80]
+        if isinstance(name, str) and name.strip()
+        else "Imported MiniEdit network",
+        description=description[:1000] if isinstance(description, str) else "",
+        hosts=hosts,
+        switches=switches,
+        links=links,
     ), warnings

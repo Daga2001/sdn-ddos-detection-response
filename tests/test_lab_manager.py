@@ -55,7 +55,7 @@ def test_database_failure_stops_runtime_and_marks_failed():
 
 def test_full_experiment_phases_and_read_only_replay(monkeypatch):
     class ExperimentRuntime(FakeRuntime):
-        def serve(self, target):
+        def serve(self, targets):
             pass
 
         def attack(self, experiment):
@@ -63,7 +63,7 @@ def test_full_experiment_phases_and_read_only_replay(monkeypatch):
             self.process.process.returncode = 0
             self.process.started_at = "2026-01-01T00:00:00+00:00"
             self.process.ended_at = "2026-01-01T00:00:01+00:00"
-            return self.process
+            return [self.process]
 
         def probe(self, client, target):
             self.emit("service", {"success": True})
@@ -78,7 +78,7 @@ def test_full_experiment_phases_and_read_only_replay(monkeypatch):
     request = StartRequest(
         topology=presets()[2],
         experiment=Experiment(
-            source="h1", target="h2", client="h3", confirm_isolated_lab=True
+            attackers=["h1"], victims=["h2"], confirm_isolated_lab=True
         ),
     )
     identifier = manager.start(request)
@@ -95,6 +95,57 @@ def test_full_experiment_phases_and_read_only_replay(monkeypatch):
         manager.diagnostic(Diagnostic(action="interfaces", node="h1"))
     with pytest.raises(ValueError):
         manager.capture(Capture(link_id="link-1"))
+
+
+@pytest.mark.parametrize(
+    "code, final",
+    [
+        (0, "completed"),
+        (-9, "completed"),
+        (-15, "completed"),
+        (124, "completed"),
+        (137, "completed"),
+        (1, "failed"),
+        (127, "failed"),
+    ],
+)
+def test_generator_exit_code_decides_pass_or_fail(monkeypatch, code, final):
+    class ExperimentRuntime(FakeRuntime):
+        def serve(self, targets):
+            pass
+
+        def attack(self, experiment):
+            process = MagicMock()
+            process.node = "h1"
+            process.process.returncode = code
+            process.started_at = "2026-01-01T00:00:00+00:00"
+            process.ended_at = "2026-01-01T00:00:01+00:00"
+            return [process]
+
+        def probe(self, client, target):
+            pass
+
+    repository = MemoryRepository()
+    manager = LabManager(repository, ExperimentRuntime)
+    original = manager._observe
+    monkeypatch.setattr(
+        manager, "_observe", lambda seconds, request: original(0.01, request)
+    )
+    identifier = manager.start(
+        StartRequest(
+            topology=presets()[2],
+            experiment=Experiment(
+                attackers=["h1"], victims=["h2"], confirm_isolated_lab=True
+            ),
+        )
+    )
+    wait_for(manager, {final})
+    events = repository.events(identifier, 0)
+    if final == "failed":
+        error = next(e for e in events if e["kind"] == "error")
+        # The exact reason is recorded so a failed run can be debugged.
+        assert f"code {code}" in error["data"]["detail"]
+        assert error["data"]["detail"] != error["data"]["message"]
 
 
 def test_cleanup_failure_blocks_new_lab():

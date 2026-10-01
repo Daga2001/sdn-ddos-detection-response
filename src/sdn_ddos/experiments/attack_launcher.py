@@ -26,22 +26,40 @@ from sdn_ddos.storage import create_metrics_store
 MAX_PACKETS_PER_SECOND = 1000
 MAX_DURATION_SECONDS = 300
 
+# The flows the proposal's DDoS scenarios call for. Every kind stays bounded the
+# same way; only the protocol the packets carry changes.
+TRAFFIC_KINDS = ("syn", "udp", "icmp")
+_TRAFFIC_MODE = {"syn": ["--syn"], "udp": ["--udp"], "icmp": ["--icmp"]}
 
-def build_hping_command(target: str, port: int, rate: int, duration: int) -> List[str]:
-    """Build a bounded hping3 command with a deterministic packet count."""
 
+def build_hping_command(
+    target: str, port: int, rate: int, duration: int, kind: str = "syn"
+) -> List[str]:
+    """Build a bounded hping3 command with a deterministic packet count.
+
+    ``kind`` selects the flow under test — a TCP SYN flood, a UDP flood, or an
+    ICMP echo flood. Whatever the protocol, the generator keeps the same hard
+    ceiling: a fixed ``--count`` of ``rate * duration`` packets sent at a fixed
+    interval, never ``--flood``. The destination port only applies to the
+    transport floods; an ICMP echo flood has none.
+    """
+
+    if kind not in TRAFFIC_KINDS:
+        raise ConfigurationError(
+            f"traffic kind must be one of {', '.join(TRAFFIC_KINDS)}"
+        )
     interval_microseconds = max(1, round(1_000_000 / rate))
-    return [
-        "hping3",
-        "--syn",
-        "--destport",
-        str(port),
+    command = ["hping3", *_TRAFFIC_MODE[kind]]
+    if kind != "icmp":
+        command += ["--destport", str(port)]
+    command += [
         "--interval",
         f"u{interval_microseconds}",
         "--count",
         str(rate * duration),
         target,
     ]
+    return command
 
 
 def build_parser() -> argparse.ArgumentParser:
