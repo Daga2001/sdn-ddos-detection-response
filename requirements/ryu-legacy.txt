@@ -4,7 +4,7 @@
 # Eventlet 0.30.2 declares dnspython<2; 2.2.1 made this set unresolvable.
 setuptools<58
 dnspython==1.16.0
-eventlet==0.30.2
+eventlet==0.41.2
 ryu==4.34
 # Match the runner's OVS 2.17 series; later OVS Python builds need newer tooling.
 ovs==2.17.12
