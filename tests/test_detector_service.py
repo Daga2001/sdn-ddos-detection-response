@@ -1,0 +1,298 @@
+from typing import Any, Dict, List
+
+import pytest
+import requests
+from fastapi.testclient import TestClient
+
+from sdn_ddos.detection.entropy import FlowObservation
+from sdn_ddos.detection.entropy_client import RemoteEntropy, fetch_remote_config
+from sdn_ddos.detection.llm_api import OllamaSettings
+from sdn_ddos.detection.service import create_app
+
+KEY = {"X-Api-Key": "secret"}
+SAMPLE = {
+    "packet_count": 2,
+    "byte_count": 120,
+    "pktrate": 38461.54,
+    "byterate": 2000000.0,
+    "ip_proto": 6,
+    "l4_dst_port": 8080,
+}
+
+
+class FakeResponse:
+    def __init__(self, payload: Dict[str, Any], status: int = 200) -> None:
+        self._payload, self.status_code = payload, status
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise requests.HTTPError(str(self.status_code))
+
+    def json(self) -> Dict[str, Any]:
+        return self._payload
+
+
+class FakeOllama:
+    """Stands in for Ollama: lists models and always answers 'DDoS'."""
+
+    def __init__(self, models: List[str], up: bool = True) -> None:
+        self.models, self.up = models, up
+        self.generate_models: List[str] = []
+        self.prompts: List[str] = []
+
+    def get(self, url: str, timeout: float) -> FakeResponse:
+        if not self.up:
+            raise requests.ConnectionError("ollama down")
+        return FakeResponse({"models": [{"name": name} for name in self.models]})
+
+    def post(self, url: str, json: Dict[str, Any], timeout: float) -> FakeResponse:
+        self.generate_models.append(json["model"])
+        self.prompts.append(json["prompt"])
+        verdict = '{"comparacion": "x", "is_ddos": true, "confidence": 0.9}'
+        return FakeResponse({"response": verdict})
+
+
+def client(
+    mode: str = "llm", ollama: Any = None, api_key: str = "secret"
+) -> TestClient:
+    settings = OllamaSettings(
+        base_url="http://ollama", model="llama3.2:3b", api_key=api_key
+    )
+    fake = ollama or FakeOllama(["llama3.2:3b", "qwen2.5:3b"])
+    return TestClient(create_app(settings, mode=mode, http=fake))
+
+
+def window(src_count: int, rate: float = 100.0) -> List[Dict[str, Any]]:
+    return [
+        {"src": f"10.0.0.{i + 1}", "dst": "10.0.0.50", "weight": rate}
+        for i in range(src_count)
+    ]
+
+
+def test_requires_authentication_on_every_protected_route() -> None:
+    api = client()
+    assert api.get("/config").status_code == 401
+    assert api.get("/models").status_code == 401
+    assert api.post("/predict", json={"samples": [SAMPLE]}).status_code == 401
+    assert (
+        api.post("/entropy/observe", json={"run_id": "r", "flows": []}).status_code
+        == 401
+    )
+    assert client(api_key="").get("/config", headers=KEY).status_code == 503
+
+
+def test_health_is_mode_aware_and_reports_missing_model() -> None:
+    assert client("llm").get("/health").json()["status"] == "ready"
+    down = client("llm", FakeOllama([], up=False)).get("/health").json()
+    assert down["status"] == "not_ready" and down["model_loaded"] is False
+    entropy = client("entropy", FakeOllama([], up=False)).get("/health").json()
+    assert entropy["status"] == "ready" and entropy["model_loaded"] is None
+    assert client("llm", api_key="").get("/health").json()["status"] == "not_ready"
+
+
+def test_predict_uses_llm_only_in_llm_mode() -> None:
+    api = client("llm")
+    response = api.post("/predict", json={"samples": [SAMPLE]}, headers=KEY)
+    assert response.status_code == 200
+    item = response.json()["predictions"][0]
+    assert item["pred_label"] == 1 and item["prob_ddos"] == 0.9
+    assert api.post("/predict", json={"samples": []}, headers=KEY).status_code == 422
+    other = client("entropy").post("/predict", json={"samples": [SAMPLE]}, headers=KEY)
+    assert other.status_code == 409
+
+
+def test_entropy_route_is_refused_outside_entropy_mode() -> None:
+    body = {"run_id": "r", "flows": window(2)}
+    assert (
+        client("llm").post("/entropy/observe", json=body, headers=KEY).status_code
+        == 409
+    )
+    assert (
+        client("off").post("/entropy/observe", json=body, headers=KEY).status_code
+        == 409
+    )
+
+
+def test_put_config_switches_mode_and_model_and_validates() -> None:
+    fake = FakeOllama(["llama3.2:3b", "qwen2.5:3b"])
+    api = client("llm", fake)
+    ok = api.put(
+        "/config", json={"model": "qwen2.5:3b", "mode": "entropy"}, headers=KEY
+    )
+    assert ok.json() == {
+        "mode": "entropy",
+        "model": "qwen2.5:3b",
+        "prompt": "insdn",
+        "response": "block",
+        "dry_run": False,
+    }
+    assert api.get("/health").json()["mode"] == "entropy"
+    assert api.get("/models", headers=KEY).json()["active"] == "qwen2.5:3b"
+    missing = api.put("/config", json={"model": "nope"}, headers=KEY)
+    assert missing.status_code == 422 and "qwen2.5:3b" in missing.json()["detail"]
+    assert api.put("/config", json={"mode": "bogus"}, headers=KEY).status_code == 422
+    fake.up = False
+    assert api.put("/config", json={"model": "x"}, headers=KEY).status_code == 502
+    assert api.get("/models", headers=KEY).status_code == 502
+
+
+def test_warm_model_loads_the_active_model_and_survives_failures() -> None:
+    fake = FakeOllama(["llama3.2:3b", "qwen2.5:3b"])
+    api = client("llm", fake)
+    api.put("/config", json={"model": "qwen2.5:3b"}, headers=KEY)
+    service = api.app.state.service  # type: ignore[attr-defined]
+    assert service.warm_model() is True
+    assert fake.generate_models == ["qwen2.5:3b"]
+
+    class Broken(FakeOllama):
+        def post(self, url: str, json: Dict[str, Any], timeout: float) -> FakeResponse:
+            raise requests.ConnectionError("down")
+
+    broken = client("llm", Broken(["llama3.2:3b"])).app.state.service  # type: ignore[attr-defined]
+    assert broken.warm_model() is False
+
+
+def test_warm_runs_only_in_llm_mode_when_enabled() -> None:
+    settings = OllamaSettings(base_url="http://ollama", api_key="secret")
+    fake = FakeOllama(["llama3.2:3b"])
+    from sdn_ddos.detection.service import DetectorService
+
+    disabled = DetectorService(settings, "llm", fake, warm=False)
+    disabled.maybe_warm(force=True)
+    entropy = DetectorService(settings, "entropy", fake, warm=True)
+    entropy.maybe_warm(force=True)
+    assert fake.generate_models == []
+
+
+def test_selected_model_is_the_one_sent_to_ollama() -> None:
+    fake = FakeOllama(["llama3.2:3b", "qwen2.5:3b"])
+    api = client("llm", fake)
+    api.put("/config", json={"model": "qwen2.5:3b"}, headers=KEY)
+    api.post("/predict", json={"samples": [SAMPLE]}, headers=KEY)
+    assert fake.generate_models == ["qwen2.5:3b"]
+
+
+def test_entropy_state_is_isolated_per_run_and_confirms_an_attack() -> None:
+    api = client("entropy")
+
+    def observe(run_id: str, flows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        response = api.post(
+            "/entropy/observe", json={"run_id": run_id, "flows": flows}, headers=KEY
+        )
+        assert response.status_code == 200
+        return response.json()
+
+    for _ in range(8):
+        assert observe("run-a", window(6))["details"]["reason"] == "warmup"
+    # run-b has its own state, so it is still warming up
+    assert observe("run-b", window(6))["details"]["reason"] == "warmup"
+    attack = [{"src": "10.0.0.9", "dst": "10.0.0.50", "weight": 5000.0}]
+    first = observe("run-a", attack)
+    assert first["details"]["suspicious"] and not first["confirmed"]
+    second = observe("run-a", attack)
+    assert second["confirmed"] and second["candidates"] == ["10.0.0.9"]
+    assert second["target_dst"] == "10.0.0.50"
+    assert second["consecutive_windows"] == 2
+
+
+def test_entropy_rejects_malformed_payloads() -> None:
+    api = client("entropy")
+    bad_run = {"run_id": "../x", "flows": []}
+    assert api.post("/entropy/observe", json=bad_run, headers=KEY).status_code == 422
+    negative = {"run_id": "r", "flows": [{"src": "a", "dst": "b", "weight": -1}]}
+    assert api.post("/entropy/observe", json=negative, headers=KEY).status_code == 422
+
+
+class Adapter:
+    """Presents a TestClient response with the `requests` error behaviour."""
+
+    def __init__(self, response: Any) -> None:
+        self._response = response
+
+    def raise_for_status(self) -> None:
+        if self._response.status_code >= 400:
+            raise requests.HTTPError(str(self._response.status_code))
+
+    def json(self) -> Any:
+        return self._response.json()
+
+
+def test_remote_entropy_client_roundtrip_and_config_fetch(monkeypatch: Any) -> None:
+    api = client("entropy")
+
+    class Session:
+        def post(
+            self,
+            url: str,
+            json: Dict[str, Any],
+            headers: Dict[str, str],
+            timeout: float,
+        ) -> Any:
+            path = url.replace("http://detector", "")
+            return Adapter(api.post(path, json=json, headers=headers))
+
+    remote = RemoteEntropy("http://detector", "secret", "run-c", session=Session())  # type: ignore[arg-type]
+    result = remote.observe(0, [FlowObservation("10.0.0.1", "10.0.0.2", 100.0)])
+    assert result.reason == "warmup" and result.dpid == 0
+    assert remote.consecutive_windows == 2
+
+    def fake_get(url: str, headers: Dict[str, str], timeout: float) -> Any:
+        return Adapter(api.get(url.replace("http://detector", ""), headers=headers))
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    config = fetch_remote_config("http://detector", "secret")
+    assert config is not None
+    assert config["mode"] == "entropy" and config["model"] == "llama3.2:3b"
+    assert fetch_remote_config("http://detector", "") is None
+    assert fetch_remote_config("http://detector", "wrong") is None
+
+
+def test_prompt_profile_is_selectable_and_validated(monkeypatch: Any) -> None:
+    from sdn_ddos.detection import llm_api
+
+    monkeypatch.setitem(
+        llm_api.PROMPTS,
+        "lab",
+        "LAB {pktrate:.2f} {byterate:.2f} "
+        "{ip_proto} {l4_dst_port} {packet_count} {byte_count}",
+    )
+    fake = FakeOllama(["llama3.2:3b"])
+    api = client("llm", fake)
+    assert api.get("/config", headers=KEY).json()["prompt"] == "insdn"
+    api.post("/predict", json={"samples": [SAMPLE]}, headers=KEY)
+    assert fake.prompts[-1].startswith("Sos un clasificador")
+    switched = api.put("/config", json={"prompt": "lab"}, headers=KEY)
+    assert switched.json()["prompt"] == "lab"
+    api.post("/predict", json={"samples": [SAMPLE]}, headers=KEY)
+    assert fake.prompts[-1].startswith("LAB 38461.54")
+    unknown = api.put("/config", json={"prompt": "nope"}, headers=KEY)
+    assert unknown.status_code == 422 and "insdn" in unknown.json()["detail"]
+
+
+def test_build_prompt_rejects_unknown_profile() -> None:
+    from sdn_ddos.detection.llm_api import PredictSample, build_prompt
+
+    with pytest.raises(ValueError):
+        build_prompt(PredictSample(**SAMPLE), "missing")
+
+
+def test_response_policy_and_dry_run_are_selectable_and_validated() -> None:
+    api = client("llm")
+    config = api.get("/config", headers=KEY).json()
+    assert config["response"] == "block" and config["dry_run"] is False
+    updated = api.put(
+        "/config", json={"response": "escalate", "dry_run": True}, headers=KEY
+    )
+    assert (
+        updated.json()["response"] == "escalate" and updated.json()["dry_run"] is True
+    )
+    after = api.get("/config", headers=KEY).json()
+    assert after["response"] == "escalate" and after["dry_run"] is True
+    for bad in ({"response": "nuke"}, {"dry_run": "maybe"}):
+        assert api.put("/config", json=bad, headers=KEY).status_code == 422
+
+
+def test_invalid_response_policy_in_env_is_rejected(monkeypatch: Any) -> None:
+    monkeypatch.setenv("SDN_RESPONSE_POLICY", "nuke")
+    with pytest.raises(ValueError):
+        client("llm")
