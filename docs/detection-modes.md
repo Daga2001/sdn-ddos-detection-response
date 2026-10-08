@@ -64,8 +64,13 @@ bash scripts/last_run_report.sh [run_id]   # phases, who was flagged, decisions
   (`SDN_LLM_OLLAMA_URL`, default `http://192.168.83.1:11434`); the model is
   pre-loaded on start/change because a cold load exceeds the call timeout.
 * Decisions are written by the controller to `detection_decisions` in the lab
-  PostgreSQL (`postgres` container, no Neon). Apply
-  `database/migrations/001_detection_decisions.sql` once to a new database.
+  PostgreSQL (`postgres` container, no Neon). Fresh databases get the table
+  from `database/schema.sql`; apply
+  `database/migrations/001_detection_decisions.sql` to a database created before.
+* Safe lab defaults: prompt `lab` and `SDN_RESPONSE_DRY_RUN=true`, so a mitigated
+  run records what it *would* do and enforces nothing. `detector.sh status` then
+  shows `"prompt": "lab"` and `"dry_run": true`. Enable enforcement explicitly
+  (`detector.sh set --dry-run false`) once a run's decisions have been reviewed.
 * Calibration: the lab baseline is only HTTP probes (~5 packets/s network-wide),
   so the container defaults `SDN_ENTROPY_MIN_RATE` to 2 (standalone: 20). With
   such a sparse baseline the adaptive band is wide: k=3 did **not** raise an
@@ -80,8 +85,9 @@ bash scripts/last_run_report.sh [run_id]   # phases, who was flagged, decisions
 
 ## LLM prompt profiles and calibration
 
-`llm_api.PROMPTS` holds two prompts with the same structure: `insdn` (default,
-thresholds and examples from the InSDN dataset) and `lab` (thresholds and
+`llm_api.PROMPTS` holds two prompts with the same structure: `insdn` (default for
+the dataset scripts such as `compare_llms.py`; thresholds and examples from the
+InSDN dataset; the lab container defaults to `lab` instead) and `lab` (thresholds and
 examples from the graphical lab's own traffic). The two `pktrate` are different
 measurements: InSDN's is CICFlowMeter packets/duration of individual (often
 microsecond-long) flows, the lab's is the controller's packets/s of an aggregated
@@ -127,7 +133,7 @@ responses. Nothing is enforced unless the run has mitigation enabled
 | --- | --- |
 | `block` (default) | Temporary drop of everything from the source on every switch (priority 100, `SDN_BLOCK_SECONDS`). Same as the baseline controller. |
 | `rate_limit` | OpenFlow meter per source: it keeps working but is capped at `SDN_RATE_LIMIT_PPS` packets/s (burst `SDN_RATE_LIMIT_BURST`) for `SDN_RATE_LIMIT_SECONDS`. Rule priority 90, forwarded with the switch's NORMAL pipeline (Open vSwitch). |
-| `escalate` | Rate-limit first; if the source keeps offering more than 2x the limit for `SDN_RESPONSE_ESCALATE_AFTER` s, block it (and free its meter). |
+| `escalate` | Rate-limit first; if the source keeps offering more than 2x the limit for `SDN_RESPONSE_ESCALATE_AFTER` s, block it (and free its meter). A source is also blocked if a detector flags it again once `SDN_RESPONSE_ESCALATE_AFTER` s have passed since the limit began. |
 
 The policy (and `dry_run`) can be chosen at runtime with
 `detector.sh set --response ... --dry-run ...`; the controller reads them when a
@@ -153,8 +159,8 @@ be reviewed before trusting them. Actions are stored in `mitigation_events`
 (`temporary_drop`, `rate_limit_<pps>pps`).
 
 Caveats: a false positive blocks or throttles a legitimate host (the LLM
-currently produces them, see the calibration notes), so keep `dry_run` on or
-protect known hosts until the detector is validated. The lab GUI only draws
+currently produces them, see the calibration notes), so keep `dry_run` on (the lab
+container default) or protect known hosts until the detector is validated. The lab GUI only draws
 `priority=100 ... drop` rules as "observed", so rate limits show up in
 `ovs-ofctl -O OpenFlow13 dump-flows/dump-meters` but not in that panel.
 
@@ -166,7 +172,9 @@ flows of the network, weighted by packet rate. An adaptive band (EWMA mean +/-
 A window is suspicious when H(src) leaves the band (either side) or H(dst)
 drops below it; the alarm is confirmed after `SDN_ENTROPY_CONSECUTIVE` (2)
 suspicious windows in a row. Candidate attackers are the sources carrying at
-least `SDN_ENTROPY_CANDIDATE_SHARE` (30 %) of the traffic. Suspicious windows do
+least `SDN_ENTROPY_CANDIDATE_SHARE` (30 %) of the traffic, except the address named as the victim (`target_dst`): in
+a SYN flood the victim's RST replies are flows whose source is the victim and
+can exceed that share. Suspicious windows do
 not update the baseline.
 
 ## LLM detector
@@ -183,7 +191,9 @@ Found while attacking the lab (they only live in the subclass):
 * PostgreSQL writes run on a background thread with libpq keepalives
   (`config/pg_service.conf`). A dropped connection used to freeze the whole
   controller (psycopg2 blocks the event loop).
-* Multipart flow-stats replies are reassembled; at most
+* Multipart flow-stats replies are reassembled per (switch, transaction id): an
+  unfinished reply is dropped when the next poll starts or the switch
+  disconnects, so two polls are never mixed (`controller/stats_buffer.py`). At most
   `SDN_MAX_FLOW_ROWS_PER_POLL` (300) flows per switch/poll are persisted.
 * `SDN_FINE_GRAINED_MATCH=true`: rules always include `eth_type` and IP
   addresses/protocol, so ARP/ICMP no longer install an Ethernet-only rule that
