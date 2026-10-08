@@ -137,6 +137,10 @@ class EntropyDetector:
     min_total_rate: float = 20.0
     min_std: float = 0.05
     candidate_share: float = 0.3
+    # A flood source sends a lot: below this packet rate a source is never a
+    # candidate, so a quiet window (e.g. after the attacker was blocked) cannot
+    # turn an ordinary host into one just because it holds a share of little traffic.
+    candidate_min_rate: float = 20.0
     _states: Dict[int, _DpidState] = field(default_factory=dict)
 
     @classmethod
@@ -150,6 +154,9 @@ class EntropyDetector:
             min_total_rate=float(source.get("SDN_ENTROPY_MIN_RATE", "20")),
             min_std=float(source.get("SDN_ENTROPY_MIN_STD", "0.05")),
             candidate_share=float(source.get("SDN_ENTROPY_CANDIDATE_SHARE", "0.3")),
+            candidate_min_rate=float(
+                source.get("SDN_ENTROPY_CANDIDATE_MIN_RATE", "20")
+            ),
         )
 
     def _state(self, dpid: int) -> _DpidState:
@@ -212,7 +219,9 @@ class EntropyDetector:
                 for ip, weight in sorted(
                     src_weights.items(), key=lambda item: item[1], reverse=True
                 )
-                if ip != target_dst and weight / total_rate >= self.candidate_share
+                if ip != target_dst
+                and weight >= self.candidate_min_rate
+                and weight / total_rate >= self.candidate_share
             )
         return EntropyResult(
             dpid,
