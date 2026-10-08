@@ -119,3 +119,24 @@ def test_from_env_reads_overrides():
     assert detector.k == 4.0
     assert detector.consecutive_windows == 3
     assert detector.warmup_windows == 7
+
+
+def victim_reply_window() -> list:
+    # a SYN flood: the attacker's flow plus the victim's RST replies, which are
+    # flows whose SOURCE is the victim
+    return [
+        *normal_window(),
+        FlowObservation("10.0.1.9", "10.0.1.3", 800.0),
+        FlowObservation("10.0.1.3", "10.0.1.9", 700.0),
+    ]
+
+
+def test_the_victim_is_never_listed_as_a_candidate_even_with_heavy_replies():
+    detector = warmed_detector()
+    detector.observe(1, victim_reply_window())
+    result = detector.observe(1, victim_reply_window())
+    assert result.confirmed
+    assert result.target_dst == "10.0.1.3"
+    # the victim carries well over 30 % of the rate as a source, yet is excluded
+    assert "10.0.1.3" not in result.candidates
+    assert result.candidates == ("10.0.1.9",)

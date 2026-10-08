@@ -212,7 +212,7 @@ class EntropyDetector:
                 for ip, weight in sorted(
                     src_weights.items(), key=lambda item: item[1], reverse=True
                 )
-                if weight / total_rate >= self.candidate_share
+                if ip != target_dst and weight / total_rate >= self.candidate_share
             )
         return EntropyResult(
             dpid,
