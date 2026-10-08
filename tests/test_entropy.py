@@ -140,3 +140,30 @@ def test_the_victim_is_never_listed_as_a_candidate_even_with_heavy_replies():
     # the victim carries well over 30 % of the rate as a source, yet is excluded
     assert "10.0.1.3" not in result.candidates
     assert result.candidates == ("10.0.1.9",)
+
+
+def quiet_window() -> list:
+    # what is left after the attacker was blocked: one chatty client in a trickle
+    return [FlowObservation("10.0.1.5", "10.0.1.6", 6.0)]
+
+
+def test_a_quiet_window_never_names_a_candidate_even_when_the_alarm_stays_on():
+    detector = warmed_detector(min_total_rate=2.0)
+    detector.observe(1, quiet_window())
+    result = detector.observe(1, quiet_window())
+    assert result.confirmed  # the distribution is still outside the learned band
+    # ...but 6 pkt/s is not a flood: a 100 % share of a trickle is not enough
+    assert result.candidates == ()
+
+
+def test_the_candidate_rate_floor_is_configurable():
+    detector = warmed_detector(min_total_rate=2.0, candidate_min_rate=5.0)
+    detector.observe(1, quiet_window())
+    assert detector.observe(1, quiet_window()).candidates == ("10.0.1.5",)
+    assert (
+        EntropyDetector.from_env(
+            {"SDN_ENTROPY_CANDIDATE_MIN_RATE": "7"}
+        ).candidate_min_rate
+        == 7.0
+    )
+    assert EntropyDetector.from_env({}).candidate_min_rate == 20.0
