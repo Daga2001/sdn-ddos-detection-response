@@ -54,3 +54,24 @@ Ya estaban hechos el servicio `detector` (LLM + entropía, sin Neon), el perfil 
 3. ¿Qué política de respuesta se prefiere por defecto mientras el detector no esté validado (`rate_limit`/`escalate` con lista protegida o `dry_run`, en lugar de `block`)?
 4. ¿Cuántas repeticiones por condición se consideran suficientes (N=5 o N=3)?
 5. ¿Conviene validar el prompt `lab` con sesiones nuevas e independientes de las de calibración antes de reportar resultados?
+
+---
+
+# Revisión del PR #20 y correcciones (2026-10-08)
+
+La revisión del tutor pidió cuatro correcciones obligatorias. Las cuatro se confirmaron leyendo el código antes de corregirlas y cada una tiene una prueba de regresión.
+
+| # | Hallazgo | Corrección | Prueba |
+| --- | --- | --- | --- |
+| 1 | Una base nueva no crea `detection_decisions` (solo estaba en la migración), así que las decisiones se perdían y los reportes salían vacíos. | La tabla y su índice se añadieron a `database/schema.sql`; la migración se mantiene para bases ya creadas. | `test_fresh_databases_create_detection_decisions` |
+| 2 | Los fragmentos de una respuesta multipart se agrupaban solo por `dpid`: dos sondeos podían mezclarse y esa lista alimentaba detección y mitigación. | Nuevo `controller/stats_buffer.py`: un búfer por `(dpid, xid)`; si empieza otro `xid` se descarta el incompleto y se ignoran sus fragmentos tardíos; al desconectarse el switch se limpia su búfer (y el estado de entropía de ese switch). | `tests/test_stats_buffer.py` (7 casos, incluido el de dos respuestas con el mismo `dpid` y distinto `xid`) y `tests/test_app_modes_stats.py` (manejador y desconexión, entorno de Ryu) |
+| 3 | Una alarma de entropía podía bloquear o limitar a la víctima: sus respuestas RST son flujos con ella como origen y pueden superar el 30 %. | `entropy.py` excluye `target_dst` de los candidatos, y el controlador omite además esa dirección antes de responder. | `test_the_victim_is_never_listed_as_a_candidate_even_with_heavy_replies` |
+| 4 | El contenedor del lab usaba por defecto el prompt `insdn` (33 % de detección en el lab) y `dry_run=false`. | `compose.detector.yaml` y `.env.example` usan por defecto el prompt `lab` y `SDN_RESPONSE_DRY_RUN=true`; la documentación muestra el estado resultante y cómo activar la aplicación real. | `test_lab_defaults_use_the_calibrated_prompt_and_keep_enforcement_opt_in` |
+
+Observaciones no bloqueantes: la documentación ahora menciona que `escalate` también bloquea si un detector vuelve a marcar a la fuente pasado el periodo de gracia; el PR sigue siendo grande pero es una sola funcionalidad; las casillas de la plantilla del PR las completa quien lo abrió.
+
+Comprobaciones tras las correcciones: `ruff format --check`, `ruff check`, `mypy src/sdn_ddos` y `pytest` pasan (176 tests, cobertura 81 %), y los tests que requieren Ryu pasan en su entorno.
+
+## Efecto sobre las pruebas en curso
+- Las corridas de la matriz de repeticiones ya iniciadas se ejecutaron con el código **anterior** a las correcciones 2 y 3. Se tratan como piloto: tras redesplegar se repetirán con el código corregido y se compararán, en lugar de mezclar ambos conjuntos.
+- Pendiente de verificar en vivo con el código corregido: que una alarma de entropía con mitigación activada deje reglas solo sobre el atacante y no sobre la víctima (el caso que describe el hallazgo 3).
