@@ -40,7 +40,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from ryu.controller import ofp_event
-from ryu.controller.handler import MAIN_DISPATCHER, set_ev_cls
+from ryu.controller.handler import DEAD_DISPATCHER, MAIN_DISPATCHER, set_ev_cls
 from ryu.lib import hub
 from ryu.lib.packet import ethernet, ipv4, tcp, udp
 
@@ -56,6 +56,7 @@ from sdn_ddos.controller.response import (
     ResponseManager,
     ResponseSettings,
 )
+from sdn_ddos.controller.stats_buffer import StatsReassembler
 from sdn_ddos.decision_log import create_decision_log
 from sdn_ddos.detection.entropy import EntropyDetector, FlowObservation
 from sdn_ddos.detection.entropy_client import RemoteEntropy, fetch_remote_config
@@ -136,7 +137,7 @@ class ModeSwitchController(EnterpriseDDoSController):
             else EntropyDetector.from_env()
         )
         self.entropy_window = float(os.environ.get("SDN_ENTROPY_WINDOW_SECONDS", "10"))
-        self._pending_stats: Dict[int, List[Any]] = {}
+        self._stats = StatsReassembler()
         self._packet_history: Dict[int, Dict[Any, int]] = {}
         self._last_poll: Dict[int, float] = {}
         self._window_flows: Dict[int, Tuple[float, List[FlowObservation], int]] = {}
@@ -209,11 +210,10 @@ class ModeSwitchController(EnterpriseDDoSController):
         message = event.msg
         datapath = message.datapath
         dpid = int(datapath.id)
-        chunks = self._pending_stats.setdefault(dpid, [])
-        chunks.extend(message.body)
-        if message.flags & datapath.ofproto.OFPMPF_REPLY_MORE:
+        more = bool(message.flags & datapath.ofproto.OFPMPF_REPLY_MORE)
+        body = self._stats.add(dpid, int(message.xid), message.body, more)
+        if body is None:
             return
-        body = self._pending_stats.pop(dpid)
         total_flows = len(body)
         if self.settings.mitigation_enabled:
             self._review_limits(dpid, body)
@@ -233,6 +233,21 @@ class ModeSwitchController(EnterpriseDDoSController):
         super().flow_stats_reply_handler(
             SimpleNamespace(msg=SimpleNamespace(datapath=datapath, body=kept))
         )
+
+    @set_ev_cls(  # type: ignore[untyped-decorator]
+        ofp_event.EventOFPStateChange, [MAIN_DISPATCHER, DEAD_DISPATCHER]
+    )
+    def _forget_partial_stats(self, event: Any) -> None:
+        """A reply cut off by a disconnect must not be glued to the next poll."""
+
+        datapath = event.datapath
+        if event.state != DEAD_DISPATCHER or datapath.id is None:
+            return
+        dpid = int(datapath.id)
+        self._stats.clear(dpid)
+        self._packet_history.pop(dpid, None)
+        self._last_poll.pop(dpid, None)
+        self._window_flows.pop(dpid, None)
 
     # -- LLM mode ---------------------------------------------------------
 
@@ -397,6 +412,8 @@ class ModeSwitchController(EnterpriseDDoSController):
                 },
             )
             for source in result.candidates:
+                if source == result.target_dst:
+                    continue  # never act on the address named as the victim
                 self._maybe_block(source, observed_at)
 
     # -- response ---------------------------------------------------------
