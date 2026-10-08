@@ -26,6 +26,7 @@ services:
       SDN_ENTROPY_MIN_RATE: ${SDN_ENTROPY_MIN_RATE:-2}
       SDN_ENTROPY_MIN_STD: ${SDN_ENTROPY_MIN_STD:-0.05}
       SDN_ENTROPY_CANDIDATE_SHARE: ${SDN_ENTROPY_CANDIDATE_SHARE:-0.3}
+      SDN_ENTROPY_CANDIDATE_MIN_RATE: ${SDN_ENTROPY_CANDIDATE_MIN_RATE:-20}
     # `control` is internal (no internet); `egress` lets the LLM backend (Ollama
     # on the Windows host) be reached.
     networks: [control, egress]

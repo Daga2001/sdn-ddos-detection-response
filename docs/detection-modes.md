@@ -174,7 +174,12 @@ drops below it; the alarm is confirmed after `SDN_ENTROPY_CONSECUTIVE` (2)
 suspicious windows in a row. Candidate attackers are the sources carrying at
 least `SDN_ENTROPY_CANDIDATE_SHARE` (30 %) of the traffic, except the address named as the victim (`target_dst`): in
 a SYN flood the victim's RST replies are flows whose source is the victim and
-can exceed that share. Suspicious windows do
+can exceed that share. A candidate must also send at least
+`SDN_ENTROPY_CANDIDATE_MIN_RATE` (20) packets/s: without that floor, once the
+attacker was blocked the quiet traffic left stayed outside a tight band (k=1),
+the alarm stayed confirmed and each window picked another legitimate host that
+held a share of that little traffic (4 legitimate hosts were blocked in one
+verification run). Suspicious windows do
 not update the baseline.
 
 ## LLM detector
