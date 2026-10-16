@@ -2,6 +2,9 @@ import { ExperimentPanel } from "./ExperimentPanel";
 import { InspectorPanel } from "./InspectorPanel";
 import { HistoryPanel } from "./HistoryPanel";
 import { DownloadMenu } from "./DownloadMenu";
+import { DetectionPanel, DetectorSwitch } from "./DetectionPanel";
+import { DetectionResults } from "./DetectionResults";
+import { retainEvents } from "./detection";
 import { HandIcon, PointerIcon } from "./Icons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -17,9 +20,11 @@ import {
   legitimateClients,
   normalizeExperiment,
   emptyExperiment,
+  detectionFromService,
   CONTROLLER_ID,
 } from "./types";
 import type {
+  DetectionOptions,
   Topology,
   Observation,
   Run,
@@ -37,6 +42,8 @@ const panelHints: Record<string, string> = {
     "Set up and launch a controlled attack: choose attackers, victims, the traffic they send, and the timing, then start it and watch the impact.",
   Inspect:
     "Look at and edit whatever you have selected on the canvas — a host's address, a switch, a link's bandwidth — or read the managed controller's live stats.",
+  Detection:
+    "Choose how attacks are detected — an LLM or entropy — and tune it. The setup is saved with every run you start.",
   History:
     "Reopen saved networks and past runs, and replay a finished run step by step. Replay only reads records; it never sends traffic.",
 };
@@ -70,6 +77,7 @@ function App() {
   const [panel, setPanel] = useState("Experiment");
   const [events, setEvents] = useState<Observation[]>([]);
   const [experiment, setExperiment] = useState<Experiment>(defaultExperiment);
+  const [detectorOptions, setDetectorOptions] = useState<DetectionOptions>({});
   const [replay, setReplay] = useState<{
     run: Run;
     events: Observation[];
@@ -158,12 +166,28 @@ function App() {
     setSelection([]);
     setReplay(null);
     setEvents([]);
-    setExperiment({
+    // The detector choice belongs to the user, not to the network: keep it.
+    setExperiment((previous) => ({
       ...defaultExperiment,
       attackers: value.hosts[0] ? [value.hosts[0].name] : [],
       victims: value.hosts[1] ? [value.hosts[1].name] : [],
-    });
+      detection: previous.detection,
+      mitigation: previous.mitigation,
+    }));
   }
+  const loadDetectorOptions = useCallback(async () => {
+    try {
+      setDetectorOptions(await api<DetectionOptions>("/detection/options"));
+    } catch (error) {
+      setDetectorOptions({
+        available: false,
+        reason:
+          error instanceof Error
+            ? error.message
+            : "The lab did not answer about its detector.",
+      });
+    }
+  }, []);
   useEffect(() => {
     api<{ authenticated: boolean }>("/session")
       .then((s) => setAuthenticated(s.authenticated))
@@ -178,6 +202,7 @@ function App() {
   }, []);
   useEffect(() => {
     if (!authenticated) return;
+    void loadDetectorOptions();
     void task(async () => {
       const values = await api<Topology[]>("/presets");
       setPresets(values);
@@ -218,7 +243,7 @@ function App() {
       }
       if (value.seq <= eventCursor.current.seq) return;
       eventCursor.current.seq = value.seq;
-      setEvents((current) => [...current.slice(-1999), value]);
+      setEvents((current) => retainEvents([...current, value]));
     });
     source.addEventListener("gap", () =>
       setNotice({
@@ -245,7 +270,27 @@ function App() {
     });
     source.onerror = () => setConnected(false);
     return () => source.close();
-  }, [authenticated]);
+  }, [authenticated, loadDetectorOptions]);
+  useEffect(() => {
+    // A detector that was unreachable once (the lab restarting, a dropped tunnel) comes
+    // back on its own instead of leaving the Detection tab blocked until a reload.
+    if (!authenticated || detectorOptions.available) return;
+    const timer = window.setInterval(() => void loadDetectorOptions(), 5000);
+    return () => window.clearInterval(timer);
+  }, [authenticated, detectorOptions.available, loadDetectorOptions]);
+  useEffect(() => {
+    // Start from whatever the detector service is set to, so nothing changes until
+    // the user chooses something else.
+    if (replay || experiment.detection || !detectorOptions.available) return;
+    setExperiment((previous) =>
+      previous.detection
+        ? previous
+        : {
+            ...previous,
+            detection: detectionFromService(detectorOptions.current),
+          },
+    );
+  }, [detectorOptions, experiment.detection, replay]);
   useEffect(() => {
     if (!playing || !replay || cursor >= replay.events.length) {
       if (playing) setPlaying(false);
@@ -562,6 +607,12 @@ function App() {
           <h1>{shownTopology?.name ?? "Loading workspace…"}</h1>
         </div>
         <div className="actions">
+          <DetectorSwitch
+            experiment={replay ? roleSettings : experiment}
+            setExperiment={setExperiment}
+            options={detectorOptions}
+            disabled={locked}
+          />
           <span className={`phase ${phase}`}>{phase}</span>
           {elapsedMs !== null && (
             <span
@@ -658,17 +709,17 @@ function App() {
                 : "· last measurement"}
           </small>
         </div>
-        <div title="Whether the machine-learning detector service is reachable and ready to classify traffic. It is separate from the lab itself: observation and experiments work with no detector, but a detector that is 'not ready' means no detection or mitigation claim can be made. There is no detector microservice wired up yet, so this reads 'not ready'.">
+        <div title="Whether the machine-learning detector service is reachable and ready to classify traffic. It is separate from the lab itself: observation and experiments work with no detector, but a detector that is 'not ready' means no detection or mitigation claim can be made. The detector container is started with scripts/lab_detector.sh; without it this stays 'not observed'.">
           <span>Detector</span>
           <strong>{String(detector).replaceAll("_", " ")}</strong>
           <small>Model availability is separate from observation</small>
         </div>
-        <div title="How many times the detector actually flagged traffic as an attack during this run. High traffic by itself is not a detection — only the model saying so counts here. With no detector wired up, this stays at zero even during a heavy flood.">
+        <div title="How many times the detector actually flagged traffic as an attack during this run. High traffic by itself is not a detection — only the model saying so counts here. With no detector selected (or no detector container), this stays at zero even during a heavy flood.">
           <span>Detection events</span>
           <strong>{detections}</strong>
           <small>High traffic alone is not a detection</small>
         </div>
-        <div title="How many times the controller was asked to install a temporary drop rule in response to a detection. A request is not proof the rule took effect — the Timeline's mitigation_observed entries show what the switches actually hold. Mitigation is off in this build, so this stays at zero.">
+        <div title="How many times the controller was asked to install a temporary drop rule in response to a detection. A request is not proof the rule took effect — the Timeline's mitigation_observed entries show what the switches actually hold. It stays at zero unless the response is turned on in the Detection tab; a dry run records no requests.">
           <span>Mitigation requests</span>
           <strong>{mitigationCount}</strong>
           <small>Requested rules ≠ verified delivery</small>
@@ -872,17 +923,30 @@ function App() {
               </button>
             </div>
           )}
-          <Observations events={visible} tab={tab} setTab={setTab} />
+          <Observations
+            events={visible}
+            tab={tab}
+            setTab={setTab}
+            detectionView={
+              <DetectionResults
+                events={visible}
+                topology={shownTopology}
+                experiment={roleSettings.attackers.length ? roleSettings : null}
+                active={!replay && active}
+              />
+            }
+          />
         </div>
         <aside className="inspector">
           <nav className="tabs">
-            {["Experiment", "Inspect", "History"].map((p) => (
+            {["Experiment", "Detection", "Inspect", "History"].map((p) => (
               <button
                 key={p}
                 className={panel === p ? "active" : ""}
                 title={panelHints[p]}
                 onClick={() => {
                   setPanel(p);
+                  if (p === "Detection") void loadDetectorOptions();
                   if (p === "History")
                     void task(
                       refreshHistory,
@@ -903,6 +967,16 @@ function App() {
               connected={connected}
               task={task}
               start={start}
+            />
+          )}
+          {panel === "Detection" && (
+            <DetectionPanel
+              experiment={replay ? roleSettings : experiment}
+              setExperiment={setExperiment}
+              options={detectorOptions}
+              locked={locked}
+              readOnly={!!replay}
+              reload={() => void loadDetectorOptions()}
             />
           )}
           {panel === "Inspect" && (

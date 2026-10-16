@@ -15,6 +15,7 @@ Detector logic is reused from llm_api.py and entropy.py without changes.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import secrets
@@ -65,6 +66,37 @@ class EntropyRequest(BaseModel):
     flows: List[FlowIn] = Field(max_length=MAX_FLOWS_PER_WINDOW)
 
 
+ENTROPY_FIELDS = (
+    "k",
+    "alpha",
+    "warmup_windows",
+    "consecutive_windows",
+    "min_total_rate",
+    "min_std",
+    "candidate_share",
+    "candidate_min_rate",
+    "update_hold",
+    "alpha_run",
+)
+
+
+class EntropyUpdate(BaseModel):
+    """Tuning of the entropy detector. Applies to runs that start after the change."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    k: Optional[float] = Field(default=None, ge=0.5, le=10)
+    alpha: Optional[float] = Field(default=None, gt=0, le=1)
+    warmup_windows: Optional[int] = Field(default=None, ge=1, le=120)
+    consecutive_windows: Optional[int] = Field(default=None, ge=1, le=20)
+    min_total_rate: Optional[float] = Field(default=None, ge=0, le=1_000_000)
+    min_std: Optional[float] = Field(default=None, ge=0, le=10)
+    candidate_share: Optional[float] = Field(default=None, ge=0, le=1)
+    candidate_min_rate: Optional[float] = Field(default=None, ge=0, le=1_000_000)
+    update_hold: Optional[int] = Field(default=None, ge=0, le=20)
+    alpha_run: Optional[float] = Field(default=None, gt=0, le=1)
+
+
 class ConfigUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -73,6 +105,7 @@ class ConfigUpdate(BaseModel):
     prompt: Optional[str] = Field(default=None, min_length=1, max_length=40)
     response: Optional[Policy] = None
     dry_run: Optional[bool] = None
+    entropy: Optional[EntropyUpdate] = None
 
 
 class DetectorService:
@@ -101,6 +134,8 @@ class DetectorService:
         self.warm_enabled = warm
         self.lock = threading.Lock()
         self._runs: "OrderedDict[str, EntropyDetector]" = OrderedDict()
+        # Overrides of the environment defaults, set through PUT /config.
+        self.entropy_params: Dict[str, Any] = {}
         self._health: Optional[Dict[str, Any]] = None
         self._health_at = 0.0
         self._last_warm = -WARM_INTERVAL_SECONDS
@@ -145,13 +180,25 @@ class DetectorService:
         with self.lock:
             detector = self._runs.get(run_id)
             if detector is None:
-                detector = EntropyDetector.from_env()
+                detector = self.new_entropy_detector()
                 self._runs[run_id] = detector
                 while len(self._runs) > MAX_RUNS:
                     self._runs.popitem(last=False)
             else:
                 self._runs.move_to_end(run_id)
             return detector
+
+    def new_entropy_detector(self) -> EntropyDetector:
+        detector = EntropyDetector.from_env()
+        if self.entropy_params:
+            detector = dataclasses.replace(detector, **self.entropy_params)
+        return detector
+
+    def entropy_settings(self) -> Dict[str, Any]:
+        """The values a run that starts now would use."""
+
+        detector = self.new_entropy_detector()
+        return {name: getattr(detector, name) for name in ENTROPY_FIELDS}
 
     def invalidate_health(self) -> None:
         self._health = None
@@ -241,6 +288,7 @@ def create_app(
             "dry_run": service.dry_run,
             "ollama_url": resolved.base_url,
             "entropy_runs": len(service._runs),
+            "entropy": service.entropy_settings(),
         }
 
     @application.put("/config")
@@ -274,6 +322,14 @@ def create_app(
             service.response = update.response
         if update.dry_run is not None:
             service.dry_run = update.dry_run
+        if update.entropy is not None:
+            # A complete set replaces the previous overrides; fields left out fall
+            # back to the environment defaults.
+            service.entropy_params = {
+                name: value
+                for name, value in update.entropy.model_dump().items()
+                if value is not None
+            }
         if update.mode is not None:
             service.mode = update.mode
         service.invalidate_health()

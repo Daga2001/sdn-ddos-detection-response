@@ -40,6 +40,9 @@ class RunnerClient:
     def events(self, after: int) -> dict[str, Any]:
         return dict(self._request("GET", f"/events?after={after}"))
 
+    def detection_options(self) -> dict[str, Any]:
+        return dict(self._request("GET", "/detection"))
+
     def start(self, request: StartRequest) -> str:
         return str(self._request("POST", "/runs", request.model_dump())["run_id"])
 

@@ -109,7 +109,13 @@ class PostgreSQLRepository:
     def runs(self) -> list[dict[str, Any]]:
         return self._query(
             "SELECT id::text, topology->>'name' AS name, status, started_at::text, "
-            "ended_at::text FROM lab_runs ORDER BY started_at DESC LIMIT 100",
+            "ended_at::text, settings->'detection'->>'mode' AS detector_mode, "
+            "settings->'detection'->>'model' AS detector_model, "
+            "jsonb_array_length(settings->'attackers') AS attackers, "
+            "settings->>'mitigation' AS mitigation, "
+            "settings->'detection'->'response'->>'policy' AS policy, "
+            "settings->'detection'->'response'->>'dry_run' AS dry_run "
+            "FROM lab_runs ORDER BY started_at DESC LIMIT 100",
             fetch=True,
         )
 

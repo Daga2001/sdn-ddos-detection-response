@@ -8,6 +8,7 @@ import requests
 from fastapi.testclient import TestClient
 from lab_fakes import FakeRuntime, MemoryRepository
 
+import sdn_ddos.lab.telemetry as telemetry_module
 from sdn_ddos.config import DatabaseSettings
 from sdn_ddos.lab import worker
 from sdn_ddos.lab.client import RunnerClient
@@ -16,7 +17,7 @@ from sdn_ddos.lab.manager import LabManager
 from sdn_ddos.lab.repository import PostgreSQLRepository
 from sdn_ddos.lab.security import Sessions
 from sdn_ddos.lab.settings import LabSettings
-from sdn_ddos.lab.telemetry import Telemetry
+from sdn_ddos.lab.telemetry import PENDING_LIMIT, Telemetry
 from sdn_ddos.lab.topology import presets
 
 
@@ -124,6 +125,58 @@ def test_telemetry_is_optional_bounded_and_nonblocking(monkeypatch):
     telemetry.emit("invalid", {"rate": float("nan")})
     assert telemetry.dropped == 1
     telemetry.close()
+
+
+def test_telemetry_buffer_is_enlarged_with_a_fallback(monkeypatch):
+    sock = MagicMock()
+    sock.setsockopt.side_effect = [OSError("no CAP_NET_ADMIN"), None]
+    telemetry_module.grow_buffer(sock, telemetry_module.socket.SO_SNDBUF)
+    forced, plain = sock.setsockopt.call_args_list
+    assert forced.args[1] == 32 and plain.args[1] == telemetry_module.socket.SO_SNDBUF
+    assert forced.args[2] == plain.args[2] == telemetry_module.BUFFER_BYTES
+    sock.setsockopt.reset_mock()
+    sock.setsockopt.side_effect = OSError("refused")
+    telemetry_module.grow_buffer(
+        sock, telemetry_module.socket.SO_RCVBUF
+    )  # never raises
+    assert sock.setsockopt.call_count == 2
+
+
+def test_telemetry_resends_detections_the_receiver_had_no_room_for(monkeypatch):
+    monkeypatch.setenv("SDN_TELEMETRY_SOCKET", "/tmp/unused-test-socket")
+    sock = MagicMock()
+    monkeypatch.setattr("sdn_ddos.lab.telemetry.socket.socket", lambda *args: sock)
+    telemetry = Telemetry()
+    sock.sendto.side_effect = BlockingIOError()
+    telemetry.emit("detection", {"ipv4_src": "10.0.0.1"})
+    telemetry.emit("flows", {"rows": []})  # bulk data is allowed to go
+    telemetry.emit("mitigation_requested", {"ipv4_src": "10.0.0.1"})
+    assert telemetry.dropped == 1  # only the flows table
+    assert len(telemetry.pending) == 2
+    sock.sendto.reset_mock(side_effect=True)
+    telemetry.emit("controller", {})
+    sent = [json.loads(call.args[0])["kind"] for call in sock.sendto.call_args_list]
+    assert sent == ["detection", "mitigation_requested", "controller"]
+    assert not telemetry.pending
+    assert telemetry.dropped == 0
+
+
+def test_telemetry_keeps_critical_events_in_order_and_bounds_them(monkeypatch):
+    monkeypatch.setenv("SDN_TELEMETRY_SOCKET", "/tmp/unused-test-socket")
+    sock = MagicMock()
+    monkeypatch.setattr("sdn_ddos.lab.telemetry.socket.socket", lambda *args: sock)
+    telemetry = Telemetry()
+    sock.sendto.side_effect = BlockingIOError()
+    for index in range(PENDING_LIMIT + 3):
+        telemetry.emit("detection", {"index": index})
+    assert len(telemetry.pending) == PENDING_LIMIT
+    assert telemetry.dropped == 3  # the oldest three were evicted
+    first = json.loads(telemetry.pending[0])
+    assert first["data"]["index"] == 3
+    # A receiver that vanished is not retried forever.
+    sock.sendto.side_effect = OSError("gone")
+    telemetry.emit("detection", {"index": "last"})
+    assert not telemetry.pending or telemetry.dropped > 3
 
 
 def test_worker_auth_and_fixed_operations(monkeypatch):

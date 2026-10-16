@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 
 from sdn_ddos.config import DatabaseSettings
 from sdn_ddos.lab.contracts import Capture, Diagnostic, StartRequest
+from sdn_ddos.lab.detection_settings import DetectorClient
 from sdn_ddos.lab.manager import LabManager
 from sdn_ddos.lab.repository import PostgreSQLRepository
 from sdn_ddos.lab.security import BodyLimit
@@ -21,6 +22,8 @@ from sdn_ddos.lab.settings import LabSettings
 def create_app() -> FastAPI:
     settings = LabSettings.from_env()
     manager = LabManager(PostgreSQLRepository(DatabaseSettings.from_env()))
+    # None when the lab has no detector service (the original compose files).
+    manager.detector = DetectorClient.from_env()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -51,6 +54,10 @@ def create_app() -> FastAPI:
     @app.get("/events")
     def events(after: int = Query(default=0, ge=0)) -> dict[str, Any]:
         return manager.events(after)
+
+    @app.get("/detection")
+    def detection() -> dict[str, Any]:
+        return manager.detection_options()
 
     @app.post("/runs")
     def start(request: StartRequest) -> dict[str, str]:
