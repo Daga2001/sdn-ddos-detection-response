@@ -57,8 +57,9 @@ class MemoryRepository:
 
 
 class FakeRuntime:
-    def __init__(self, topology, run_id, mitigation, emit):
+    def __init__(self, topology, run_id, mitigation, emit, detection=None):
         self.emit = emit
+        self.detection = detection
         self.closed = False
 
     def start(self):

@@ -296,3 +296,39 @@ def test_invalid_response_policy_in_env_is_rejected(monkeypatch: Any) -> None:
     monkeypatch.setenv("SDN_RESPONSE_POLICY", "nuke")
     with pytest.raises(ValueError):
         client("llm")
+
+
+def test_entropy_tuning_is_set_through_config_and_used_by_new_runs() -> None:
+    api = client("entropy")
+    defaults = api.get("/config", headers=KEY).json()["entropy"]
+    assert defaults["k"] == 3.0 and defaults["alpha_run"] is None
+    tuned = {
+        "k": 2.5,
+        "warmup_windows": 16,
+        "consecutive_windows": 3,
+        "min_total_rate": 1.0,
+        "update_hold": 2,
+        "alpha_run": 0.05,
+    }
+    assert api.put("/config", json={"entropy": tuned}, headers=KEY).status_code == 200
+    shown = api.get("/config", headers=KEY).json()["entropy"]
+    assert shown["k"] == 2.5 and shown["consecutive_windows"] == 3
+    assert shown["update_hold"] == 2 and shown["alpha_run"] == 0.05
+    assert shown["alpha"] == defaults["alpha"]  # untouched fields keep their defaults
+    reply = api.post(
+        "/entropy/observe",
+        json={"run_id": "tuned", "flows": [{"src": "a", "dst": "b", "weight": 30}]},
+        headers=KEY,
+    ).json()
+    assert reply["consecutive_windows"] == 3  # the new run used the new tuning
+    # A new complete set replaces the previous overrides instead of merging.
+    api.put("/config", json={"entropy": {"k": 4}}, headers=KEY)
+    again = api.get("/config", headers=KEY).json()["entropy"]
+    assert again["k"] == 4 and again["update_hold"] == 0 and again["alpha_run"] is None
+
+
+def test_entropy_tuning_rejects_out_of_range_values() -> None:
+    api = client("entropy")
+    for bad in ({"k": 0}, {"alpha": 0}, {"warmup_windows": 0}, {"unknown": 1}):
+        reply = api.put("/config", json={"entropy": bad}, headers=KEY)
+        assert reply.status_code == 422, bad
