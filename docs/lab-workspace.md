@@ -62,6 +62,46 @@ Supported topologies are one connected, loop-free graph, up to 32 hosts/16 switc
 
 The original enterprise preset deliberately retains its separate /24 subnets and has **no inter-subnet router**. Keep an experiment's attackers and victims in one department for that preset, or use connected enterprise when teaching paths across switches. Do not treat those two presets as equivalent research datasets.
 
+## Choosing and judging the detector
+
+With the detector container running (`scripts/lab_detector.sh up`) the workspace can pick
+the detector and show how it did, with no shell commands:
+
+* **Detector selector** in the top bar: switch between the installed LLMs (listed from
+  Ollama), entropy, or no detection. It edits the same setup as the Detection tab.
+* **Detection tab** (right panel): the detector type and its tuning. LLM: model, prompt
+  profile, samples per poll, probability threshold. Entropy: window length and mode,
+  band width `k`, warm-up and consecutive windows, minimum rate, and advanced settings
+  (candidate share and rate, hold windows, slower smoothing, switch deduplication).
+  Response: whether to apply one, its policy (`block`, `rate_limit`, `escalate`), a dry
+  run (on by default), the caps and durations, and addresses never to act on.
+  "Restore calibrated values" puts back the values measured in this lab
+  ([detection modes](detection-modes.md)).
+* **Detection results tab** (below the topology): a per-host confusion matrix, precision,
+  recall, false-positive rate, accuracy and F1, the time to the first and last attacker
+  detected, a per-host table, the traffic toward the victim and service probes by phase,
+  the responses requested (and any legitimate client they hit), and a live chart that
+  puts the flood next to the detections. It reads recorded events only, so it works
+  live, in a replay and on older runs.
+
+How the results are scored: the experiment is the ground truth. Each attacker is a
+positive and each legitimate client (a host in the victims' subnet that is neither an
+attacker nor a victim) a negative; the victim is not scored. An attacker the detector
+named at least once is a true positive (VP), one it never named a false negative (FN), a
+legitimate client it named a false positive (FP) and one it never named a true negative
+(VN). Verdicts are per host and per run, so with a few hosts the rates move in large steps.
+
+Where the setup is saved: inside the experiment settings of the run record
+(`lab_runs.settings.detection`), so the run's JSON/CSV export and its replay carry it, and
+the runner also records a `detection_config` event at the start of every experiment. At
+run start the runner pushes the detector-side part to the detector service (`PUT /config`)
+and hands the controller-side part (window shape, samples per poll, response limits) to
+the Ryu process as environment variables. An experiment without a detection setup leaves
+the detector as `scripts/detector.sh` set it. Asking for a detector from a lab without the
+detector service, or for an LLM that Ollama does not have, is refused before any run is
+created. The response stays off unless turned on, and starts as a dry run; the workspace
+warns before real rules would be installed in the emulated switches.
+
 ## What the measurements mean
 
 | Observation | Interpretation |
@@ -90,6 +130,19 @@ SIGKILL from that teardown) or the bounded `timeout` exit is expected and does
 non-`timeout` code is treated as a real failure.
 
 Live buffers are bounded (runner 5,000 events, browser 2,000 events / 500 packet rows). Packet observations are written in batches. Dropped controller/command observations and SSE catch-up gaps are explicitly reported. Persisted history is paginated; browser replay refuses more than 100,000 events and suggests streaming export. Producer timestamps are UTC; replay sorts by timestamp and then sequence. Use recorded timestamps, not animation speed, for analysis. This is best-effort telemetry, not a lossless capture system.
+
+**How the controller's observations reach the runner.** The controller sends them over an
+`AF_UNIX` datagram socket without ever blocking. A datagram socket holds little: the runner
+container's `net.unix.max_dgram_qlen` is 10 and the default buffer is about 200 KB, roughly 25
+of the ~8 KB `flows` messages, so one burst from nine switches overflowed it and, with the
+runtime reading only once a second, an 8-attacker run lost 1,838 events including detections
+(a detected attacker then looked undetected). Now a listener thread empties the socket as the
+messages arrive (`MininetRuntime._listen`), the runtime raises the queue length and both
+buffers (16 MB, `grow_buffer`), and the controller keeps its `detection` and
+`mitigation_requested` events (the ones the results are scored from) and resends them until
+the receiver takes them. The same run now loses none (`gap` events stay at 0). Bulk `flows`
+messages can still be dropped when the runner is overwhelmed; that is reported as a `gap` and
+the Detection tab says its numbers are then a lower bound.
 
 ## Architecture and security tradeoffs
 
@@ -120,6 +173,18 @@ Image builds and unprivileged import/packet-field checks are separate from a liv
 4. Test Stop during baseline/attack, browser reload during a run, and disconnect/reconnect. Test recorder loss; verify traffic ends and history is explicitly incomplete.
 5. With an approved model only, verify detection/request/observed-drop events separately. Check cleanup, then replay and compare JSON/CSV timestamps. Replay must launch no processes.
 6. Record host kernel, Docker version, image digests, model checksum, topology, and observed limitations. Do not mark live support verified until these steps pass.
+
+## Detection campaign (repeatable test scenarios)
+
+`scripts/campaign/` holds the scenarios used to test the whole detection and response path
+through the lab's own API (the same request the workspace sends): refused requests, LLM and
+entropy detectors, every response policy (simulated and real), protected hosts, caps, bigger
+networks, a stop in mid-attack. `python3 scripts/campaign/lab_campaign.py --list` shows them;
+`bash scripts/campaign/start.sh NAME --group L,E` runs them in the background on the VM and
+writes `~/campaign/NAME.log` plus one JSON line per scenario in `~/campaign/results.jsonl`.
+Each result is judged from the recorded events *and* from the controller's own database rows,
+so a lost telemetry event cannot hide a detection. `scripts/campaign/ryu_tests.sh` runs the
+controller tests, which need Ryu and therefore the runner container.
 
 ## Design sources
 

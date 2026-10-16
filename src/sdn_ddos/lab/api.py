@@ -192,6 +192,10 @@ def create_app(
     def status() -> dict[str, Any]:
         return control.status()
 
+    @app.get("/api/detection/options")
+    def detection_options() -> dict[str, Any]:
+        return control.detection_options()
+
     @app.post("/api/runs")
     def start(payload: StartRequest) -> dict[str, str]:
         return {"run_id": control.start(payload)}

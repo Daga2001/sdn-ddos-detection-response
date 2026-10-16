@@ -1,3 +1,4 @@
+import { describeRun } from "./detection";
 import { activeStates } from "./types";
 import type { Topology, Run, Task } from "./types";
 
@@ -65,6 +66,9 @@ export function HistoryPanel({
           <small>
             {run.status} · {run.started_at?.slice(0, 19)}
           </small>
+          {describeRun(run) && (
+            <small className="run-summary">{describeRun(run)}</small>
+          )}
           <div>
             <button
               disabled={busy || active || activeStates.includes(run.status)}

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import * as echarts from "echarts/core";
 import { LineChart } from "echarts/charts";
 import {
@@ -20,6 +21,8 @@ echarts.use([
 // Plain-language reasons each observation view exists, shown on hover. Each
 // answers: what you see here, how to read it, and why it is useful.
 const tabHints: Record<string, string> = {
+  Detection:
+    "WHAT: how the detector did on this run — a confusion matrix (true/false positives and negatives per host), precision and recall, how fast it reacted, the measured network and service data around it, and a live chart of the attack against the detections. HOW TO READ: attackers named are true positives, legitimate clients named are false positives; the chart shows the flood reaching the victim and the detections stacking up. WHY: it answers “did the detector work, and at what cost?” without reading event logs.",
   Traffic:
     "WHAT: a live time chart — the teal line is how much data is crossing the links each second, the orange line is how long the web service takes to answer a normal request, and the shaded bands mark the baseline, attack and recovery phases. HOW TO READ: during an attack the traffic line climbs and the latency line rises or its points drop out when a probe fails. WHY: it is the headline picture of an attack's impact building up and fading away.",
   Packets:
@@ -140,10 +143,12 @@ export function Observations({
   events,
   tab,
   setTab,
+  detectionView,
 }: {
   events: Observation[];
   tab: string;
   setTab: (value: string) => void;
+  detectionView?: ReactNode;
 }) {
   const [expanded, setExpanded] = useState(-1);
   const packetRows = packets(events);
@@ -187,24 +192,29 @@ export function Observations({
         · latest recorded sample
       </div>
       <nav className="tabs" aria-label="Observations">
-        {["Traffic", "Packets", "Commands", "Timeline", "Flows"].map(
-          (value) => (
-            <button
-              key={value}
-              className={tab === value ? "active" : ""}
-              title={tabHints[value]}
-              onClick={() => setTab(value)}
-            >
-              {value}
-              {value === "Packets" && packetRows.length > 0
-                ? ` · ${packetRows.length}`
-                : ""}
-            </button>
-          ),
-        )}
+        {[
+          "Traffic",
+          "Detection",
+          "Packets",
+          "Commands",
+          "Timeline",
+          "Flows",
+        ].map((value) => (
+          <button
+            key={value}
+            className={tab === value ? "active" : ""}
+            title={tabHints[value]}
+            onClick={() => setTab(value)}
+          >
+            {value}
+            {value === "Packets" && packetRows.length > 0
+              ? ` · ${packetRows.length}`
+              : ""}
+          </button>
+        ))}
         <span>Measured evidence · UTC</span>
       </nav>
-      <div className="observation-body">
+      <div className={`observation-body${tab === "Detection" ? " tall" : ""}`}>
         {tab === "Traffic" &&
           (events.some((e) => e.kind === "links") ? (
             <>
@@ -239,6 +249,7 @@ export function Observations({
               </p>
             </div>
           ))}
+        {tab === "Detection" && detectionView}
         {tab === "Packets" &&
           (packetRows.length ? (
             <table>

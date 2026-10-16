@@ -287,3 +287,68 @@ def test_api_paths_never_fall_through_to_the_static_bundle(tmp_path):
             assert "Reload the workspace" in detail
         # The built web bundle is still served from the same mount.
         assert client.get("/").status_code == 200
+
+
+def test_detection_options_need_a_session_and_describe_the_detector():
+    class Detector:
+        def config(self):
+            return {"mode": "llm", "model": "llama3.2:3b", "prompts": ["lab"]}
+
+        def models(self):
+            return ["llama3.2:3b"]
+
+        def apply(self, detection):
+            return {}
+
+    repository = MemoryRepository()
+    settings = LabSettings(
+        access_token=secrets.token_urlsafe(32),
+        runner_token=secrets.token_urlsafe(32),
+        origin="http://testserver",
+    )
+    manager = LabManager(repository, FakeRuntime, Detector())
+    client = TestClient(create_app(settings, repository, manager))
+    with client:
+        assert client.get("/api/detection/options").status_code == 401
+        client.post("/api/session", json={"token": settings.access_token})
+        body = client.get("/api/detection/options").json()
+        assert body["available"] is True and body["models"] == ["llama3.2:3b"]
+    bare, creds = client_for_lab()
+    with bare:
+        bare.post("/api/session", json={"token": creds.access_token})
+        assert bare.get("/api/detection/options").json()["available"] is False
+
+
+def test_an_experiment_with_detection_is_validated_by_the_api():
+    client, settings = client_for_lab()
+    topology = presets()[2].model_dump()
+    with client:
+        client.post("/api/session", json={"token": settings.access_token})
+        bad = client.post(
+            "/api/runs",
+            json={
+                "topology": topology,
+                "experiment": {
+                    "attackers": ["h1"],
+                    "victims": ["h2"],
+                    "confirm_isolated_lab": True,
+                    "detection": {"entropy": {"k": 0}},
+                },
+            },
+        )
+        assert bad.status_code == 422
+        # A lab without a detector service refuses to pick one, and says so.
+        refused = client.post(
+            "/api/runs",
+            json={
+                "topology": topology,
+                "experiment": {
+                    "attackers": ["h1"],
+                    "victims": ["h2"],
+                    "confirm_isolated_lab": True,
+                    "detection": {"mode": "entropy"},
+                },
+            },
+        )
+        assert refused.status_code == 409
+        assert "no detector service" in refused.json()["detail"]
