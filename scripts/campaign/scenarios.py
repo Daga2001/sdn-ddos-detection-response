@@ -1,0 +1,850 @@
+# ruff: noqa: E501
+"""The scenarios of the detection campaign (see lab_campaign.py).
+
+Each one is exactly what the workspace sends: a topology and an experiment with its
+detection setup. `expect` holds only hard checks; the rest is recorded for the report.
+
+Groups
+  V  requests the lab must refuse (no run starts)
+  B  traffic at a legitimate-looking rate (does the detector stay quiet?)
+  L  LLM detector, detection only (models, prompts, attack kinds, rates, thresholds)
+  E  entropy detector, detection only (attack kinds, tuning, short baseline)
+  R  response: rate limit / block / escalate, simulated and real, protected hosts, caps
+  M  larger networks, many attackers/victims, no detector, no detection setup
+  S  control flow: stop in the middle of an attack, a second start while running
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Optional
+
+ENTERPRISE = ["h1a", "h1b", "h1c", "h2a", "h2b", "h2c", "h3a", "h3b", "h3c"]
+
+
+@dataclass
+class Scenario:
+    id: str
+    group: str
+    title: str
+    topology: str = "enterprise"
+    attackers: list[str] = field(default_factory=lambda: ["h1a"])
+    victims: list[str] = field(default_factory=lambda: ["h3a"])
+    traffic: list[str] = field(default_factory=lambda: ["syn"])
+    rate: int = 300
+    baseline: int = 45
+    duration: int = 60
+    recovery: int = 25
+    mitigation: bool = False
+    detection: Optional[dict[str, Any]] = None
+    expect: dict[str, Any] = field(default_factory=dict)
+    refuse: Optional[str] = None
+    stop_after: int = 0
+
+    def duration_text(self) -> str:
+        return f"baseline {self.baseline} + attack {self.duration} + recovery {self.recovery} s"
+
+
+def llm(
+    model: str = "llama3.2:3b",
+    prompt: str = "lab",
+    samples: int = 1,
+    threshold: float = 0.8,
+    response: Optional[dict[str, Any]] = None,
+    poll: Optional[float] = None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "mode": "llm",
+        "model": model,
+        "prompt": prompt,
+        "llm_max_samples": samples,
+        "threshold": threshold,
+    }
+    if poll is not None:
+        body["poll_seconds"] = poll
+    if response is not None:
+        body["response"] = response
+    return body
+
+
+def entropy(
+    response: Optional[dict[str, Any]] = None,
+    poll: Optional[float] = None,
+    **params: Any,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {"mode": "entropy", "entropy": params}
+    if poll is not None:
+        body["poll_seconds"] = poll
+    if response is not None:
+        body["response"] = response
+    return body
+
+
+def response(
+    policy: str = "block", dry_run: bool = False, **extra: Any
+) -> dict[str, Any]:
+    return {"policy": policy, "dry_run": dry_run, **extra}
+
+
+def off() -> dict[str, Any]:
+    return {"mode": "off"}
+
+
+# Entropy needs ~80 s of warm-up windows plus ~40 s of margin before the attack starts.
+EB = 125
+UNI_ATTACKERS8 = [
+    "h_wifi1",
+    "h_wifi2",
+    "h_wifi3",
+    "h_lab1",
+    "h_lab2",
+    "h_lab3",
+    "h_prof1",
+    "h_prof2",
+]
+
+SCENARIOS: list[Scenario] = [
+    # ---- V: refusals -------------------------------------------------------------
+    Scenario(
+        "V1",
+        "V",
+        "Mitigation without a detector is refused",
+        mitigation=True,
+        detection=off(),
+        refuse="mitigation needs a detector",
+    ),
+    Scenario(
+        "V2",
+        "V",
+        "A model Ollama does not have is refused",
+        detection=llm(model="not-a-model:1b"),
+        refuse="not-a-model",
+    ),
+    Scenario(
+        "V3",
+        "V",
+        "3 attackers x 6 victims (18 flows) is refused",
+        topology="university",
+        attackers=["h_wifi1", "h_wifi2", "h_wifi3"],
+        victims=["h_web", "h_moodle", "h_notas", "h_dns", "h_files", "h_lab6"],
+        refuse="traffic flows",
+    ),
+    Scenario(
+        "V4",
+        "V",
+        "A public address in the protected list is refused",
+        mitigation=True,
+        detection=llm(response=response(protected=["8.8.8.8"])),
+        refuse="private",
+    ),
+    Scenario("V5", "V", "Rate above 1000 pkt/s is refused", rate=5000, refuse="1000"),
+    Scenario(
+        "V6",
+        "V",
+        "An attacker that is not in the topology is refused",
+        attackers=["h_nope"],
+        refuse="topology",
+    ),
+    Scenario(
+        "V7",
+        "V",
+        "No legitimate client left is refused",
+        attackers=["h1a", "h1b", "h1c", "h2a", "h2b", "h2c", "h3b", "h3c"],
+        refuse="legitimate client",
+    ),
+    Scenario(
+        "V8",
+        "V",
+        "A host that attacks and is attacked is refused",
+        attackers=["h1a"],
+        victims=["h1a"],
+        refuse="both an attacker and a victim",
+    ),
+    Scenario(
+        "V9", "V", "Attack longer than 300 s is refused", duration=301, refuse="300"
+    ),
+    # ---- B: legitimate-looking traffic ---------------------------------------------
+    Scenario(
+        "B1",
+        "B",
+        "LLM llama3.2 on 1 pkt/s (legitimate-like): must stay quiet",
+        detection=llm(),
+        rate=1,
+        expect={"recall_max": 0.0, "fp_max": 0},
+    ),
+    Scenario(
+        "B2",
+        "B",
+        "Entropy on 1 pkt/s (legitimate-like): must stay quiet",
+        detection=entropy(),
+        rate=1,
+        baseline=EB,
+        expect={"recall_max": 0.0, "fp_max": 0},
+    ),
+    Scenario(
+        "B3",
+        "B",
+        "LLM gemma2:2b on 1 pkt/s (legitimate-like): must stay quiet",
+        detection=llm(model="gemma2:2b"),
+        rate=1,
+        expect={"recall_max": 0.0, "fp_max": 0},
+    ),
+    # ---- L: LLM, detection only ------------------------------------------------------
+    Scenario(
+        "L1",
+        "L",
+        "LLM llama3.2:3b / lab prompt / 1 atk SYN 300",
+        detection=llm(),
+        expect={"recall_min": 1.0, "fp_max": 0, "responses": "none"},
+    ),
+    Scenario(
+        "L2",
+        "L",
+        "LLM gemma2:2b / lab prompt / 1 atk SYN 300",
+        detection=llm(model="gemma2:2b"),
+        expect={"recall_min": 1.0, "fp_max": 0},
+    ),
+    Scenario(
+        "L3",
+        "L",
+        "LLM phi3.5 / lab prompt / 1 atk SYN 300",
+        detection=llm(model="phi3.5:latest"),
+        expect={"fp_max": 0},
+    ),
+    Scenario(
+        "L4",
+        "L",
+        "LLM llama3.2:3b / insdn prompt (not calibrated for the lab)",
+        detection=llm(prompt="insdn"),
+        expect={"fp_max": 0},
+    ),
+    Scenario(
+        "L5",
+        "L",
+        "LLM llama3.2:3b with 5 samples per poll (the default)",
+        detection=llm(samples=5),
+        expect={"recall_min": 1.0, "fp_max": 0},
+    ),
+    Scenario(
+        "L6",
+        "L",
+        "LLM llama3.2:3b / 3 atk UDP 500 / 1 victim",
+        attackers=["h1a", "h1b", "h1c"],
+        traffic=["udp"],
+        rate=500,
+        detection=llm(samples=2),
+        expect={"recall_min": 1.0, "fp_max": 0},
+    ),
+    Scenario(
+        "L7",
+        "L",
+        "LLM llama3.2:3b / 2 atk ICMP 300",
+        attackers=["h1a", "h1b"],
+        traffic=["icmp"],
+        detection=llm(samples=2),
+        expect={"fp_max": 0},
+    ),
+    Scenario(
+        "L8",
+        "L",
+        "LLM llama3.2:3b / 3 atk SYN+UDP / 2 victims (6 flows)",
+        attackers=["h1a", "h1b", "h1c"],
+        victims=["h3a", "h3b"],
+        traffic=["syn", "udp"],
+        rate=200,
+        detection=llm(samples=2),
+        expect={"recall_min": 1.0, "fp_max": 0},
+    ),
+    Scenario(
+        "L9",
+        "L",
+        "LLM llama3.2:3b / low rate 30 pkt/s",
+        rate=30,
+        detection=llm(),
+        expect={"fp_max": 0},
+    ),
+    Scenario(
+        "L10",
+        "L",
+        "LLM llama3.2:3b / very low rate 10 pkt/s",
+        rate=10,
+        detection=llm(),
+        expect={"fp_max": 0},
+    ),
+    Scenario(
+        "L11",
+        "L",
+        "LLM llama3.2:3b / threshold 0.5",
+        detection=llm(threshold=0.5),
+        expect={"recall_min": 1.0},
+    ),
+    Scenario(
+        "L12",
+        "L",
+        "LLM llama3.2:3b / threshold 0.95",
+        detection=llm(threshold=0.95),
+        expect={"fp_max": 0},
+    ),
+    Scenario(
+        "L13",
+        "L",
+        "LLM llama3.2:3b / 7 atk SYN 300 / 1 victim (1 legit client)",
+        attackers=["h1a", "h1b", "h1c", "h2a", "h2b", "h2c", "h3b"],
+        victims=["h3a"],
+        detection=llm(samples=1),
+        expect={"fp_max": 1},
+    ),
+    Scenario(
+        "L14",
+        "L",
+        "LLM qwen2.5:3b / lab prompt / 1 atk SYN 300",
+        detection=llm(model="qwen2.5:3b"),
+        expect={"fp_max": 0},
+    ),
+    Scenario(
+        "L15",
+        "L",
+        "LLM llama3.2:1b / lab prompt / 1 atk SYN 300",
+        detection=llm(model="llama3.2:1b"),
+        expect={"fp_max": 0},
+    ),
+    Scenario(
+        "L16",
+        "L",
+        "LLM llama3.2:3b / 1 atk SYN 1000 (maximum rate)",
+        rate=1000,
+        detection=llm(),
+        expect={"recall_min": 1.0, "fp_max": 0},
+    ),
+    # ---- E: entropy, detection only ----------------------------------------------------
+    Scenario(
+        "E1",
+        "E",
+        "Entropy defaults / 1 atk SYN 300",
+        detection=entropy(),
+        baseline=EB,
+        expect={"recall_min": 1.0, "fp_max": 0, "responses": "none"},
+    ),
+    Scenario(
+        "E2",
+        "E",
+        "Entropy defaults / 3 atk UDP 500",
+        attackers=["h1a", "h1b", "h1c"],
+        traffic=["udp"],
+        rate=500,
+        detection=entropy(),
+        baseline=EB,
+        expect={"recall_min": 1.0, "fp_max": 0},
+    ),
+    Scenario(
+        "E3",
+        "E",
+        "Entropy defaults / 3 atk x 2 victims SYN 300 (6 flows)",
+        attackers=["h1a", "h1b", "h1c"],
+        victims=["h3a", "h3b"],
+        detection=entropy(),
+        baseline=EB,
+        expect={"fp_max": 0},
+    ),
+    Scenario(
+        "E4",
+        "E",
+        "Entropy defaults / 2 atk ICMP 300",
+        attackers=["h1a", "h1b"],
+        traffic=["icmp"],
+        detection=entropy(),
+        baseline=EB,
+        expect={"fp_max": 0},
+    ),
+    Scenario(
+        "E5",
+        "E",
+        "Entropy defaults / low rate 30 pkt/s",
+        rate=30,
+        detection=entropy(),
+        baseline=EB,
+        expect={"fp_max": 0},
+    ),
+    Scenario(
+        "E6",
+        "E",
+        "Entropy k=1.5 (sensitive)",
+        detection=entropy(k=1.5),
+        baseline=EB,
+        expect={"recall_min": 1.0},
+    ),
+    Scenario(
+        "E7",
+        "E",
+        "Entropy k=4 (conservative)",
+        detection=entropy(k=4.0),
+        baseline=EB,
+        expect={"fp_max": 0},
+    ),
+    Scenario(
+        "E8",
+        "E",
+        "Entropy snapshot windows of 10 s",
+        detection=entropy(window_seconds=10, window_mode="snapshot", warmup_windows=8),
+        baseline=EB,
+        expect={"fp_max": 0},
+    ),
+    Scenario(
+        "E9",
+        "E",
+        "Entropy with a 50 s baseline (shorter than its warm-up)",
+        detection=entropy(),
+        baseline=50,
+        expect={"fp_max": 0},
+    ),
+    Scenario(
+        "E10",
+        "E",
+        "Entropy defaults / 7 atk SYN 300",
+        attackers=["h1a", "h1b", "h1c", "h2a", "h2b", "h2c", "h3b"],
+        detection=entropy(),
+        baseline=EB,
+        expect={"fp_max": 1},
+    ),
+    Scenario(
+        "E11",
+        "E",
+        "Entropy defaults / 1 atk SYN 1000 (maximum rate)",
+        rate=1000,
+        detection=entropy(),
+        baseline=EB,
+        expect={"recall_min": 1.0, "fp_max": 0},
+    ),
+    Scenario(
+        "E12",
+        "E",
+        "Entropy with update_hold 2 + slower smoothing / 1 atk SYN 1000 (compare with E11)",
+        rate=1000,
+        detection=entropy(update_hold=2, alpha_run=0.05),
+        baseline=EB,
+        expect={"fp_max": 0},
+    ),
+    Scenario(
+        "E13",
+        "E",
+        "Entropy with update_hold 2 + slower smoothing / 1 atk SYN 300 (compare with E1)",
+        detection=entropy(update_hold=2, alpha_run=0.05),
+        baseline=EB,
+        expect={"recall_min": 1.0, "fp_max": 0},
+    ),
+    # ---- R: response ------------------------------------------------------------------------
+    Scenario(
+        "R1",
+        "R",
+        "LLM + rate_limit 50 pkt/s (real) / 1 atk",
+        mitigation=True,
+        detection=llm(response=response("rate_limit")),
+        expect={"recall_min": 1.0, "fp_max": 0, "responses": "some", "rules": "meter"},
+    ),
+    Scenario(
+        "R2",
+        "R",
+        "LLM + block (real) / 1 atk",
+        mitigation=True,
+        detection=llm(response=response("block")),
+        expect={"recall_min": 1.0, "fp_max": 0, "responses": "some", "rules": "drop"},
+    ),
+    Scenario(
+        "R3",
+        "R",
+        "LLM + escalate (real) / 3 atk UDP 500 / 90 s",
+        attackers=["h1a", "h1b", "h1c"],
+        traffic=["udp"],
+        rate=500,
+        duration=90,
+        mitigation=True,
+        detection=llm(
+            samples=2, response=response("escalate", escalate_after_seconds=20)
+        ),
+        expect={"recall_min": 1.0, "responses": "some", "rules": "drop"},
+    ),
+    Scenario(
+        "R4",
+        "R",
+        "LLM + escalate in a simulation (dry run)",
+        mitigation=True,
+        detection=llm(response=response("escalate", dry_run=True)),
+        expect={"recall_min": 1.0, "responses": "some", "rules": "none"},
+    ),
+    Scenario(
+        "R5",
+        "R",
+        "Entropy + rate_limit 50 pkt/s (real) / 3 atk",
+        attackers=["h1a", "h1b", "h1c"],
+        rate=300,
+        mitigation=True,
+        baseline=EB,
+        detection=entropy(response=response("rate_limit")),
+        expect={"recall_min": 1.0, "responses": "some", "rules": "meter"},
+    ),
+    Scenario(
+        "R6",
+        "R",
+        "Entropy + block (real) / 3 atk",
+        attackers=["h1a", "h1b", "h1c"],
+        mitigation=True,
+        baseline=EB,
+        detection=entropy(response=response("block")),
+        expect={"recall_min": 1.0, "responses": "some", "rules": "drop"},
+    ),
+    Scenario(
+        "R7",
+        "R",
+        "LLM + block with one attacker protected (h1b)",
+        attackers=["h1a", "h1b", "h1c"],
+        mitigation=True,
+        detection=llm(samples=2, response=response("block", protected=["10.0.0.2"])),
+        expect={"recall_min": 1.0, "responses": "some", "not_responded": ["h1b"]},
+    ),
+    Scenario(
+        "R8",
+        "R",
+        "LLM + block capped at 2 active sources / 4 atk",
+        attackers=["h1a", "h1b", "h1c", "h2a"],
+        mitigation=True,
+        detection=llm(samples=2, response=response("block", max_active=2)),
+        expect={"responses": "some", "responded_max": 2},
+    ),
+    Scenario(
+        "R9",
+        "R",
+        "LLM + rate_limit 200 pkt/s (real) / 1 atk SYN 500",
+        rate=500,
+        mitigation=True,
+        detection=llm(response=response("rate_limit", rate_limit_pps=200)),
+        expect={"recall_min": 1.0, "responses": "some", "rules": "meter"},
+    ),
+    Scenario(
+        "R10",
+        "R",
+        "LLM + block for 30 s only (real, 90 s attack)",
+        duration=90,
+        mitigation=True,
+        detection=llm(response=response("block", block_seconds=30)),
+        expect={"recall_min": 1.0, "responses": "some", "rules": "drop"},
+    ),
+    Scenario(
+        "R11",
+        "R",
+        "Entropy + escalate (real) / 3 atk / 90 s",
+        attackers=["h1a", "h1b", "h1c"],
+        duration=90,
+        mitigation=True,
+        baseline=EB,
+        detection=entropy(response=response("escalate", escalate_after_seconds=20)),
+        expect={"recall_min": 1.0, "responses": "some", "rules": "drop"},
+    ),
+    Scenario(
+        "R12",
+        "R",
+        "Entropy + block simulated (dry run) / 3 atk",
+        attackers=["h1a", "h1b", "h1c"],
+        mitigation=True,
+        baseline=EB,
+        detection=entropy(response=response("block", dry_run=True)),
+        expect={"recall_min": 1.0, "responses": "some", "rules": "none"},
+    ),
+    Scenario(
+        "R13",
+        "R",
+        "LLM + block (real) / 1 atk, acting only after 2 detections (compare with R2)",
+        mitigation=True,
+        detection=llm(response=response("block", confirm_hits=2)),
+        expect={
+            "recall_min": 1.0,
+            "responses": "some",
+            "rules": "drop",
+            "collateral_max": 0,
+        },
+    ),
+    Scenario(
+        "R14",
+        "R",
+        "LLM + block (real) / 3 atk SYN, acting only after 2 detections",
+        attackers=["h1a", "h1b", "h1c"],
+        mitigation=True,
+        detection=llm(samples=1, response=response("block", confirm_hits=2)),
+        expect={
+            "recall_min": 1.0,
+            "responses": "all",
+            "rules": "drop",
+            "collateral_max": 0,
+        },
+    ),
+    Scenario(
+        "R15",
+        "R",
+        "Entropy + block (real) / 3 atk UDP, acting only after 2 alarms",
+        attackers=["h1a", "h1b", "h1c"],
+        traffic=["udp"],
+        rate=500,
+        baseline=EB,
+        mitigation=True,
+        detection=entropy(response=response("block", confirm_hits=2)),
+        expect={"recall_min": 1.0, "responses": "some", "rules": "drop"},
+    ),
+    Scenario(
+        "R16",
+        "R",
+        "LLM + block (real) / 3 atk SYN, acting on the first detection (compare with R14)",
+        attackers=["h1a", "h1b", "h1c"],
+        recovery=60,
+        mitigation=True,
+        detection=llm(samples=1, response=response("block")),
+        expect={"recall_min": 1.0, "responses": "some"},
+    ),
+    Scenario(
+        "R17",
+        "R",
+        "LLM + block (real) / 3 atk SYN, 2 detections needed, statistics every 2 s (compare with R14)",
+        attackers=["h1a", "h1b", "h1c"],
+        recovery=60,
+        mitigation=True,
+        detection=llm(samples=1, poll=2, response=response("block", confirm_hits=2)),
+        expect={"recall_min": 1.0, "responses": "some", "collateral_max": 0},
+    ),
+    Scenario(
+        "R18",
+        "R",
+        "LLM + block (real) / 3 atk SYN, 2 detections needed, statistics every 1 s",
+        attackers=["h1a", "h1b", "h1c"],
+        recovery=60,
+        mitigation=True,
+        detection=llm(samples=1, poll=1, response=response("block", confirm_hits=2)),
+        expect={"recall_min": 1.0, "responses": "some", "collateral_max": 0},
+    ),
+    # ---- M: bigger networks, no detector, no setup --------------------------------------------
+    Scenario(
+        "M1",
+        "M",
+        "University / 8 atk SYN 300 / 1 victim / LLM + block (the run that lost telemetry)",
+        topology="university",
+        attackers=UNI_ATTACKERS8,
+        victims=["h_web"],
+        baseline=60,
+        duration=120,
+        recovery=60,
+        mitigation=True,
+        detection=llm(samples=1, response=response("block")),
+        expect={"recall_min": 1.0, "fp_max": 0, "responses": "some"},
+    ),
+    Scenario(
+        "M2",
+        "M",
+        "University / 8 atk SYN 300 / 1 victim / Entropy + escalate",
+        topology="university",
+        attackers=UNI_ATTACKERS8,
+        victims=["h_web"],
+        baseline=EB,
+        duration=120,
+        recovery=60,
+        mitigation=True,
+        detection=entropy(response=response("escalate")),
+        expect={"recall_min": 1.0, "responses": "some"},
+    ),
+    Scenario(
+        "M3",
+        "M",
+        "University / 3 atk x 3 victims UDP 300 (9 flows) / LLM + rate_limit",
+        topology="university",
+        attackers=["h_wifi1", "h_wifi2", "h_lab1"],
+        victims=["h_web", "h_moodle", "h_notas"],
+        traffic=["udp"],
+        baseline=60,
+        duration=90,
+        mitigation=True,
+        detection=llm(samples=1, response=response("rate_limit")),
+        expect={"recall_min": 1.0, "responses": "some"},
+    ),
+    Scenario(
+        "M4",
+        "M",
+        "University / 6 atk x 2 victims SYN+UDP (12 flows) / Entropy simulated block",
+        topology="university",
+        attackers=["h_wifi1", "h_wifi2", "h_wifi3", "h_lab1", "h_lab2", "h_lab3"],
+        victims=["h_web", "h_moodle"],
+        traffic=["syn", "udp"],
+        rate=200,
+        baseline=EB,
+        duration=90,
+        mitigation=True,
+        detection=entropy(response=response("block", dry_run=True)),
+        expect={"responses": "some", "rules": "none"},
+    ),
+    Scenario(
+        "M5",
+        "M",
+        "No detection setup at all (detector keeps whatever it had)",
+        attackers=["h1a", "h1b"],
+        expect={},
+    ),
+    Scenario(
+        "M6",
+        "M",
+        "Detection off, 3 atk SYN 1000: what the attack does unopposed",
+        attackers=["h1a", "h1b", "h1c"],
+        rate=1000,
+        baseline=30,
+        detection=off(),
+        expect={"recall_max": 0.0, "responses": "none"},
+    ),
+    Scenario(
+        "M7",
+        "M",
+        "Detection off, 1 atk SYN 300: unopposed reference",
+        baseline=30,
+        detection=off(),
+        expect={"recall_max": 0.0, "responses": "none"},
+    ),
+    Scenario(
+        "M8",
+        "M",
+        "Smallest network (3 hosts) / LLM llama3.2",
+        topology="small",
+        attackers=["h1"],
+        victims=["h2"],
+        detection=llm(),
+        expect={"recall_min": 1.0},
+    ),
+    Scenario(
+        "M9",
+        "M",
+        "Linear network (6 hosts, 3 switches) / 2 atk / LLM + block",
+        topology="linear",
+        attackers=["h1", "h2"],
+        victims=["h6"],
+        mitigation=True,
+        detection=llm(samples=2, response=response("block")),
+        expect={"recall_min": 1.0, "responses": "some"},
+    ),
+    Scenario(
+        "M10",
+        "M",
+        "Recovery dynamics: SYN flood unopposed, 30 s attack then 120 s of recovery",
+        baseline=30,
+        duration=30,
+        recovery=120,
+        detection=off(),
+        expect={"recall_max": 0.0},
+    ),
+    Scenario(
+        "M11",
+        "M",
+        "Recovery dynamics: UDP flood unopposed, 30 s attack then 120 s of recovery",
+        traffic=["udp"],
+        baseline=30,
+        duration=30,
+        recovery=120,
+        detection=off(),
+        expect={"recall_max": 0.0},
+    ),
+    Scenario(
+        "M12",
+        "M",
+        "Recovery dynamics: SYN flood stopped by LLM + block, 30 s attack then 120 s of recovery",
+        baseline=45,
+        duration=30,
+        recovery=120,
+        mitigation=True,
+        detection=llm(response=response("block")),
+        expect={"recall_min": 1.0, "responses": "some"},
+    ),
+    Scenario(
+        "M13",
+        "M",
+        "University / 8 atk SYN 300 / LLM + block, acting only after 2 detections (compare with M1)",
+        topology="university",
+        attackers=UNI_ATTACKERS8,
+        victims=["h_web"],
+        baseline=60,
+        duration=120,
+        recovery=60,
+        mitigation=True,
+        detection=llm(samples=1, response=response("block", confirm_hits=2)),
+        expect={"recall_min": 1.0, "responses": "some", "collateral_max": 0},
+    ),
+    Scenario(
+        "M14",
+        "M",
+        "Recovery dynamics: SYN flood unopposed, 60 s attack then 150 s of recovery",
+        baseline=30,
+        duration=60,
+        recovery=150,
+        detection=off(),
+        expect={"recall_max": 0.0},
+    ),
+    Scenario(
+        "M15",
+        "M",
+        "Recovery dynamics: SYN flood stopped by LLM + escalate, 60 s attack then 150 s of recovery",
+        baseline=45,
+        duration=60,
+        recovery=150,
+        mitigation=True,
+        detection=llm(response=response("escalate")),
+        expect={"recall_min": 1.0, "responses": "some"},
+    ),
+    Scenario(
+        "M16",
+        "M",
+        "University / 8 atk SYN 300 / LLM + block, 2 detections needed, statistics every 1 s (compare with M13)",
+        topology="university",
+        attackers=UNI_ATTACKERS8,
+        victims=["h_web"],
+        baseline=60,
+        duration=120,
+        recovery=60,
+        mitigation=True,
+        detection=llm(samples=1, poll=1, response=response("block", confirm_hits=2)),
+        expect={"recall_min": 1.0, "responses": "some", "collateral_max": 0},
+    ),
+    Scenario(
+        "M17",
+        "M",
+        "University / 8 atk SYN 300 / Entropy + block straight away (control for M2: escalate)",
+        topology="university",
+        attackers=UNI_ATTACKERS8,
+        victims=["h_web"],
+        baseline=EB,
+        duration=120,
+        recovery=60,
+        mitigation=True,
+        detection=entropy(response=response("block")),
+        expect={"recall_min": 1.0, "responses": "some", "collateral_max": 0},
+    ),
+    Scenario(
+        "M18",
+        "M",
+        "University / 8 atk SYN 300 / Entropy with 2 s windows + statistics every 1 s, block straight away",
+        topology="university",
+        attackers=UNI_ATTACKERS8,
+        victims=["h_web"],
+        baseline=EB,
+        duration=120,
+        recovery=60,
+        mitigation=True,
+        detection=entropy(
+            response=response("block"), poll=1, window_seconds=2, warmup_windows=40
+        ),
+        expect={"recall_min": 1.0, "responses": "some", "collateral_max": 0},
+    ),
+    # ---- S: control flow ------------------------------------------------------------------------
+    Scenario(
+        "S1",
+        "S",
+        "Stop pressed in the middle of an attack (LLM + block real)",
+        attackers=["h1a", "h1b"],
+        duration=120,
+        mitigation=True,
+        stop_after=40,
+        detection=llm(samples=2, response=response("block")),
+        expect={"final": "stopped"},
+    ),
+]
+
+BY_ID = {s.id: s for s in SCENARIOS}
