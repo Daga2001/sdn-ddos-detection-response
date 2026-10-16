@@ -7,12 +7,14 @@ import json
 import os
 import platform
 import queue
+import select
 import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Optional
 
@@ -20,10 +22,26 @@ import requests
 
 from sdn_ddos.config import ControllerSettings, validate_lab_target
 from sdn_ddos.experiments.attack_launcher import build_hping_command
-from sdn_ddos.lab.contracts import Capture, Diagnostic, Experiment, attack_plan
+from sdn_ddos.lab.contracts import (
+    Capture,
+    DetectionConfig,
+    Diagnostic,
+    Experiment,
+    attack_plan,
+)
+from sdn_ddos.lab.detection_settings import controller_env as controller_env_for
 from sdn_ddos.lab.events import RateCounters, utc_now
 from sdn_ddos.lab.processes import Emit, ManagedProcess
+from sdn_ddos.lab.telemetry import grow_buffer
 from sdn_ddos.lab.topology import Topology
+
+CONTROLLER_KINDS = frozenset(
+    {"controller", "flows", "detection", "mitigation_requested"}
+)
+INBOX_LIMIT = 20000
+DGRAM_QUEUE = 4096
+DGRAM_QUEUE_SYSCTL = Path("/proc/sys/net/unix/max_dgram_qlen")
+SAMPLE_EVENT_LIMIT = 5000
 
 PACKET_FIELDS = [
     "frame.time_epoch",
@@ -54,14 +72,38 @@ def packet_summary(line: str) -> Optional[dict[str, str]]:
     return dict(zip(PACKET_FIELDS, fields))
 
 
+def widen_dgram_queue(length: int = DGRAM_QUEUE) -> int:
+    """Let a datagram socket queue more than the container's default of 10 messages.
+
+    The limit is read when the socket is created, so this runs first. It only touches
+    this container's network namespace and is best effort: without the privilege the
+    listener thread alone keeps up with most bursts.
+    """
+
+    try:
+        current = int(DGRAM_QUEUE_SYSCTL.read_text())
+        if current < length:
+            DGRAM_QUEUE_SYSCTL.write_text(str(length))
+            current = length
+        return current
+    except (OSError, ValueError):
+        return 0
+
+
 class MininetRuntime:
     def __init__(
-        self, topology: Topology, run_id: str, mitigation: bool, emit: Emit
+        self,
+        topology: Topology,
+        run_id: str,
+        mitigation: bool,
+        emit: Emit,
+        detection: Optional[DetectionConfig] = None,
     ) -> None:
         self.topology = topology
         self.run_id = run_id
         self.emit = emit
         self.mitigation = mitigation
+        self.detection = detection
         self.network: Any = None
         self.processes: list[ManagedProcess] = []
         self.controller: Optional[ManagedProcess] = None
@@ -71,13 +113,21 @@ class MininetRuntime:
         self.interfaces: dict[str, str] = {}
         self.counters = RateCounters()
         self.temp = tempfile.TemporaryDirectory(prefix="sdn-lab-")
+        widen_dgram_queue()
         self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         self.socket.setblocking(False)
+        grow_buffer(self.socket, socket.SO_RCVBUF)
         self.socket_path = str(Path(self.temp.name) / "telemetry.sock")
         self.socket.bind(self.socket_path)
         self.lock = threading.RLock()
         self.queue: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue(maxsize=1024)
         self.dropped = 0
+        # Controller datagrams read off the socket, waiting for the next sample. The
+        # kernel keeps only `net.unix.max_dgram_qlen` of them (10 in the runner
+        # container), so a listener thread empties the socket as they arrive.
+        self.inbox: deque[dict[str, Any]] = deque(maxlen=INBOX_LIMIT)
+        self.inbox_lost = 0
+        self.listener: Optional[threading.Thread] = None
         self.last_health = 0.0
         self.last_rules = 0.0
         self.closed = False
@@ -116,12 +166,18 @@ class MininetRuntime:
                 "Mininet runtime is only enabled in the dedicated lab runner"
             )
         self.topology.validate_targets()
+        self.listener = threading.Thread(
+            target=self._listen, name="telemetry-listener", daemon=True
+        )
+        self.listener.start()
         controller_env = dict(
             os.environ,
             SDN_TELEMETRY_SOCKET=self.socket_path,
             SDN_RUN_ID=self.run_id,
             SDN_MITIGATION_ENABLED=str(self.mitigation).lower(),
         )
+        if self.detection is not None:
+            controller_env.update(controller_env_for(self.detection))
         self.controller = self._spawn(
             [
                 os.environ.get("SDN_RYU_MANAGER", "/opt/ryu/bin/ryu-manager"),
@@ -322,24 +378,18 @@ class MininetRuntime:
                     {"link_id": link_id, "interface": interface, "rates": rate}
                 )
         self.emit("links", {"links": rates, "interval_seconds": 1})
-        for _ in range(512):
+        self.pump()
+        for _ in range(SAMPLE_EVENT_LIMIT):
             try:
-                payload = json.loads(self.socket.recv(65536))
-            except BlockingIOError:
+                payload = self.inbox.popleft()
+            except IndexError:
                 break
-            except (ValueError, OSError):
-                continue
-            if payload.get("run_id") == self.run_id and payload.get("kind") in {
-                "controller",
-                "flows",
-                "detection",
-                "mitigation_requested",
-            }:
-                if payload.get("dropped"):
-                    self.emit(
-                        "gap", {"count": payload["dropped"], "source": "controller"}
-                    )
-                self.emit(payload["kind"], payload["data"])
+            if payload.get("dropped"):
+                self.emit("gap", {"count": payload["dropped"], "source": "controller"})
+            self.emit(payload["kind"], payload["data"])
+        if self.inbox_lost:
+            self.emit("gap", {"count": self.inbox_lost, "source": "runner"})
+            self.inbox_lost = 0
         self.drain()
         if self.mitigation and now - self.last_rules >= 5:
             self.last_rules = now
@@ -375,6 +425,38 @@ class MininetRuntime:
                 )
             except (requests.RequestException, ValueError):
                 self.emit("detector", {"status": "unavailable"})
+
+    def pump(self) -> None:
+        """Move every datagram waiting on the telemetry socket into the inbox."""
+
+        while True:
+            try:
+                payload = json.loads(self.socket.recv(65536))
+            except ValueError:
+                continue  # not JSON: skip it and keep reading
+            except OSError:
+                return  # nothing waiting (or the socket is closed)
+            if (
+                isinstance(payload, dict)
+                and payload.get("run_id") == self.run_id
+                and payload.get("kind") in CONTROLLER_KINDS
+            ):
+                if len(self.inbox) == INBOX_LIMIT:
+                    self.inbox_lost += 1
+                self.inbox.append(payload)
+
+    def _listen(self) -> None:
+        while not self.closed:
+            try:
+                select.select([self.socket], [], [], 0.2)
+            except (TypeError, ValueError, OSError):
+                # A closed socket ends the run; anything else is retried shortly.
+                time.sleep(0.05)
+                continue
+            try:
+                self.pump()
+            except Exception:  # the listener must outlive odd datagrams
+                time.sleep(0.05)
 
     def drain(self) -> None:
         packets = []
@@ -482,6 +564,11 @@ class MininetRuntime:
                 return
             self.closed = True
             errors = []
+            if (
+                self.listener is not None
+                and self.listener is not threading.current_thread()
+            ):
+                self.listener.join(timeout=1)
             cleanup = [process.close for process in reversed(self.processes)]
             if self.network is not None:
                 cleanup.append(self.network.stop)
