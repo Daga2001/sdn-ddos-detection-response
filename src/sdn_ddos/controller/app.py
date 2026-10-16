@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import os
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
@@ -36,6 +37,17 @@ from sdn_ddos.controller.core import (
 )
 from sdn_ddos.lab.telemetry import Telemetry
 from sdn_ddos.storage import MetricsStore, create_metrics_store
+
+
+@dataclass
+class FlowBatch:
+    """One switch's flow table as of one poll, ready to be judged and stored."""
+
+    dpid: int
+    observed_at: datetime
+    rows: List[Dict[str, Any]]
+    samples: List[Dict[str, Any]]
+    sample_indexes: List[int]
 
 
 class EnterpriseDDoSController(app_manager.RyuApp):
@@ -322,6 +334,10 @@ class EnterpriseDDoSController(app_manager.RyuApp):
 
     @set_ev_cls(ofp_event.EventOFPFlowStatsReply, MAIN_DISPATCHER)
     def flow_stats_reply_handler(self, event: Any) -> None:
+        batch = self._flow_batch(event)
+        self._finish_flow_batch(batch, self._predict(batch.samples))
+
+    def _flow_batch(self, event: Any) -> FlowBatch:
         dpid = event.msg.datapath.id
         observed_at = datetime.now(timezone.utc)
         observed_clock = time.monotonic()
@@ -370,8 +386,13 @@ class EnterpriseDDoSController(app_manager.RyuApp):
                 samples.append(sample)
                 sample_indexes.append(len(rows))
             rows.append(row)
+        return FlowBatch(dpid, observed_at, rows, samples, sample_indexes)
 
-        predictions = self._predict(samples)
+    def _finish_flow_batch(
+        self, batch: FlowBatch, predictions: Optional[List[Dict[str, Any]]]
+    ) -> None:
+        dpid, observed_at, rows = batch.dpid, batch.observed_at, batch.rows
+        sample_indexes = batch.sample_indexes
         if predictions is not None:
             for prediction, row_index in zip(predictions, sample_indexes):
                 probability = prediction.get("prob_ddos")
