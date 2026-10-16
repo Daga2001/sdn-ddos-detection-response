@@ -66,18 +66,29 @@ class BlockRegistry:
         return True
 
 
-def build_model_sample(row: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
-    """Build a model sample only when every required feature is available."""
+ICMP_PROTOCOL = 1
 
-    if any(row.get(name) is None for name in FEATURE_ORDER):
+
+def build_model_sample(row: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    """Build a model sample only when every required feature is available.
+
+    ICMP has no transport ports, so its flows carry no `l4_dst_port`; flow datasets
+    record that as 0. Without it an ICMP flood never reached the model at all.
+    """
+
+    port = row.get("l4_dst_port")
+    if port is None and row.get("ip_proto") == ICMP_PROTOCOL:
+        port = 0
+    values = {**row, "l4_dst_port": port}
+    if any(values.get(name) is None for name in FEATURE_ORDER):
         return None
     return {
-        "packet_count": int(row["packet_count"]),
-        "byte_count": int(row["byte_count"]),
-        "pktrate": float(row["pktrate"]),
-        "byterate": float(row["byterate"]),
-        "ip_proto": int(row["ip_proto"]),
-        "l4_dst_port": int(row["l4_dst_port"]),
+        "packet_count": int(values["packet_count"]),
+        "byte_count": int(values["byte_count"]),
+        "pktrate": float(values["pktrate"]),
+        "byterate": float(values["byterate"]),
+        "ip_proto": int(values["ip_proto"]),
+        "l4_dst_port": int(values["l4_dst_port"]),
     }
 
 

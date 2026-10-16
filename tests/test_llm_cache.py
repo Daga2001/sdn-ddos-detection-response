@@ -102,3 +102,44 @@ def test_service_failure_keeps_serving_cached_verdicts(
     result = controller._predict([sample(300.0, 500), sample(7.0)])
     assert result[0]["prob_ddos"] == 0.95 and result[1]["prob_ddos"] is None
     assert controller._predict([sample(8.0)]) is None
+
+
+def test_a_busy_source_not_flagged_yet_is_judged_before_one_already_flagged(
+    controller: Any,
+) -> None:
+    controller.llm_repeat_seconds = 30.0
+    controller.llm_busy_rate = 20.0
+    controller._flagged_at = {}
+    controller.llm_max_samples = 2
+    # h1a floods with two flows, h1b (another protocol) is slower but also an attacker.
+    flows = [sample(900.0, 900), sample(850.0, 850), sample(500.0, 500), sample(1.0, 5)]
+    sources = ["10.0.0.1", "10.0.0.1", "10.0.0.2", "10.0.0.5"]
+    controller._predict(flows, sources)
+    # Nothing was flagged yet: the two busiest flows are judged, both h1a's.
+    assert controller._flagged_at == {"10.0.0.1": controller._flagged_at["10.0.0.1"]}
+    controller.calls.clear()
+    fresh = [
+        sample(910.0, 1800),
+        sample(860.0, 1700),
+        sample(510.0, 1000),
+        sample(1.0, 6),
+    ]
+    controller._predict(fresh, sources)
+    asked = controller.calls[0]
+    assert [s["pktrate"] for s in asked] == [510.0, 910.0]  # h1b first, then h1a again
+    assert "10.0.0.2" in controller._flagged_at
+
+
+def test_quiet_flows_are_judged_last_and_without_sources_the_order_is_unchanged(
+    controller: Any,
+) -> None:
+    controller.llm_repeat_seconds = 30.0
+    controller.llm_busy_rate = 20.0
+    controller._flagged_at = {}
+    flows = [sample(2.0), sample(300.0, 500), sample(1.0)]
+    order = controller._priority(flows, ["a", "b", "c"])
+    assert order == [1, 0, 2]
+    controller._flagged_at = {"b": __import__("time").monotonic()}
+    # b is flagged and busy, a and c are quiet: b still comes before the quiet ones.
+    assert controller._priority(flows, ["a", "b", "c"]) == [1, 0, 2]
+    assert controller._priority(flows, None) == [1, 0, 2]

@@ -46,9 +46,10 @@ from ryu.lib.packet import ethernet, ipv4, tcp, udp
 
 from sdn_ddos.async_io import AsyncMetricsStore
 from sdn_ddos.config import DatabaseSettings
-from sdn_ddos.controller.app import EnterpriseDDoSController
+from sdn_ddos.controller.app import EnterpriseDDoSController, FlowBatch
 from sdn_ddos.controller.core import probability_is_attack
 from sdn_ddos.controller.enforcer import LIMIT_PRIORITY, OpenFlowEnforcer
+from sdn_ddos.controller.judging import PollQueue, judging_order, next_window_due
 from sdn_ddos.controller.response import (
     LIMIT,
     POLICIES,
@@ -58,7 +59,12 @@ from sdn_ddos.controller.response import (
 )
 from sdn_ddos.controller.stats_buffer import StatsReassembler
 from sdn_ddos.decision_log import create_decision_log
-from sdn_ddos.detection.entropy import EntropyDetector, FlowObservation
+from sdn_ddos.detection.entropy import (
+    EntropyDetector,
+    FlowObservation,
+    mean_rates,
+    merge_switch_rates,
+)
 from sdn_ddos.detection.entropy_client import RemoteEntropy, fetch_remote_config
 from sdn_ddos.storage import create_metrics_store
 
@@ -125,6 +131,12 @@ class ModeSwitchController(EnterpriseDDoSController):
         # model has already judged needs no second call; this keeps the event loop
         # free (each call blocks the app's event queue for ~0.3 s).
         self.llm_cache_size = int(os.environ.get("SDN_LLM_CACHE_SIZE", "4096"))
+        # A source the model has just flagged is judged after the busy sources not
+        # flagged yet, so a small sample budget is not spent re-judging the same
+        # attackers while another one (other protocol, lower rate) is never looked at.
+        self.llm_repeat_seconds = float(os.environ.get("SDN_LLM_REPEAT_SECONDS", "30"))
+        self.llm_busy_rate = float(os.environ.get("SDN_LLM_BUSY_RATE", "20"))
+        self._flagged_at: Dict[str, float] = {}
         self._verdicts: "OrderedDict[Tuple[Any, ...], Dict[str, Any]]" = OrderedDict()
         self.http = _TimeoutSession(float(os.environ.get("SDN_LLM_HTTP_TIMEOUT", "30")))
         self.entropy: Any = (
@@ -141,6 +153,20 @@ class ModeSwitchController(EnterpriseDDoSController):
         self._packet_history: Dict[int, Dict[Any, int]] = {}
         self._last_poll: Dict[int, float] = {}
         self._window_flows: Dict[int, Tuple[float, List[FlowObservation], int]] = {}
+        # How a window is built (see _window_observations); the defaults keep the
+        # original behaviour.
+        window_mode = os.environ.get("SDN_ENTROPY_WINDOW_MODE", "snapshot")
+        self.entropy_window_mode = window_mode.strip().lower()
+        if self.entropy_window_mode not in ("snapshot", "mean"):
+            raise ValueError(
+                f"SDN_ENTROPY_WINDOW_MODE must be snapshot or mean, got {window_mode!r}"
+            )
+        self.entropy_dedupe = os.environ.get(
+            "SDN_ENTROPY_DEDUPE_SWITCHES", "false"
+        ).strip().lower() in ("1", "true", "yes", "on")
+        self._window_polls: Dict[
+            int, List[Tuple[float, float, Dict[Tuple[str, str], float]]]
+        ] = {}
         response_settings = ResponseSettings.from_env(
             os.environ, self.settings.block_seconds
         )
@@ -159,6 +185,15 @@ class ModeSwitchController(EnterpriseDDoSController):
         self._limit_seen: Dict[Tuple[int, str], Tuple[int, float]] = {}
         self._offered: Dict[str, Dict[int, float]] = {}
         self.response_thread = hub.spawn(self._response_loop)
+        # The model answers in seconds, but this app handles every packet-in on the same
+        # greenthread as the stats replies, so a judgement made inline stalls new flows
+        # (legitimate clients included). With SDN_LLM_ASYNC the judging happens on its
+        # own greenthread; the handler only queues the poll.
+        self._llm_pending: PollQueue[FlowBatch] = PollQueue()
+        self._llm_wake: Any = hub.Queue(64)
+        self.llm_skipped = 0
+        if self.mode == "llm" and _truthy(os.environ.get("SDN_LLM_ASYNC", "true")):
+            self.llm_thread: Any = hub.spawn(self._llm_loop)
         if self.mode == "entropy":
             self.entropy_thread = hub.spawn(self._entropy_loop)
         self.logger.info(
@@ -230,9 +265,11 @@ class ModeSwitchController(EnterpriseDDoSController):
                 total_flows,
                 len(kept),
             )
-        super().flow_stats_reply_handler(
-            SimpleNamespace(msg=SimpleNamespace(datapath=datapath, body=kept))
-        )
+        trimmed = SimpleNamespace(msg=SimpleNamespace(datapath=datapath, body=kept))
+        if getattr(self, "llm_thread", None) is None:
+            super().flow_stats_reply_handler(trimmed)
+            return
+        self._submit_llm(self._flow_batch(trimmed))
 
     @set_ev_cls(  # type: ignore[untyped-decorator]
         ofp_event.EventOFPStateChange, [MAIN_DISPATCHER, DEAD_DISPATCHER]
@@ -248,16 +285,72 @@ class ModeSwitchController(EnterpriseDDoSController):
         self._packet_history.pop(dpid, None)
         self._last_poll.pop(dpid, None)
         self._window_flows.pop(dpid, None)
+        self._window_polls.pop(dpid, None)
+
+    # -- LLM judging off the event loop -------------------------------------
+
+    def _submit_llm(self, batch: FlowBatch) -> None:
+        """Queue a poll for the judging greenthread (see `PollQueue`)."""
+
+        if not batch.samples:
+            self._finish_flow_batch(batch, None)
+            return
+        busiest = max(float(sample["pktrate"]) for sample in batch.samples)
+        older = self._llm_pending.put(batch.dpid, batch, busiest)
+        if older is not None:
+            self.llm_skipped += 1
+            self._finish_flow_batch(older, None)  # kept in the tables, never judged
+        if not self._llm_wake.qsize():  # one pending wake-up is enough
+            self._llm_wake.put_nowait(None)
+
+    def _next_llm_batch(self) -> FlowBatch:
+        """The poll holding the busiest flow first: an attack is worth judging before
+        the quiet switches."""
+
+        return self._llm_pending.pop_busiest()
+
+    def _llm_loop(self) -> None:
+        while True:
+            self._llm_wake.get()
+            while self._llm_pending:
+                batch = self._next_llm_batch()
+                try:
+                    sources = [
+                        batch.rows[i].get("ipv4_src") for i in batch.sample_indexes
+                    ]
+                    predictions = self._predict(batch.samples, sources)
+                    self._finish_flow_batch(batch, predictions)
+                except Exception:  # the judge must outlive one bad poll
+                    self.logger.exception("LLM judging of dpid=%s failed", batch.dpid)
 
     # -- LLM mode ---------------------------------------------------------
 
-    def _predict(self, samples: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
+    def _priority(
+        self, samples: List[Dict[str, Any]], sources: Optional[List[Optional[str]]]
+    ) -> List[int]:
+        """Judging order, see `judging_order`; the original busiest-first order when
+        the sources are unknown or the repeat window is off."""
+
+        rates = [float(sample["pktrate"]) for sample in samples]
+        if not getattr(self, "llm_repeat_seconds", 0):
+            return judging_order(rates, None, (), 0.0)
+        now = time.monotonic()
+        flagged = {
+            source
+            for source, at in self._flagged_at.items()
+            if now - at < self.llm_repeat_seconds
+        }
+        return judging_order(rates, sources, flagged, self.llm_busy_rate)
+
+    def _predict(
+        self,
+        samples: List[Dict[str, Any]],
+        sources: Optional[List[Optional[str]]] = None,
+    ) -> Optional[List[Dict[str, Any]]]:
         if self.mode != "llm" or not samples:
             return None
         keys = [self._sample_key(sample) for sample in samples]
-        ranked = sorted(
-            range(len(samples)), key=lambda i: samples[i]["pktrate"], reverse=True
-        )
+        ranked = self._priority(samples, sources)
         # Most active flows first. Known samples are free; only NEW ones count
         # against the per-poll cap, and identical new ones are asked once.
         selected: List[int] = []
@@ -298,6 +391,14 @@ class ModeSwitchController(EnterpriseDDoSController):
             prediction = verdict_of[keys[index]]
             full[index] = prediction
             probability = float(prediction.get("prob_ddos", 0.0))
+            if (
+                sources is not None
+                and sources[index] is not None
+                and probability_is_attack(
+                    probability, self.settings.detection_threshold
+                )
+            ):
+                self._flagged_at[str(sources[index])] = time.monotonic()
             self.decisions.record(
                 "llm",
                 probability_is_attack(probability, self.settings.detection_threshold),
@@ -337,6 +438,7 @@ class ModeSwitchController(EnterpriseDDoSController):
         elapsed = None if last_poll is None else now - last_poll
         current: Dict[Any, int] = {}
         flows: List[FlowObservation] = []
+        pairs: Dict[Tuple[str, str], float] = {}
         for stat in body:
             if stat.priority == 0:
                 continue
@@ -353,21 +455,64 @@ class ModeSwitchController(EnterpriseDDoSController):
                 flows.append(
                     FlowObservation(str(source), str(destination), delta / elapsed)
                 )
+                pair = (str(source), str(destination))
+                pairs[pair] = pairs.get(pair, 0.0) + delta
         self._packet_history[dpid] = current
         self._last_poll[dpid] = now
         if elapsed:
             self._window_flows[dpid] = (now, flows, len(body))
+            polls = self._window_polls.setdefault(dpid, [])
+            polls.append((now, elapsed, pairs))
+            horizon = 2 * self.entropy_window
+            polls[:] = [poll for poll in polls if now - poll[0] <= horizon]
+
+    def _window_observations(
+        self, now: float, fresh: Dict[int, Tuple[float, List[FlowObservation], int]]
+    ) -> List[FlowObservation]:
+        """Flows of the whole-network window, as chosen by SDN_ENTROPY_WINDOW_MODE.
+
+        snapshot  the packet rates of each switch's last poll (original behaviour)
+        mean      the rates averaged over every poll inside the window
+        """
+
+        if self.entropy_window_mode == "snapshot" and not self.entropy_dedupe:
+            return [flow for _, per_switch, _ in fresh.values() for flow in per_switch]
+        per_switch_rates: Dict[int, Dict[Tuple[str, str], float]] = {}
+        if self.entropy_window_mode == "mean":
+            for dpid, polls in self._window_polls.items():
+                recent = [
+                    (elapsed, pairs)
+                    for stamp, elapsed, pairs in polls
+                    if now - stamp < self.entropy_window
+                ]
+                rates = mean_rates(recent)
+                if rates:
+                    per_switch_rates[dpid] = rates
+        else:
+            for dpid, (_, per_switch, _) in fresh.items():
+                totals: Dict[Tuple[str, str], float] = {}
+                for flow in per_switch:
+                    pair = (flow.src, flow.dst)
+                    totals[pair] = totals.get(pair, 0.0) + flow.weight
+                per_switch_rates[dpid] = totals
+        return merge_switch_rates(per_switch_rates, self.entropy_dedupe)
 
     def _entropy_loop(self) -> None:
+        # Windows are paced against a fixed schedule: sleeping a full window after
+        # each evaluation (a call to the detector service, a database row) drifted
+        # them to ~6.5 s apart, so a 16-window warm-up took ~104 s instead of 80 s
+        # and a short baseline ended with the flood still inside the warm-up.
+        due = time.monotonic() + self.entropy_window
         while True:
-            hub.sleep(self.entropy_window)
+            hub.sleep(max(0.0, due - time.monotonic()))
+            due = next_window_due(due, self.entropy_window, time.monotonic())
             now = time.monotonic()
             fresh = {
                 dpid: entry
                 for dpid, entry in self._window_flows.items()
                 if now - entry[0] <= 2 * self.entropy_window
             }
-            flows = [flow for _, per_switch, _ in fresh.values() for flow in per_switch]
+            flows = self._window_observations(now, fresh)
             try:
                 result = self.entropy.observe(NETWORK_SCOPE, flows)
             except (requests.RequestException, KeyError, ValueError) as exc:
@@ -423,7 +568,9 @@ class ModeSwitchController(EnterpriseDDoSController):
 
         if not self.settings.mitigation_enabled or not source_ip:
             return False
-        action = self.responder.respond(source_ip, reason=self.mode)
+        action = self.responder.respond(
+            source_ip, reason=self.mode, detected_at=detected_at.timestamp()
+        )
         if action is None:
             return False
         self._record_response(action, detected_at)

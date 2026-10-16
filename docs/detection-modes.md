@@ -71,17 +71,66 @@ bash scripts/last_run_report.sh [run_id]   # phases, who was flagged, decisions
   run records what it *would* do and enforces nothing. `detector.sh status` then
   shows `"prompt": "lab"` and `"dry_run": true`. Enable enforcement explicitly
   (`detector.sh set --dry-run false`) once a run's decisions have been reviewed.
-* Calibration: the lab baseline is only HTTP probes (~5 packets/s network-wide),
-  so the container defaults `SDN_ENTROPY_MIN_RATE` to 2 (standalone: 20). With
-  such a sparse baseline the adaptive band is wide: k=3 did **not** raise an
-  alarm in a 20 s, 1000 pkt/s SYN flood, while k=1 with a 60 s flood did. Give
-  entropy a richer baseline or tune `SDN_ENTROPY_K`/`SDN_ENTROPY_CONSECUTIVE`.
+* Entropy calibration: the lab baseline is only HTTP probes (~5 packets/s network-wide),
+  so the container defaults `SDN_ENTROPY_MIN_RATE` to 2 (standalone: 20). The first
+  defaults (10 s window of the last poll, k=3, 8 warm-up windows) missed floods: the
+  first attack window still fell inside the wide normal band and was learned as normal.
+  The lab now defaults to a 5 s window averaged over every poll inside it
+  (`SDN_ENTROPY_WINDOW_SECONDS=5`, `SDN_ENTROPY_WINDOW_MODE=mean`), k=2.5 and 16 warm-up
+  windows (80 s). Entropy therefore needs a baseline of at least ~120 s (80 s of warm-up windows plus margin, see below); the LLM does not.
+  Measured by replaying 141 recorded runs through the real detector class, selecting the
+  setting on 7 calibration runs and scoring it once on 7 held-out runs (single attacker
+  at 100/300/1000 pkt/s, SYN and UDP, and 3 attackers): 28/28 detected, median delay
+  10.1 s against 17.8 s before (the previous k=3 default detected 86 %), no confirmed
+  false alarm and no legitimate host named. Fresh live runs of the chosen setting
+  detected 3/3 (11, 12 and 17 s). Limits: one topology, one kind of legitimate traffic
+  and attacks of at least 100 pkt/s; the false-alarm estimate comes from about 11
+  baseline windows per run.
+* Optional baseline protection, off by default: `SDN_ENTROPY_UPDATE_HOLD=N` (a
+  normal-looking window waits N windows before it may update the band and is discarded
+  if the following ones are suspicious) and `SDN_ENTROPY_ALPHA_RUN` (slower smoothing
+  after the warm-up). On the original 10 s window they raised k=3 detection from 83 % to
+  100 % with no false alarms (calibration runs), but once the window is fixed they were
+  not needed. `SDN_ENTROPY_DEDUPE_SWITCHES=true` counts a flow once even if several
+  switches report it; it is not recommended with the lab's sparse baseline: the deduplicated
+  rate drops under `SDN_ENTROPY_MIN_RATE`, windows are skipped as idle and the warm-up
+  finishes later (124 s against 98 s in replay).
+* The warm-up counts windows, not seconds, and a quiet window (below `SDN_ENTROPY_MIN_RATE`)
+  is skipped. The window loop used to sleep a whole window *after* each evaluation, which
+  spaced the windows ~6.5 s apart (a call to the detector service and a database row per
+  window), so 16 windows took ~104 s: with a 108 s baseline one run had only 14 windows when the
+  flood started, learned the flood as "normal" and never alarmed (k=1.5 run). Windows are now
+  paced on a fixed schedule (`next_window_due`), so 16 windows take 80 s; the workspace
+  asks for warm-up + 40 s of baseline because the first window waits for every switch and an
+  idle window does not count.
 * The LLM is deterministic (temperature 0, fixed seed), so the controller caches
   verdicts by the features the model sees (`SDN_LLM_CACHE_SIZE`, default 4096);
   only new samples count against `SDN_LLM_MAX_SAMPLES`. Without the cache each
   call (~0.3 s) blocked the controller's event queue: in a 97 s run the attacker's
   flow reached `flow_stats` 36 s after the attack began (76 s spent in LLM calls);
   with it, 2 s (723 cached answers against 127 real calls).
+* The model is judged **off the event loop** (`SDN_LLM_ASYNC`, default `true`). Ryu
+  handles every packet-in and every stats reply on one greenthread, so a call made
+  inline holds up new flows: on the university topology (9 switches, 25 hosts) with
+  one sample per poll, legitimate probes got through 55 % of the time *before any
+  attack* and 0 % during and after one. The stats handler now only queues the poll;
+  a dedicated greenthread judges it and then stores the rows and acts. A newer poll of
+  a switch replaces its unjudged older one (the older rows are still stored, without a
+  verdict), so the backlog never exceeds one poll per switch, and the poll holding the
+  busiest flow is judged first. Measured on the same topology with 8 SYN attackers at
+  300 pkt/s: probes through 100 % / 3-12 % / 81-90 % (baseline / attack / recovery).
+  Set `SDN_LLM_ASYNC=false` to go back to inline judging.
+* Which flows get the sample budget. Flows are judged busiest first, but a source the
+  model flagged in the last `SDN_LLM_REPEAT_SECONDS` (30) goes after the busy
+  (`SDN_LLM_BUSY_RATE`, 20 pkt/s) sources it has not flagged yet. Before this, with a
+  budget of 2 and SYN floods from two hosts (four flows above 900 pkt/s) a UDP attacker at
+  500 pkt/s was never judged in a whole run (2 of 3 attackers found; now 3 of 3, all within
+  10.6 s). Quiet flows still come last, so the budget is not spent on legitimate traffic
+  that the model sometimes flags.
+* ICMP flows carry no transport port, and the sample builder used to drop any flow without
+  one, so an ICMP flood never reached the model (0 of 2 attackers detected in 135 s).
+  `build_model_sample` now sends ICMP with `l4_dst_port = 0` (how flow datasets record it):
+  2 of 2 detected within 8.5 s, no false positive. The entropy detector never needed this.
 
 ## LLM prompt profiles and calibration
 
@@ -158,11 +207,54 @@ infrastructure) never is, every action expires by itself, at most
 be reviewed before trusting them. Actions are stored in `mitigation_events`
 (`temporary_drop`, `rate_limit_<pps>pps`).
 
+Confirmation (`SDN_RESPONSE_CONFIRM_HITS`, default 1; `SDN_RESPONSE_CONFIRM_SECONDS`, 30; in the
+workspace "Detections needed" / "Within"): a source is acted on only after it was flagged that many
+times in different polls (detections within 2 s count once: they are one poll seen by several
+switches). A flood is flagged poll after poll; the LLM's one-off false alarm on a quiet client is
+not. Without it, `block` with the LLM cut off 4 of 8 legitimate clients in one 60 s run (campaign
+R2) and 5 of 16 in the university network (M1); `rate_limit` and `escalate` never harmed them
+because a client sending 1-3 pkt/s is far under the cap. The price is one more poll
+(~5 s) before the response, and with a small sample budget more when several attackers share the
+budget. A source already being handled escalates without a new confirmation.
+
 Caveats: a false positive blocks or throttles a legitimate host (the LLM
 currently produces them, see the calibration notes), so keep `dry_run` on (the lab
 container default) or protect known hosts until the detector is validated. The lab GUI only draws
 `priority=100 ... drop` rules as "observed", so rate limits show up in
 `ovs-ofctl -O OpenFlow13 dump-flows/dump-meters` but not in that panel.
+
+## Reaction speed: the statistics poll
+
+Both detectors work from the switches' flow statistics, so how often the controller polls
+them (`SDN_POLL_INTERVAL`, default 5 s; "Poll every · s" per run in the workspace,
+`DetectionConfig.poll_seconds`) bounds how soon a flood can be seen: a rate needs two polls,
+so detection takes about two intervals. This matters because a SYN flood makes every
+reply a new flow and the service starts failing ~10 s into the attack, before a slow
+response can land. Measured on the same attack (3 SYN attackers at 300 pkt/s, LLM, `block`,
+2 detections needed):
+
+| Poll | First detection | First block | Legitimate probes (baseline / attack / recovery) |
+| --- | --- | --- | --- |
+| 5 s | +11 s | +14 s | 100 / 26-37 / 80 % |
+| 2 s | +5 s | +7,5 s | 100 / 37 / 95 % |
+| 1 s | +1,9 s | +2,9 s | 100 / 100 / 100 % |
+
+With 8 attackers on the university network (2400 pkt/s) the service starts failing about
+6 s into the attack, before any detector that needs two 5 s polls can answer, whichever
+detector it is: entropy with `block` straight away (alarm at +12 s) left the probes at
+100 / 3 / 0 %, entropy with `escalate` (alarm at +23 s because the saturated controller
+delays its own windows) at 100 / 9 / 100 %, LLM with `block` and 2 detections at 5 s polling
+100 / 3 / 50 %. Polling every 1 s fixes most of it: LLM + `block` + 2 detections needed
+(all 8 detected by +7,5 s, first block +5,2 s) kept 100 / 86 / 100 %, and entropy with 2 s
+windows (`window_seconds=2`, `warmup_windows=40`) + 1 s polling (all 8 blocked at +3,1 s)
+100 / 69 / 100 %. Neither has been checked against false alarms over many runs.
+
+Acting on the first detection instead (no confirmation) also saves the service (95 %) but
+blocked two legitimate clients on a false alarm. Faster polling keeps the confirmation and
+the speed. The cost is load: each poll of every switch is parsed in Python, so polling
+faster costs the controller more while the tables are large; if a flood is not stopped
+early the collapse is worse. The flow explosion itself is left as it is: it is the
+phenomenon the thesis studies.
 
 ## Entropy detector
 
@@ -172,7 +264,10 @@ flows of the network, weighted by packet rate. An adaptive band (EWMA mean +/-
 A window is suspicious when H(src) leaves the band (either side) or H(dst)
 drops below it; the alarm is confirmed after `SDN_ENTROPY_CONSECUTIVE` (2)
 suspicious windows in a row. Candidate attackers are the sources carrying at
-least `SDN_ENTROPY_CANDIDATE_SHARE` (30 %) of the traffic, except the address named as the victim (`target_dst`): in
+least `SDN_ENTROPY_CANDIDATE_SHARE` (30 %) of the traffic divided by the number of sources
+sending above the rate floor below (one flooder must carry 30 %; each of seven carries ~7 %
+and is named at 4.3 %; before this the alarm fired, the victim was found and nobody was
+accused: campaign E10, 7 attackers, 0 of 7 named), except the address named as the victim (`target_dst`): in
 a SYN flood the victim's RST replies are flows whose source is the victim and
 can exceed that share. A candidate must also send at least
 `SDN_ENTROPY_CANDIDATE_MIN_RATE` (20) packets/s: without that floor, once the
@@ -185,8 +280,9 @@ not update the baseline.
 ## LLM detector
 
 `SDN_LLM_MODEL` selects the Ollama model (no code change). Only the
-`SDN_LLM_MAX_SAMPLES` (5) fastest flows per poll are sent to the model. The
-prompt is in `llm_api.py` (`PROMPT_TEMPLATE`); compare models on the same
+`SDN_LLM_MAX_SAMPLES` (5) fastest flows per poll are sent to the model (a poll is
+judged in the background, see above, so a slow model delays detections, not the network).
+The prompt is in `llm_api.py` (`PROMPT_TEMPLATE`); compare models on the same
 samples with `scripts/compare_llms.py`.
 
 ## Robustness fixes over the baseline controller
@@ -210,4 +306,11 @@ Found while attacking the lab (they only live in the subclass):
 * A SYN flood makes every RST reply a new flow (~1 new flow per attack packet),
   which is the flow-table exhaustion the thesis studies; `flows_per_switch` in
   the entropy decisions records it.
-* ICMP flows have no L4 port and are skipped by the LLM path (`build_model_sample`).
+* ICMP flows have no L4 port; `build_model_sample` sends them to the LLM with port 0 (see above).
+  The entropy detector does not catch a symmetric ICMP echo flood: the replies mirror the
+  requests, so H(src) and H(dst) stay at the baseline's value (campaign E4: 0 of 2).
+* The entropy detector is blind to floods whose source/destination entropy stays inside the
+  learned band: 3 attackers against 2 victims (campaign E3: 0 of 3; offline, adding the window
+  rate as a monitored signal catches it at +11.7 s with no baseline false alarm, naming the
+  sources then needs a separate rule). Many-to-one floods are alarmed, and since the
+  candidate rule below every source is named.
