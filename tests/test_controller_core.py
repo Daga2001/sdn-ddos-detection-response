@@ -44,6 +44,22 @@ def test_model_sample_requires_every_feature() -> None:
     assert build_model_sample(row) is None
 
 
+def test_icmp_flows_reach_the_model_with_port_zero() -> None:
+    icmp = {
+        "packet_count": 600,
+        "byte_count": 58800,
+        "pktrate": 300.0,
+        "byterate": 29400.0,
+        "ip_proto": 1,
+        "l4_dst_port": None,
+    }
+    assert build_model_sample(icmp) == {**icmp, "l4_dst_port": 0}
+    # Only ICMP gets this: a TCP flow without a port is still incomplete.
+    assert build_model_sample({**icmp, "ip_proto": 6}) is None
+    # The stored row is not rewritten.
+    assert icmp["l4_dst_port"] is None
+
+
 def test_probability_validation() -> None:
     assert probability_is_attack(0.8, 0.8) is True
     assert probability_is_attack("0.9", 0.8) is True

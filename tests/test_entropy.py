@@ -4,6 +4,8 @@ from sdn_ddos.detection.entropy import (
     AdaptiveBand,
     EntropyDetector,
     FlowObservation,
+    mean_rates,
+    merge_switch_rates,
     shannon_entropy,
 )
 
@@ -142,6 +144,24 @@ def test_the_victim_is_never_listed_as_a_candidate_even_with_heavy_replies():
     assert result.candidates == ("10.0.1.9",)
 
 
+def many_attackers_window() -> list:
+    # seven sources each sending 300 pkt/s to one victim: each holds ~12 % of the rate
+    return [
+        *normal_window(),
+        *[FlowObservation(f"10.0.1.{20 + i}", "10.0.1.3", 300.0) for i in range(7)],
+    ]
+
+
+def test_every_source_of_a_many_to_one_flood_is_named_not_only_a_single_flooder():
+    detector = warmed_detector()
+    detector.observe(1, many_attackers_window())
+    result = detector.observe(1, many_attackers_window())
+    assert result.confirmed and result.target_dst == "10.0.1.3"
+    assert set(result.candidates) == {f"10.0.1.{20 + i}" for i in range(7)}
+    # the quiet background hosts are still never accused
+    assert not {"10.0.1.1", "10.0.1.2"} & set(result.candidates)
+
+
 def quiet_window() -> list:
     # what is left after the attacker was blocked: one chatty client in a trickle
     return [FlowObservation("10.0.1.5", "10.0.1.6", 6.0)]
@@ -167,3 +187,72 @@ def test_the_candidate_rate_floor_is_configurable():
         == 7.0
     )
     assert EntropyDetector.from_env({}).candidate_min_rate == 20.0
+
+
+def test_hold_keeps_the_onset_of_a_flood_out_of_the_baseline():
+    detector = warmed_detector(update_hold=2)
+    band = detector._states[1].src
+    learned = band.count
+    assert not detector.observe(1, normal_window()).suspicious
+    assert band.count == learned  # still waiting to see what follows
+    assert detector.observe(1, flood_window()).suspicious
+    assert band.count == learned  # the pending normal-looking window was discarded
+    for _ in range(3):
+        detector.observe(1, normal_window())
+    assert band.count == learned + 1  # later windows are learned, two behind
+
+
+def test_no_hold_updates_the_baseline_immediately():
+    detector = warmed_detector()
+    band = detector._states[1].src
+    learned = band.count
+    detector.observe(1, normal_window())
+    assert band.count == learned + 1
+
+
+def test_slower_smoothing_after_warmup_moves_the_band_less():
+    fast = AdaptiveBand(alpha=0.5, k=3.0, min_std=0.1, warmup=2)
+    slow = AdaptiveBand(alpha=0.5, k=3.0, min_std=0.1, warmup=2, alpha_run=0.1)
+    for band in (fast, slow):
+        band.update(1.0)
+        band.update(1.0)  # warmup uses alpha for both
+        band.update(2.0)
+    assert math.isclose(fast.mean, 1.5)
+    assert math.isclose(slow.mean, 1.1)
+
+
+def test_from_env_reads_the_baseline_protection_options():
+    detector = EntropyDetector.from_env(
+        {"SDN_ENTROPY_UPDATE_HOLD": "2", "SDN_ENTROPY_ALPHA_RUN": "0.05"}
+    )
+    assert detector.update_hold == 2
+    assert detector.alpha_run == 0.05
+    default = EntropyDetector.from_env({})
+    assert default.update_hold == 0 and default.alpha_run is None
+
+
+def test_mean_rates_use_every_poll_in_the_window():
+    polls = [
+        (5.0, {("a", "v"): 5.0, ("b", "v"): 10.0}),  # 1 pkt/s and 2 pkt/s
+        (5.0, {("a", "v"): 15.0}),  # 3 pkt/s, b silent
+    ]
+    rates = mean_rates(polls)
+    assert math.isclose(rates[("a", "v")], 2.0)
+    assert math.isclose(rates[("b", "v")], 1.0)
+    assert mean_rates([]) == {}
+    assert mean_rates([(0.0, {("a", "v"): 3.0})]) == {}
+
+
+def test_merge_switch_rates_counts_a_flow_once_when_deduplicating():
+    per_switch = {
+        1: {("a", "v"): 10.0, ("b", "v"): 2.0},
+        2: {("a", "v"): 9.0},  # same flow seen at a second switch
+    }
+    summed = merge_switch_rates(per_switch, dedupe=False)
+    assert sorted((f.src, f.weight) for f in summed) == [
+        ("a", 9.0),
+        ("a", 10.0),
+        ("b", 2.0),
+    ]
+    unique = merge_switch_rates(per_switch, dedupe=True)
+    assert sorted((f.src, f.weight) for f in unique) == [("a", 10.0), ("b", 2.0)]
