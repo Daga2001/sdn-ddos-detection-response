@@ -17,6 +17,7 @@ from sdn_ddos.lab.contracts import (
     probe_pairs,
     validate_experiment,
 )
+from sdn_ddos.lab.detection_settings import DetectorClient
 from sdn_ddos.lab.events import EventJournal, utc_now
 from sdn_ddos.lab.repository import Repository
 from sdn_ddos.lab.runtime import MininetRuntime
@@ -30,8 +31,10 @@ class LabManager:
         self,
         repository: Repository,
         runtime_factory: Callable[..., Any] = MininetRuntime,
+        detector: Optional[DetectorClient] = None,
     ) -> None:
         self.repository = repository
+        self.detector = detector
         self.runtime_factory = runtime_factory
         self.runtime: Any = None
         self.journal = EventJournal()
@@ -69,6 +72,17 @@ class LabManager:
             if self.state in ACTIVE or (self.thread and self.thread.is_alive()):
                 raise ValueError("a lab is already running; stop it first")
             self.repository.health()
+            detection = request.experiment.detection if request.experiment else None
+            if detection is not None:
+                if self.detector is None:
+                    raise ValueError(
+                        "this lab has no detector service to configure; start it "
+                        "with scripts/lab_detector.sh or run without a detection "
+                        "setting"
+                    )
+                # Done only after the busy checks above, so a running experiment's
+                # detector is never changed under it.
+                self.detector.apply(detection)
             identifier = str(uuid4())
             self.repository.create_run(
                 {
@@ -90,6 +104,44 @@ class LabManager:
             )
             self.thread.start()
             return identifier
+
+    def detection_options(self) -> dict[str, Any]:
+        """What the workspace may offer: the detector's current setup and its LLMs."""
+
+        if self.detector is None:
+            return {
+                "available": False,
+                "reason": "this lab was started without a detector service",
+            }
+        try:
+            current = self.detector.config()
+        except ValueError as error:
+            return {"available": False, "reason": str(error)}
+        result: dict[str, Any] = {"available": True, "current": current, "models": []}
+        try:
+            result["models"] = self.detector.models()
+        except ValueError as error:
+            result["models_error"] = str(error)
+        return result
+
+    def _announce_detection(self, request: StartRequest) -> None:
+        """Record which detector judged this run, so a replay shows its criteria."""
+
+        experiment = request.experiment
+        if experiment is None:
+            return
+        if experiment.detection is not None:
+            data: dict[str, Any] = {"source": "experiment"}
+            data.update(experiment.detection.model_dump())
+        elif self.detector is not None:
+            try:
+                data = {"source": "detector-service", **self.detector.config()}
+            except ValueError:
+                return
+        else:
+            return
+        data["mitigation"] = experiment.mitigation
+        self.journal.emit("detection_config", data)
 
     def _persist(self, event: dict[str, Any]) -> None:
         try:
@@ -130,11 +182,16 @@ class LabManager:
         result = "stopped"
         try:
             self.journal.emit("phase", {"state": "starting"})
+            self._announce_detection(request)
+            extra: dict[str, Any] = {}
+            if request.experiment and request.experiment.detection is not None:
+                extra["detection"] = request.experiment.detection
             self.runtime = self.runtime_factory(
                 request.topology,
                 self.run_id,
                 bool(request.experiment and request.experiment.mitigation),
                 self.journal.emit,
+                **extra,
             )
             self.runtime.start()
             experiment = request.experiment
