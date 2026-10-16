@@ -10,6 +10,12 @@ Policies (SDN_RESPONSE_POLICY):
   escalate    rate-limit first; if the source is flagged again after
               SDN_RESPONSE_ESCALATE_AFTER seconds, block it
 
+Confirmation (SDN_RESPONSE_CONFIRM_HITS, default 1 = act on the first detection): a
+source is acted on only after it has been flagged that many times, in different
+polls, within SDN_RESPONSE_CONFIRM_SECONDS. A flood is flagged poll after poll; a
+model's one-off false alarm on a quiet legitimate client is not, so the client is
+never blocked or limited.
+
 Safety rails: only addresses inside the allowed lab networks are ever touched,
 SDN_RESPONSE_PROTECTED addresses/networks are never touched, every action expires
 by itself, at most SDN_RESPONSE_MAX_ACTIVE sources are handled at once, and
@@ -59,6 +65,11 @@ class ResponseSettings:
     escalate_after: int = 20
     protected: Tuple[Network, ...] = ()
     max_active: int = 16
+    confirm_hits: int = 1
+    confirm_seconds: int = 30
+    # Detections stamped closer than this are one poll seen by several switches
+    # (half the statistics poll interval).
+    confirm_gap: float = 2.5
 
     def __post_init__(self) -> None:
         if self.policy not in POLICIES:
@@ -71,6 +82,10 @@ class ResponseSettings:
             raise ValueError("response durations are out of range")
         if self.escalate_after < 0 or self.max_active < 1:
             raise ValueError("escalate_after must be >= 0 and max_active >= 1")
+        if not 1 <= self.confirm_hits <= 10 or not 1 <= self.confirm_seconds <= 600:
+            raise ValueError("response confirmation is out of range")
+        if self.confirm_gap <= 0:
+            raise ValueError("response confirmation gap must be positive")
 
     @classmethod
     def from_env(
@@ -87,6 +102,9 @@ class ResponseSettings:
             escalate_after=int(env.get("SDN_RESPONSE_ESCALATE_AFTER", "20")),
             protected=_networks(env.get("SDN_RESPONSE_PROTECTED", "")),
             max_active=int(env.get("SDN_RESPONSE_MAX_ACTIVE", "16")),
+            confirm_hits=int(env.get("SDN_RESPONSE_CONFIRM_HITS", "1")),
+            confirm_seconds=int(env.get("SDN_RESPONSE_CONFIRM_SECONDS", "30")),
+            confirm_gap=max(0.25, float(env.get("SDN_POLL_INTERVAL", "5")) / 2),
         )
 
 
@@ -141,6 +159,7 @@ class ResponseManager:
         self.enforcer = enforcer
         self.clock = clock
         self._active: Dict[ipaddress.IPv4Address, _Active] = {}
+        self._hits: Dict[ipaddress.IPv4Address, List[float]] = {}
 
     def active(self) -> Dict[str, str]:
         return {str(ip): state.kind for ip, state in self._active.items()}
@@ -171,6 +190,27 @@ class ResponseManager:
             LOGGER.info("response skipped: %s is protected", address)
             return None
         return address
+
+    def _confirmed(self, address: ipaddress.IPv4Address, now: float, at: float) -> bool:
+        """Count a detection stamped `at`; True once the source was flagged enough.
+
+        A detection is stamped with when its poll was read, not when a slow model
+        finished judging it, so one poll judged by several switches a second apart
+        still counts once.
+        """
+
+        needed = self.settings.confirm_hits
+        if needed <= 1:
+            return True
+        horizon = now - self.settings.confirm_seconds
+        hits = [stamp for stamp in self._hits.get(address, []) if stamp > horizon]
+        if not hits or at - hits[-1] >= self.settings.confirm_gap:
+            hits.append(at)
+        self._hits[address] = hits
+        stale = [ip for ip, seen in self._hits.items() if seen[-1] <= horizon]
+        for ip in stale:
+            del self._hits[ip]
+        return len(hits) >= needed
 
     def _decide(self, state: Optional[_Active], now: float) -> Optional[str]:
         policy = self.settings.policy
@@ -225,8 +265,16 @@ class ResponseManager:
             )
         return actions
 
-    def respond(self, source: Optional[str], reason: str = "") -> Optional[Action]:
-        """Act on a flagged source; None when nothing needs to (or can) be done."""
+    def respond(
+        self,
+        source: Optional[str],
+        reason: str = "",
+        detected_at: Optional[float] = None,
+    ) -> Optional[Action]:
+        """Act on a flagged source; None when nothing needs to (or can) be done.
+
+        `detected_at` is when the detection was observed (seconds, like the clock);
+        it defaults to now."""
 
         self.expire()
         address = self._eligible(source)
@@ -234,6 +282,9 @@ class ResponseManager:
             return None
         now = self.clock()
         state = self._active.get(address)
+        stamp = now if detected_at is None else detected_at
+        if state is None and not self._confirmed(address, now, stamp):
+            return None  # not flagged often enough yet: could be a false alarm
         kind = self._decide(state, now)
         if kind is None:
             return None

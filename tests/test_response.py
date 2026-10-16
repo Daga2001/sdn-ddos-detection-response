@@ -289,3 +289,77 @@ def test_review_never_touches_dry_run_sources() -> None:
     clock.now += 5
     assert responder.review({"10.0.0.1": 900.0}) == []
     assert enforcer.calls == []
+
+
+def test_confirmation_ignores_one_off_detections_and_acts_on_persistent_ones() -> None:
+    clock = Clock()
+    enforcer = FakeEnforcer()
+    responder = manager("block", enforcer, clock, confirm_hits=2, confirm_seconds=30)
+    # A false alarm: flagged once, never again. Nothing happens, however long we wait.
+    assert responder.respond("10.0.0.9") is None
+    clock.now += 60
+    assert responder.respond("10.0.0.2") is None  # a different source starts counting
+    assert enforcer.calls == []
+    # A flood: flagged by several switches in the same poll (one hit), then next poll.
+    assert responder.respond("10.0.0.1") is None
+    clock.now += 0.5
+    assert responder.respond("10.0.0.1") is None  # same poll seen by another switch
+    clock.now += 5
+    action = responder.respond("10.0.0.1")
+    assert action is not None and action.kind == DROP
+    assert enforcer.calls == [("drop", "10.0.0.1")]
+
+
+def test_confirmation_uses_when_the_poll_was_read_not_when_it_was_judged() -> None:
+    clock = Clock()
+    enforcer = FakeEnforcer()
+    responder = manager("block", enforcer, clock, confirm_hits=2, confirm_gap=1.0)
+    base = clock.now
+    # One poll seen by two switches; a slow model judges them 4 s apart, but they carry
+    # the same observation time, so they are one hit.
+    assert responder.respond("10.0.0.1", detected_at=base) is None
+    clock.now += 4
+    assert responder.respond("10.0.0.1", detected_at=base + 0.2) is None
+    # The next poll, 2 s later (fast polling), is a second hit.
+    clock.now += 1
+    action = responder.respond("10.0.0.1", detected_at=base + 2.0)
+    assert action is not None and action.kind == DROP
+
+
+def test_confirmation_hits_expire_and_do_not_apply_to_escalation() -> None:
+    clock = Clock()
+    enforcer = FakeEnforcer()
+    responder = manager(
+        "escalate",
+        enforcer,
+        clock,
+        confirm_hits=2,
+        confirm_seconds=10,
+        escalate_after=20,
+    )
+    assert responder.respond("10.0.0.1") is None
+    clock.now += 15  # the first hit is too old to count with the second
+    assert responder.respond("10.0.0.1") is None
+    clock.now += 5
+    first = responder.respond("10.0.0.1")
+    assert first is not None and first.kind == LIMIT
+    # Once it is being handled, escalating needs no new confirmation.
+    clock.now += 25
+    second = responder.respond("10.0.0.1")
+    assert second is not None and second.kind == DROP
+
+
+def test_confirmation_settings_are_validated() -> None:
+    with pytest.raises(ValueError, match="confirmation"):
+        ResponseSettings(confirm_hits=0)
+    with pytest.raises(ValueError, match="confirmation"):
+        ResponseSettings(confirm_seconds=0)
+    parsed = ResponseSettings.from_env(
+        {"SDN_RESPONSE_CONFIRM_HITS": "3", "SDN_RESPONSE_CONFIRM_SECONDS": "45"}
+    )
+    assert (parsed.confirm_hits, parsed.confirm_seconds) == (3, 45)
+    assert parsed.confirm_gap == 2.5  # half of the default 5 s poll
+    fast = ResponseSettings.from_env({"SDN_POLL_INTERVAL": "2"})
+    assert fast.confirm_gap == 1.0
+    with pytest.raises(ValueError, match="gap"):
+        ResponseSettings(confirm_gap=0)

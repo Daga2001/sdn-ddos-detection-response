@@ -17,9 +17,9 @@ services:
       SDN_RESPONSE_POLICY: ${SDN_RESPONSE_POLICY:-block}
       SDN_RESPONSE_DRY_RUN: ${SDN_RESPONSE_DRY_RUN:-true}
       SDN_LLM_TIMEOUT_SECONDS: ${SDN_LLM_TIMEOUT_SECONDS:-20}
-      SDN_ENTROPY_K: ${SDN_ENTROPY_K:-3.0}
+      SDN_ENTROPY_K: ${SDN_ENTROPY_K:-2.5}
       SDN_ENTROPY_ALPHA: ${SDN_ENTROPY_ALPHA:-0.2}
-      SDN_ENTROPY_WARMUP: ${SDN_ENTROPY_WARMUP:-8}
+      SDN_ENTROPY_WARMUP: ${SDN_ENTROPY_WARMUP:-16}
       SDN_ENTROPY_CONSECUTIVE: ${SDN_ENTROPY_CONSECUTIVE:-2}
       # Lab baseline is only the HTTP probes (~5 packets/s network-wide, measured),
       # so the standalone default of 20 would classify every baseline window idle.
@@ -27,6 +27,9 @@ services:
       SDN_ENTROPY_MIN_STD: ${SDN_ENTROPY_MIN_STD:-0.05}
       SDN_ENTROPY_CANDIDATE_SHARE: ${SDN_ENTROPY_CANDIDATE_SHARE:-0.3}
       SDN_ENTROPY_CANDIDATE_MIN_RATE: ${SDN_ENTROPY_CANDIDATE_MIN_RATE:-20}
+      # Baseline protection (see docs/detection-modes.md): 0 / empty keep the original behaviour.
+      SDN_ENTROPY_UPDATE_HOLD: ${SDN_ENTROPY_UPDATE_HOLD:-0}
+      SDN_ENTROPY_ALPHA_RUN: ${SDN_ENTROPY_ALPHA_RUN:-}
     # `control` is internal (no internet); `egress` lets the LLM backend (Ollama
     # on the Windows host) be reached.
     networks: [control, egress]
@@ -55,8 +58,11 @@ services:
       SDN_DETECTION_MODE: ${SDN_DETECTION_MODE:-llm}
       SDN_LLM_HTTP_TIMEOUT: ${SDN_LLM_HTTP_TIMEOUT:-30}
       SDN_LLM_MAX_SAMPLES: ${SDN_LLM_MAX_SAMPLES:-5}
+      SDN_LLM_ASYNC: ${SDN_LLM_ASYNC:-true}
       SDN_MAX_FLOW_ROWS_PER_POLL: ${SDN_MAX_FLOW_ROWS_PER_POLL:-300}
-      SDN_ENTROPY_WINDOW_SECONDS: ${SDN_ENTROPY_WINDOW_SECONDS:-10}
+      SDN_ENTROPY_WINDOW_SECONDS: ${SDN_ENTROPY_WINDOW_SECONDS:-5}
+      SDN_ENTROPY_WINDOW_MODE: ${SDN_ENTROPY_WINDOW_MODE:-mean}
+      SDN_ENTROPY_DEDUPE_SWITCHES: ${SDN_ENTROPY_DEDUPE_SWITCHES:-false}
       # Response policy (only acts when the run has mitigation enabled).
       SDN_RESPONSE_POLICY: ${SDN_RESPONSE_POLICY:-block}
       SDN_RESPONSE_DRY_RUN: ${SDN_RESPONSE_DRY_RUN:-true}
@@ -66,6 +72,8 @@ services:
       SDN_RESPONSE_ESCALATE_AFTER: ${SDN_RESPONSE_ESCALATE_AFTER:-20}
       SDN_RESPONSE_PROTECTED: ${SDN_RESPONSE_PROTECTED:-}
       SDN_RESPONSE_MAX_ACTIVE: ${SDN_RESPONSE_MAX_ACTIVE:-16}
+      SDN_RESPONSE_CONFIRM_HITS: ${SDN_RESPONSE_CONFIRM_HITS:-1}
+      SDN_RESPONSE_CONFIRM_SECONDS: ${SDN_RESPONSE_CONFIRM_SECONDS:-30}
     volumes:
       - ./containers/ryu-modes.sh:/usr/local/bin/ryu-modes:ro
     depends_on: [detector]
