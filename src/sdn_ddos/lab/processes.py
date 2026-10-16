@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import signal
 import subprocess
@@ -94,7 +95,12 @@ class ManagedProcess:
                 os.killpg(self.process.pid, signal.SIGTERM)
                 self.process.wait(timeout=2)
             except (ProcessLookupError, subprocess.TimeoutExpired):
+                # poll() answers None while the reader thread is inside wait() reaping
+                # the child, so a generator that ended on its own at the deadline can
+                # look alive here although its group is gone: that is the goal reached,
+                # not a failure (it failed a run with 9 generators: "No such process").
                 if self.process.poll() is None:
-                    os.killpg(self.process.pid, signal.SIGKILL)
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(self.process.pid, signal.SIGKILL)
                     self.process.wait(timeout=2)
         self.reader.join(timeout=2)
