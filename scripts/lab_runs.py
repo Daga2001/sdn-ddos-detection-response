@@ -95,17 +95,34 @@ def main() -> int:
     parser.add_argument(
         "--tag", default="", help="condition label printed with every run"
     )
+    parser.add_argument(
+        "--topology-file",
+        help="topology JSON to use instead of --preset (as exported by the workspace)",
+    )
+    parser.add_argument(
+        "--save-project",
+        action="store_true",
+        help="with --topology-file: save it as a workspace project and exit",
+    )
     args = parser.parse_args()
     if not 1 <= args.repeat <= 50:
         raise SystemExit("--repeat must be between 1 and 50")
 
     lab = Lab()
     lab.login()
-    topology = next(
-        (t for t in lab.call("GET", "/api/presets") if t["name"] == args.preset), None
-    )
-    if topology is None:
-        raise SystemExit(f"preset {args.preset!r} not found")
+    if args.topology_file:
+        with open(args.topology_file, encoding="utf-8") as handle:
+            topology = json.load(handle)
+        if args.save_project:
+            print(lab.call("POST", "/api/projects", topology))
+            return 0
+    else:
+        topology = next(
+            (t for t in lab.call("GET", "/api/presets") if t["name"] == args.preset),
+            None,
+        )
+        if topology is None:
+            raise SystemExit(f"preset {args.preset!r} not found")
     plan = (
         [(int(r), k) for r, k in (item.split(":") for item in args.grid.split(","))]
         if args.grid

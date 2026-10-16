@@ -9,7 +9,8 @@
 # none        mitigation off (the detector still runs, nothing is enforced)
 # rate_limit  / block / escalate   response policy with mitigation on
 #
-# Same bounded attack in every run (SYN, 1000 pkt/s, h1a -> h1b). Results go to
+# Same bounded attack in every run (SYN, 1000 pkt/s, h1a -> h1b); ATTACK_SECONDS (default 40)
+# lengthens it, e.g. to give `escalate` time to reach its blocking stage. Results go to
 # /tmp/matrix.log; summarize them with scripts/summarize_runs.py.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -34,7 +35,7 @@ run_one() { # CONDITION
   sleep 3
   local out
   for attempt in 1 2; do
-    out=$(python3 scripts/lab_runs.py --rate 1000 --kind syn --baseline 30 --duration 40 \
+    out=$(python3 scripts/lab_runs.py --rate 1000 --kind syn --baseline 30 --duration "${ATTACK_SECONDS:-40}" \
       --recovery 20 "${flags[@]}" --tag "$cond" 2>&1 | grep '^RUN ' | tail -1)
     if [[ "$out" == *"final=completed"* ]]; then
       echo "$out" >> "$LOG"
