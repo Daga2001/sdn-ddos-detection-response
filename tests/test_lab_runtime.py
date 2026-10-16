@@ -185,6 +185,89 @@ def test_sample_counters_controller_events_and_failures(runtime, monkeypatch):
         setattr(runtime, attribute, empty)
 
 
+def test_burst_of_controller_events_survives_between_samples(runtime, monkeypatch):
+    monkeypatch.setattr(module.requests, "get", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr(module.subprocess, "check_output", lambda *a, **kw: "[]")
+    runtime.last_health = float("inf")
+    burst = [
+        json.dumps(
+            {
+                "run_id": "run",
+                "kind": "detection" if index % 2 else "flows",
+                "data": {"index": index},
+                "dropped": 0,
+            }
+        ).encode()
+        for index in range(1200)
+    ]
+    runtime.socket.recv.side_effect = [*burst, BlockingIOError]
+    runtime.sample()
+    seen = [d["index"] for k, d in runtime.events if k in {"detection", "flows"}]
+    assert seen == list(range(1200))  # no 512-datagram cap, order kept
+
+
+def test_inbox_overflow_is_reported_not_hidden(runtime, monkeypatch):
+    monkeypatch.setattr(module, "INBOX_LIMIT", 3)
+    runtime.inbox = module.deque(maxlen=3)
+    payloads = [
+        json.dumps({"run_id": "run", "kind": "flows", "data": {"n": n}}).encode()
+        for n in range(5)
+    ]
+    runtime.socket.recv.side_effect = [*payloads, BlockingIOError]
+    runtime.pump()
+    assert [item["data"]["n"] for item in runtime.inbox] == [2, 3, 4]
+    assert runtime.inbox_lost == 2
+
+
+def test_pump_ignores_foreign_runs_and_unknown_kinds(runtime):
+    runtime.socket.recv.side_effect = [
+        json.dumps({"run_id": "other", "kind": "flows", "data": {}}).encode(),
+        json.dumps({"run_id": "run", "kind": "unknown", "data": {}}).encode(),
+        b"[1, 2]",
+        BlockingIOError,
+    ]
+    runtime.pump()
+    assert not runtime.inbox
+
+
+def test_listener_empties_the_socket_without_waiting_for_a_sample(tmp_path):
+    import socket as real_socket
+
+    lab = MininetRuntime(presets()[2], "run", False, lambda k, d: None)
+    try:
+        lab.listener = module.threading.Thread(target=lab._listen, daemon=True)
+        lab.listener.start()
+        sender = real_socket.socket(real_socket.AF_UNIX, real_socket.SOCK_DGRAM)
+        for n in range(8):
+            sender.sendto(
+                json.dumps(
+                    {"run_id": "run", "kind": "detection", "data": {"n": n}}
+                ).encode(),
+                lab.socket_path,
+            )
+        deadline = module.time.monotonic() + 3
+        while len(lab.inbox) < 8 and module.time.monotonic() < deadline:
+            module.time.sleep(0.02)
+        assert [item["data"]["n"] for item in lab.inbox] == list(range(8))
+        sender.close()
+    finally:
+        lab.close()
+    assert not lab.listener.is_alive()
+
+
+def test_datagram_queue_is_widened_when_allowed(tmp_path, monkeypatch):
+    sysctl = tmp_path / "max_dgram_qlen"
+    sysctl.write_text("10")
+    monkeypatch.setattr(module, "DGRAM_QUEUE_SYSCTL", sysctl)
+    assert module.widen_dgram_queue(512) == 512
+    assert sysctl.read_text() == "512"
+    assert module.widen_dgram_queue(256) == 512  # never lowered
+    sysctl.write_text("not a number")
+    assert module.widen_dgram_queue() == 0
+    monkeypatch.setattr(module, "DGRAM_QUEUE_SYSCTL", tmp_path / "missing")
+    assert module.widen_dgram_queue() == 0
+
+
 def test_queue_is_bounded_and_reports_gaps(runtime):
     for _ in range(1030):
         runtime.enqueue("test", {})
