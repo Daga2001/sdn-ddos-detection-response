@@ -475,6 +475,13 @@ export function DetectionPanel({
             checked={config.entropy.watch_protocols}
             onChange={(on) => !disabled && setEntropy({ watch_protocols: on })}
           />
+          <CheckField
+            disabled={disabled}
+            label="Match ports in forwarding rules"
+            hint="On (the original behaviour): every reply of a SYN flood goes to another source port, so each one becomes a flow of its own, a rule and a packet to the controller; thousands per second saturate it and the victim's service stops answering. Off: a rule covers a source, a destination and a protocol, so the flood adds no rules after its first packet and the controller keeps up. The detector sees the same IPs either way."
+            checked={config.entropy.match_ports}
+            onChange={(on) => !disabled && setEntropy({ match_ports: on })}
+          />
           <details className="advanced">
             <summary>Advanced entropy settings</summary>
             <div className="field-pair">

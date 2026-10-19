@@ -351,6 +351,33 @@ python3 scripts/replay_entropy.py entropy_windows.jsonl runs.json \
 `SDN_MAX_FLOW_ROWS_PER_POLL`, so they cannot be used for this: during a flood the cap keeps
 about 300 of tens of thousands of flows and the entropies come out wrong.)
 
+### Never naming the victim
+
+Once the attackers are answered (blocked), what is left in the window is the victim's
+replies to them: the busiest destination is an attacker and the busiest source is the
+victim. Without memory the detector then named the victim as the new culprit and the
+response blocked the service it was protecting (13 university runs with a response, the
+web server blocked in 2 of them, including an 8-attacker run whose service never came
+back). The detector now remembers, per run, the addresses that were the target of a flood
+and the ones it named: a source that was a victim is never a candidate, and an alarm whose
+busiest destination is an attacker already named is the tail of an answered flood and names
+nobody (`note` in the window's details). An attacker that floods a new victim is named
+again.
+
+### Forwarding rules and the reply flood (`SDN_MATCH_L4_PORTS`)
+
+By default a forwarding rule matches the layer-4 destination port. Every reply of a SYN
+flood goes to another source port, so each reply is a flow of its own: tens of thousands of
+rules and packet-ins in a minute. The Ryu controller is single-threaded and also reads
+every rule at each statistics poll, so it stays saturated until the rules expire (60 s
+idle): measured on the university network, the controller sits at 95-100 % CPU and the
+victim's service is down until about 70 s after the flood starts, however early the
+attackers are blocked. With `SDN_MATCH_L4_PORTS=false` (the Detection tab's "Match ports in
+forwarding rules", entropy runs only) a rule covers a source, a destination and a protocol
+and a flood adds no rules after its first packet. The detector sees the same IPs either way;
+only the port entropy is lost. It is off by default because the per-reply flows are what the
+original design studies.
+
 ## LLM detector
 
 `SDN_LLM_MODEL` selects the Ollama model (no code change). Only the

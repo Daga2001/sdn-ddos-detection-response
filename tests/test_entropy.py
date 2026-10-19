@@ -518,3 +518,67 @@ def test_a_signal_is_formatted_for_a_log_line():
     assert format_signal("src", signal) == "src=2.310[1.90..3.40 c=2.65]!"
     assert format_signal("dst", {"value": None}) == "dst=-"
     assert format_signal("dst", {"value": 1.0, "lower": None}) == "dst=1.000"
+
+
+def attack_window() -> list:
+    # one attacker floods a victim, which answers it
+    return [
+        *normal_window(),
+        FlowObservation("10.0.1.9", "10.0.1.50", 800.0),
+        FlowObservation("10.0.1.50", "10.0.1.9", 700.0),
+    ]
+
+
+def tail_window() -> list:
+    # the attacker was blocked: only the victim's replies to it are left
+    return [*normal_window(), FlowObservation("10.0.1.50", "10.0.1.9", 700.0)]
+
+
+def test_the_victim_is_not_named_once_its_attackers_were_answered():
+    detector = warmed_detector()
+    detector.observe(1, attack_window())
+    first = detector.observe(1, attack_window())
+    assert first.confirmed and first.target_dst == "10.0.1.50"
+    assert first.candidates == ("10.0.1.9",) and first.note == ""
+    tail = detector.observe(1, tail_window())
+    # the busiest destination is now the attacker and the busiest source the victim:
+    # naming the victim here would block the service the response is meant to protect
+    assert tail.confirmed and tail.target_dst == "10.0.1.9"
+    assert tail.candidates == () and "tail" in tail.note
+    assert tail.as_details()["note"] == tail.note
+
+
+def test_a_known_victim_is_never_a_candidate_even_if_the_target_changes():
+    detector = warmed_detector()
+    detector.observe(1, attack_window())
+    detector.observe(1, attack_window())
+    second_flood = [
+        *normal_window(),
+        FlowObservation("10.0.1.7", "10.0.1.60", 900.0),
+        FlowObservation("10.0.1.50", "10.0.1.7", 700.0),
+    ]
+    result = detector.observe(1, second_flood)
+    assert result.confirmed and result.target_dst == "10.0.1.60"
+    assert result.candidates == ("10.0.1.7",)
+
+
+def test_an_attacker_already_named_is_named_again_when_it_floods_a_new_victim():
+    detector = warmed_detector()
+    detector.observe(1, attack_window())
+    detector.observe(1, attack_window())
+    new_victim = [*normal_window(), FlowObservation("10.0.1.9", "10.0.1.70", 900.0)]
+    result = detector.observe(1, new_victim)
+    assert result.confirmed and result.target_dst == "10.0.1.70"
+    assert result.candidates == ("10.0.1.9",)
+
+
+def test_each_scope_remembers_its_own_victims():
+    detector = warmed_detector()
+    detector.observe(1, attack_window())
+    detector.observe(1, attack_window())
+    other = EntropyDetector(warmup_windows=5)
+    for _ in range(5):
+        other.observe(2, normal_window())
+    other.observe(2, tail_window())
+    # scope 2 has not seen the flood: for it these replies are the only anomaly
+    assert other.observe(2, tail_window()).candidates == ("10.0.1.50",)

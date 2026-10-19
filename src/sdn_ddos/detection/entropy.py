@@ -30,7 +30,7 @@ import statistics
 from collections import defaultdict, deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Deque, Dict, List, Optional, Tuple
+from typing import Deque, Dict, List, Optional, Set, Tuple
 
 MEASURES = ("shannon", "norm", "renyi", "tsallis", "min")
 CENTERS = ("ewma", "mean", "median", "yu")
@@ -416,6 +416,8 @@ class EntropyResult:
     center: str = "ewma"
     # The settings this window was computed with, echoed for logs and the workspace.
     config: Dict[str, object] = field(default_factory=dict)
+    # Why a confirmed alarm named nobody ("" when it did, or when it was no alarm).
+    note: str = ""
 
     def as_details(self) -> Dict[str, object]:
         return {
@@ -438,6 +440,7 @@ class EntropyResult:
             "measure": self.measure,
             "center_kind": self.center,
             "config": self.config,
+            "note": self.note,
         }
 
 
@@ -447,6 +450,12 @@ class _DpidState:
     streak: int = 0
     # Entropies of recent non-suspicious windows not yet used to update the band.
     pending: List[Dict[str, float]] = field(default_factory=list)
+    # Addresses that were the target of a flood, and the ones named as its attackers.
+    # Once the attackers are answered, what is left is the victim's replies to them: the
+    # busiest destination is then an attacker and the busiest source the victim, and
+    # without this memory the victim would be named (and blocked) as the new culprit.
+    victims: Set[str] = field(default_factory=set)
+    named: Set[str] = field(default_factory=set)
 
     @property
     def src(self) -> Band:
@@ -725,23 +734,38 @@ class EntropyDetector:
         confirmed = suspicious and state.streak >= self.consecutive_windows
         target_dst: Optional[str] = None
         candidates: Tuple[str, ...] = ()
+        note = ""
         if confirmed:
             target_dst = max(dst_weights, key=lambda key: dst_weights[key])
-            heavy = [
-                ip
-                for ip, weight in src_weights.items()
-                if ip != target_dst and weight >= self.candidate_min_rate
-            ]
-            share = self.candidate_share / max(1, len(heavy))
-            candidates = tuple(
-                ip
-                for ip, weight in sorted(
-                    src_weights.items(), key=lambda item: item[1], reverse=True
+            if target_dst in state.named:
+                # The busiest destination is an attacker already named: this is the tail
+                # of a flood that was answered (the victim still replying to it), not a
+                # new one, and nobody may be accused of it.
+                note = (
+                    "tail of an answered flood: the busiest destination is an attacker"
                 )
-                if ip != target_dst
-                and weight >= self.candidate_min_rate
-                and weight / total_rate >= share
-            )
+            else:
+                heavy = [
+                    ip
+                    for ip, weight in src_weights.items()
+                    if ip != target_dst
+                    and ip not in state.victims
+                    and weight >= self.candidate_min_rate
+                ]
+                share = self.candidate_share / max(1, len(heavy))
+                candidates = tuple(
+                    ip
+                    for ip, weight in sorted(
+                        src_weights.items(), key=lambda item: item[1], reverse=True
+                    )
+                    if ip != target_dst
+                    and ip not in state.victims
+                    and weight >= self.candidate_min_rate
+                    and weight / total_rate >= share
+                )
+                if candidates:
+                    state.victims.add(target_dst)
+                    state.named.update(candidates)
         return EntropyResult(
             dpid,
             True,
@@ -761,6 +785,7 @@ class EntropyDetector:
             measure=self.measure,
             center=self.center,
             config=self._config(),
+            note=note,
             **bounds,
         )
 

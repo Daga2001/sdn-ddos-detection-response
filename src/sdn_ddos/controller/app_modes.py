@@ -22,6 +22,8 @@ Robustness changes over the baseline (all opt-out through env vars):
   still computed over ALL flows.
 * Only SDN_LLM_MAX_SAMPLES samples per poll (highest packet rate) are sent to
   the LLM, which costs ~0.5 s each; the rest keep prob_ddos NULL.
+* SDN_MATCH_L4_PORTS (default true): set to false so that rules do not match the layer-4
+  port; see the comment on MATCH_L4_PORTS.
 * SDN_FINE_GRAINED_MATCH (default true): forwarding rules always include
   eth_type and, for IPv4, the addresses and protocol. The baseline installs an
   Ethernet-only rule after the first ARP/ICMP packet of a host pair, which then
@@ -98,6 +100,12 @@ def _truthy(value: str) -> bool:
 
 
 FINE_GRAINED_MATCH = _truthy(os.environ.get("SDN_FINE_GRAINED_MATCH", "true"))
+# With the layer-4 port in the rule (the default) every reply of a SYN flood goes to
+# another source port, so each reply is a flow of its own: tens of thousands of rules
+# and packet-ins a minute, enough to saturate this single-threaded controller. Without
+# the port a rule covers a source, a destination and a protocol, and a flood adds no
+# rules after its first packet.
+MATCH_L4_PORTS = _truthy(os.environ.get("SDN_MATCH_L4_PORTS", "true"))
 
 
 class ModeSwitchController(EnterpriseDDoSController):
@@ -253,7 +261,9 @@ class ModeSwitchController(EnterpriseDDoSController):
             fields["ip_proto"] = int(ip_packet.proto)
             tcp_packet = parsed.get_protocol(tcp.tcp)
             udp_packet = parsed.get_protocol(udp.udp)
-            if tcp_packet is not None:
+            if not MATCH_L4_PORTS:
+                pass
+            elif tcp_packet is not None:
                 fields["tcp_dst"] = int(tcp_packet.dst_port)
             elif udp_packet is not None:
                 fields["udp_dst"] = int(udp_packet.dst_port)
@@ -634,6 +644,9 @@ class ModeSwitchController(EnterpriseDDoSController):
                 ts=observed_at,
             )
             if not result.confirmed:
+                continue
+            if result.note:
+                self.logger.info("ENTROPY ALARM named nobody: %s", result.note)
                 continue
             self.logger.warning(
                 "ENTROPY ALARM target=%s candidates=%s h_src=%.3f h_dst=%.3f",
