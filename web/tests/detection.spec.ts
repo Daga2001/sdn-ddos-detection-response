@@ -547,3 +547,31 @@ test("forwarding rules can stop matching ports, and the choice is sent with the 
   };
   expect(sent.experiment.detection.entropy.match_ports).toBe(false);
 });
+
+test("the fast-reaction preset sets the whole setup in one click, and Original undoes it", async ({
+  page,
+}) => {
+  await mockLab(page);
+  await inspectorTab(page, "Detection").click();
+  await page.getByRole("button", { name: /^Entropy/ }).click();
+  await page
+    .getByRole("button", { name: "Fast reaction", exact: true })
+    .click();
+  const field = (name: RegExp) => page.getByRole("spinbutton", { name });
+  await expect(field(/^Window · seconds/)).toHaveValue("1");
+  await expect(field(/^Poll every/)).toHaveValue("0.5");
+  await expect(field(/^Warm-up windows/)).toHaveValue("30");
+  await expect(
+    page.getByRole("combobox", { name: /^Entropy measure/ }),
+  ).toHaveValue("norm");
+  await expect(
+    page.getByRole("checkbox", { name: /Match ports in forwarding rules/ }),
+  ).not.toBeChecked();
+  await page.getByRole("button", { name: "Original", exact: true }).click();
+  await expect(field(/^Window · seconds/)).toHaveValue("5");
+  await expect(field(/^Poll every/)).toHaveValue("5");
+  await expect(field(/^Warm-up windows/)).toHaveValue("16");
+  await expect(
+    page.getByRole("checkbox", { name: /Match ports in forwarding rules/ }),
+  ).toBeChecked();
+});

@@ -97,9 +97,13 @@ function Section({
   );
 }
 
-/** Seconds of baseline the entropy detector needs to learn what is normal. */
+/**
+ * Seconds of baseline the entropy detector needs to learn what is normal. Only windows
+ * with traffic count and a short window is often quiet, so a window is taken as lasting
+ * at least 2.5 s here (a 1 s window needed ~2.5 s of baseline per usable window in the lab).
+ */
 export function entropyWarmupSeconds(entropy: EntropyParams): number {
-  return entropy.warmup_windows * entropy.window_seconds;
+  return entropy.warmup_windows * Math.max(entropy.window_seconds, 2.5);
 }
 
 export function DetectionPanel({
@@ -288,6 +292,42 @@ export function DetectionPanel({
               start while it is still learning and go unnoticed.
             </p>
           )}
+          <div className="preset-row">
+            <span>Presets</span>
+            <button
+              type="button"
+              disabled={disabled}
+              title="The calibrated defaults: 5 s windows and polls, Shannon entropy, EWMA band. Reacts in ~10 s."
+              onClick={() =>
+                set({
+                  poll_seconds: defaultDetection.poll_seconds,
+                  entropy: defaultEntropy,
+                })
+              }
+            >
+              Original
+            </button>
+            <button
+              type="button"
+              disabled={disabled}
+              title="1 s windows, polls every 0.5 s, normalised Shannon entropy, 30 warm-up windows, forwarding rules without the port. In the university lab it named and blocked three attackers 1.7 s into a SYN flood and the service never stopped answering."
+              onClick={() =>
+                set({
+                  poll_seconds: 0.5,
+                  entropy: {
+                    ...config.entropy,
+                    window_seconds: 1,
+                    warmup_windows: 30,
+                    consecutive_windows: 2,
+                    measure: "norm",
+                    match_ports: false,
+                  },
+                })
+              }
+            >
+              Fast reaction
+            </button>
+          </div>
           <div className="field-pair">
             <NumberField
               label="Window · seconds"

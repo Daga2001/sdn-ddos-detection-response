@@ -582,3 +582,40 @@ def test_each_scope_remembers_its_own_victims():
     other.observe(2, tail_window())
     # scope 2 has not seen the flood: for it these replies are the only anomaly
     assert other.observe(2, tail_window()).candidates == ("10.0.1.50",)
+
+
+def quiet_leftovers() -> list:
+    # a legitimate host's burst of packets is all that is left once the flood is blocked
+    return [
+        FlowObservation("10.0.1.20", "10.0.1.21", 25.0),
+        FlowObservation("10.0.1.21", "10.0.1.20", 25.0),
+    ]
+
+
+def test_a_quiet_window_latched_to_an_old_alarm_names_nobody():
+    detector = warmed_detector()
+    detector.observe(1, attack_window())
+    first = detector.observe(1, attack_window())
+    assert first.candidates == ("10.0.1.9",)
+    quiet = detector.observe(1, quiet_leftovers())
+    # still outside the frozen band, so still an alarm, but the traffic fell to ~3 % of
+    # its peak: the busiest hosts of what is left are not attackers
+    assert quiet.suspicious and quiet.confirmed
+    assert quiet.candidates == () and "fell to" in quiet.note
+
+
+def test_a_flood_that_keeps_its_volume_keeps_naming_its_attackers():
+    detector = warmed_detector()
+    for _ in range(3):
+        result = detector.observe(1, flood_window())
+    assert result.confirmed and result.candidates == ("10.0.1.1",)
+    assert result.note == ""
+
+
+def test_a_quiet_window_that_was_never_an_alarm_is_not_a_tail():
+    detector = warmed_detector()
+    # the same two hosts with no flood before: nothing to be the tail of
+    detector.observe(1, quiet_leftovers())
+    result = detector.observe(1, quiet_leftovers())
+    assert result.confirmed and result.note == ""
+    assert set(result.candidates) == {"10.0.1.20", "10.0.1.21"} - {result.target_dst}

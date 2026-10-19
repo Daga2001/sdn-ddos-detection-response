@@ -1810,6 +1810,17 @@ button.client-chip.removable:hover {
   background: #c9cdd3;
   color: #43665b;
 }
+.preset-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+.preset-row button {
+  font-size: 12px;
+  padding: 3px 10px;
+}
 h4.subsection {
   margin: 14px 0 8px;
   font-size: 12px;
