@@ -49,6 +49,11 @@ MAD_TO_STD = 1.4826  # scales the median absolute deviation to a normal std
 # band only because almost nothing is left, and the busiest host of that little is
 # usually an innocent one (a legitimate client's burst of packets in a 1 s window).
 TAIL_FRACTION = 0.05
+# The volume of a flood is remembered with this decay per window, so traffic that is a
+# few percent of it still counts as its tail a minute later (1 s windows): the victim
+# is still answering the blocked attackers and one legitimate request is enough to put
+# the entropy out of its frozen band again.
+PEAK_DECAY = 0.97
 TOP_ENTRIES = 5
 
 
@@ -461,8 +466,8 @@ class _DpidState:
     # without this memory the victim would be named (and blocked) as the new culprit.
     victims: Set[str] = field(default_factory=set)
     named: Set[str] = field(default_factory=set)
-    # Highest packet rate of the current run of suspicious windows (0 if none).
-    peak_rate: float = 0.0
+    # The highest packet rate lately seen, fading by PEAK_DECAY per window.
+    recent_peak: float = 0.0
 
     @property
     def src(self) -> Band:
@@ -640,7 +645,7 @@ class EntropyDetector:
         total_rate = sum(flow.weight for flow in flows if flow.weight > 0)
         if total_rate < self.min_total_rate:
             state.streak = 0
-            state.peak_rate = 0.0
+            state.recent_peak *= PEAK_DECAY
             return EntropyResult(
                 dpid,
                 False,
@@ -712,7 +717,7 @@ class EntropyDetector:
             for name in active
         }
         suspicious = any(out.values())
-        state.peak_rate = max(state.peak_rate, total_rate) if suspicious else 0.0
+        state.recent_peak = max(total_rate, state.recent_peak * PEAK_DECAY)
         signals = {
             name: self._signal(state.bands[name], values[name], out[name])
             for name in active
@@ -753,10 +758,10 @@ class EntropyDetector:
                 note = (
                     "tail of an answered flood: the busiest destination is an attacker"
                 )
-            elif total_rate < TAIL_FRACTION * state.peak_rate:
+            elif total_rate < TAIL_FRACTION * state.recent_peak:
                 note = (
                     "tail of an answered flood: the traffic fell to "
-                    f"{100 * total_rate / state.peak_rate:.1f} % of the alarm's peak"
+                    f"{100 * total_rate / state.recent_peak:.1f} % of its recent peak"
                 )
             else:
                 heavy = [

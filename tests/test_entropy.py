@@ -619,3 +619,35 @@ def test_a_quiet_window_that_was_never_an_alarm_is_not_a_tail():
     result = detector.observe(1, quiet_leftovers())
     assert result.confirmed and result.note == ""
     assert set(result.candidates) == {"10.0.1.20", "10.0.1.21"} - {result.target_dst}
+
+
+def faint_leftovers() -> list:
+    # a legitimate request and the victim's last retries to a blocked attacker
+    return [
+        FlowObservation("10.0.1.20", "10.0.1.21", 13.0),
+        FlowObservation("10.0.1.21", "10.0.1.20", 13.0),
+    ]
+
+
+def test_a_flood_is_remembered_for_a_while_after_its_alarm_ended():
+    detector = warmed_detector()
+    detector.observe(1, attack_window())
+    assert detector.observe(1, attack_window()).candidates == ("10.0.1.9",)
+    for _ in range(30):
+        detector.observe(1, normal_window())  # the network is calm again
+    # half a minute later a new run of out-of-band windows is still the flood's tail
+    detector.observe(1, faint_leftovers())
+    late = detector.observe(1, faint_leftovers())
+    assert late.confirmed and late.candidates == () and "recent peak" in late.note
+
+
+def test_the_memory_of_a_flood_fades_and_later_alarms_name_again():
+    detector = warmed_detector()
+    detector.observe(1, attack_window())
+    detector.observe(1, attack_window())
+    for _ in range(150):
+        detector.observe(1, normal_window())
+    detector.observe(1, quiet_leftovers())
+    later = detector.observe(1, quiet_leftovers())
+    assert later.confirmed and later.note == ""
+    assert set(later.candidates) == {"10.0.1.20", "10.0.1.21"} - {later.target_dst}
