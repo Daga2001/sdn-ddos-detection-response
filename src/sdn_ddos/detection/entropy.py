@@ -54,6 +54,11 @@ TAIL_FRACTION = 0.05
 # is still answering the blocked attackers and one legitimate request is enough to put
 # the entropy out of its frozen band again.
 PEAK_DECAY = 0.97
+# With several victims the others look like heavy sources (they answer them). A
+# victim receives far more than it sends and takes a large share of what the busiest
+# destination takes, while an attacker sends far more than it receives.
+CO_VICTIM_SHARE = 0.6
+CO_VICTIM_RATIO = 1.5
 TOP_ENTRIES = 5
 
 
@@ -764,12 +769,17 @@ class EntropyDetector:
                     f"{100 * total_rate / state.recent_peak:.1f} % of its recent peak"
                 )
             else:
+                victims = state.victims | {target_dst}
+                victims |= {
+                    ip
+                    for ip, received in dst_weights.items()
+                    if received >= CO_VICTIM_SHARE * dst_weights[target_dst]
+                    and received >= CO_VICTIM_RATIO * src_weights.get(ip, 0.0)
+                }
                 heavy = [
                     ip
                     for ip, weight in src_weights.items()
-                    if ip != target_dst
-                    and ip not in state.victims
-                    and weight >= self.candidate_min_rate
+                    if ip not in victims and weight >= self.candidate_min_rate
                 ]
                 share = self.candidate_share / max(1, len(heavy))
                 candidates = tuple(
@@ -777,13 +787,12 @@ class EntropyDetector:
                     for ip, weight in sorted(
                         src_weights.items(), key=lambda item: item[1], reverse=True
                     )
-                    if ip != target_dst
-                    and ip not in state.victims
+                    if ip not in victims
                     and weight >= self.candidate_min_rate
                     and weight / total_rate >= share
                 )
                 if candidates:
-                    state.victims.add(target_dst)
+                    state.victims |= victims
                     state.named.update(candidates)
         return EntropyResult(
             dpid,

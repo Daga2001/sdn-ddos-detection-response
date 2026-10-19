@@ -364,6 +364,14 @@ busiest destination is an attacker already named is the tail of an answered floo
 nobody (`note` in the window's details). An attacker that floods a new victim is named
 again.
 
+A second rule covers the quiet that follows an answered flood: the detector keeps the
+highest packet rate it saw lately (fading 3 % per window, about a minute with 1 s windows)
+and an alarm whose window carries under 5 % of it names nobody. Without it a legitimate
+request (30 packets in a 1 s window) over the victim's last retries to the blocked
+attackers was enough to put the frozen band out of range again and a legitimate client was
+named and blocked (seen with 8 attackers, 3.8 s and 34.8 s after the flood). A second flood
+bigger than 5 % of the first is still named at once.
+
 ### Forwarding rules and the reply flood (`SDN_MATCH_L4_PORTS`)
 
 By default a forwarding rule matches the layer-4 destination port. Every reply of a SYN
