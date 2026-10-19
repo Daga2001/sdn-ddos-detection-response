@@ -44,6 +44,11 @@ SIDES = {"src": "both", "dst": "lower", "dport": "both", "proto": "both"}
 # Weights histogram: (weight, number of distinct values with that weight).
 Histogram = Sequence[Tuple[float, int]]
 MAD_TO_STD = 1.4826  # scales the median absolute deviation to a normal std
+# An alarm whose window carries less than this share of the traffic it peaked at is the
+# tail of a flood that was already answered: the entropy is still out of its (frozen)
+# band only because almost nothing is left, and the busiest host of that little is
+# usually an innocent one (a legitimate client's burst of packets in a 1 s window).
+TAIL_FRACTION = 0.05
 TOP_ENTRIES = 5
 
 
@@ -456,6 +461,8 @@ class _DpidState:
     # without this memory the victim would be named (and blocked) as the new culprit.
     victims: Set[str] = field(default_factory=set)
     named: Set[str] = field(default_factory=set)
+    # Highest packet rate of the current run of suspicious windows (0 if none).
+    peak_rate: float = 0.0
 
     @property
     def src(self) -> Band:
@@ -633,6 +640,7 @@ class EntropyDetector:
         total_rate = sum(flow.weight for flow in flows if flow.weight > 0)
         if total_rate < self.min_total_rate:
             state.streak = 0
+            state.peak_rate = 0.0
             return EntropyResult(
                 dpid,
                 False,
@@ -704,6 +712,7 @@ class EntropyDetector:
             for name in active
         }
         suspicious = any(out.values())
+        state.peak_rate = max(state.peak_rate, total_rate) if suspicious else 0.0
         signals = {
             name: self._signal(state.bands[name], values[name], out[name])
             for name in active
@@ -743,6 +752,11 @@ class EntropyDetector:
                 # new one, and nobody may be accused of it.
                 note = (
                     "tail of an answered flood: the busiest destination is an attacker"
+                )
+            elif total_rate < TAIL_FRACTION * state.peak_rate:
+                note = (
+                    "tail of an answered flood: the traffic fell to "
+                    f"{100 * total_rate / state.peak_rate:.1f} % of the alarm's peak"
                 )
             else:
                 heavy = [
