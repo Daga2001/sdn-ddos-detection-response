@@ -20,6 +20,7 @@ import {
   detectionSteps,
   loadSeries,
   percent,
+  describeBand,
 } from "./detection";
 import type { Analysis, HostRow, Verdict } from "./detection";
 import { entropyWarmupSeconds } from "./DetectionPanel";
@@ -225,8 +226,8 @@ function criteria(config: Record<string, any> | null): string[] {
   } else if (config.mode === "entropy") {
     const e = config.entropy ?? {};
     lines.push(
-      `Shannon entropy of sources and destinations, ${e.window_seconds}-second windows (${e.window_mode}).`,
-      `Normal band: learned over ${e.warmup_windows} windows (${entropyWarmupSeconds(e)} s), width k = ${e.k}; alarm after ${e.consecutive_windows} windows in a row outside it.`,
+      `${measureName(e)} of sources and destinations${e.watch_ports ? ", destination ports" : ""}${e.watch_protocols ? ", protocols" : ""}, ${e.window_seconds}-second windows (${e.window_mode}).`,
+      `Normal band: ${describeBand(e)}; warm-up ${e.warmup_windows} windows (${entropyWarmupSeconds(e)} s); alarm after ${e.consecutive_windows} windows in a row outside it.`,
       `A source is named only above ${e.candidate_min_rate} pkt/s and ${Math.round((e.candidate_share ?? 0) * 100)} % of the traffic.`,
     );
   } else {
@@ -243,6 +244,20 @@ function criteria(config: Record<string, any> | null): string[] {
     );
   }
   return lines;
+}
+
+const measureNames: Record<string, string> = {
+  shannon: "Shannon entropy",
+  norm: "Normalised Shannon entropy",
+  renyi: "Rényi entropy",
+  tsallis: "Tsallis entropy",
+  min: "Min-entropy",
+};
+function measureName(e: Record<string, any>): string {
+  const base = measureNames[e.measure ?? "shannon"] ?? "Entropy";
+  return e.measure === "renyi" || e.measure === "tsallis"
+    ? `${base} (order ${e.order})`
+    : base;
 }
 
 function HostTable({ rows }: { rows: HostRow[] }) {
