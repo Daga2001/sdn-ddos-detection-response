@@ -329,6 +329,9 @@ def analyse(
         )
         if responded
         else None,
+        "responded_hosts": sorted(
+            name.get(h, h) for h in set(responded) | set(db["mitigations"])
+        ),
         "collateral": mitigated_legit,
         "collateral_blocked": blocked_legit,
         "gap_events": gaps,
@@ -421,6 +424,22 @@ def check(
     tolerated = expect.get("collateral_max", 1 if llm_run else 0)
     if len(blocked) > tolerated:
         problems.append(f"legitimate hosts blocked: {blocked}")
+    # A response that blocks the victim takes the service down itself (it happened: the
+    # entropy detector named the victim once the attackers were blocked).
+    hit_victims = [
+        v for v in scenario.victims if v in metrics.get("responded_hosts", [])
+    ]
+    if hit_victims:
+        problems.append(f"the response blocked the victim: {hit_victims}")
+    service = metrics["service_pct"]
+    for phase, key in (
+        ("attack", "service_attack_min"),
+        ("recovery", "service_recovery_min"),
+    ):
+        if key in expect and (service[phase] is None or service[phase] < expect[key]):
+            problems.append(
+                f"service {phase} {service[phase]} % < {expect[key]} % (the service died)"
+            )
     if "not_responded" in expect:
         hit = [
             h for h in expect["not_responded"] if h in metrics["responded_attackers"]
