@@ -19,13 +19,24 @@ from typing import Any, Optional
 
 import requests
 
-from sdn_ddos.lab.contracts import DetectionConfig
+from sdn_ddos.lab.contracts import DetectionConfig, EntropyParams
 
 DETECTOR_TIMEOUT = (1.0, 8.0)
 
 
 def _flag(value: bool) -> str:
     return "true" if value else "false"
+
+
+def entropy_features(entropy: EntropyParams) -> list[str]:
+    """The distributions the entropy detector watches (the IPs plus what is on)."""
+
+    features = ["src", "dst"]
+    if entropy.watch_ports:
+        features.append("dport")
+    if entropy.watch_protocols:
+        features.append("proto")
+    return features
 
 
 def controller_env(detection: DetectionConfig) -> dict[str, str]:
@@ -41,6 +52,7 @@ def controller_env(detection: DetectionConfig) -> dict[str, str]:
         "SDN_ENTROPY_WINDOW_SECONDS": str(entropy.window_seconds),
         "SDN_ENTROPY_WINDOW_MODE": entropy.window_mode,
         "SDN_ENTROPY_DEDUPE_SWITCHES": _flag(entropy.dedupe_switches),
+        "SDN_ENTROPY_FEATURES": ",".join(entropy_features(entropy)),
         "SDN_RESPONSE_POLICY": response.policy,
         "SDN_RESPONSE_DRY_RUN": _flag(response.dry_run),
         "SDN_RATE_LIMIT_PPS": str(response.rate_limit_pps),
@@ -74,6 +86,13 @@ def detector_update(detection: DetectionConfig) -> dict[str, Any]:
             "candidate_min_rate": entropy.candidate_min_rate,
             "update_hold": entropy.update_hold,
             "alpha_run": entropy.alpha_run,
+            "measure": entropy.measure,
+            "order": entropy.order,
+            "center": entropy.center,
+            "spread": entropy.spread,
+            "history": entropy.history,
+            "context": entropy.context,
+            "features": entropy_features(entropy),
         },
     }
     if detection.mode == "llm":

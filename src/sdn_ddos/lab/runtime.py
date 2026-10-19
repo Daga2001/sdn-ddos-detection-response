@@ -36,7 +36,7 @@ from sdn_ddos.lab.telemetry import grow_buffer
 from sdn_ddos.lab.topology import Topology
 
 CONTROLLER_KINDS = frozenset(
-    {"controller", "flows", "detection", "mitigation_requested"}
+    {"controller", "flows", "detection", "mitigation_requested", "entropy_window"}
 )
 INBOX_LIMIT = 20000
 DGRAM_QUEUE = 4096

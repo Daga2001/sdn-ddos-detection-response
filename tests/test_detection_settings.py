@@ -317,3 +317,45 @@ def test_detection_options_describe_what_the_workspace_may_offer():
         "available": False,
         "reason": "the detector service is not reachable",
     }
+
+
+def test_the_entropy_measure_and_threshold_are_part_of_the_detection_config():
+    default = DetectionConfig().entropy
+    assert (default.measure, default.center, default.spread, default.context) == (
+        "shannon",
+        "ewma",
+        "std",
+        "normal",
+    )
+    assert default.history == 0
+    assert not default.watch_ports and not default.watch_protocols
+    config = DetectionConfig(
+        mode="entropy",
+        entropy={
+            "measure": "renyi",
+            "order": 10,
+            "center": "median",
+            "spread": "mad",
+            "history": 40,
+            "context": "all",
+            "watch_ports": True,
+            "watch_protocols": True,
+        },
+    )
+    update = detector_update(config)["entropy"]
+    assert (update["measure"], update["order"]) == ("renyi", 10.0)
+    assert (update["center"], update["spread"]) == ("median", "mad")
+    assert (update["history"], update["context"]) == (40, "all")
+    assert update["features"] == ["src", "dst", "dport", "proto"]
+    assert controller_env(config)["SDN_ENTROPY_FEATURES"] == "src,dst,dport,proto"
+    assert controller_env(DetectionConfig())["SDN_ENTROPY_FEATURES"] == "src,dst"
+    for bad in (
+        {"measure": "nope"},
+        {"center": "mode"},
+        {"spread": "range"},
+        {"context": "some"},
+        {"order": 0},
+        {"history": 5000},
+    ):
+        with pytest.raises(ValidationError):
+            DetectionConfig(entropy=bad)

@@ -10,9 +10,16 @@ import {
   retainEvents,
   liveLimit,
   describeRun,
+  describeEntropyConfig,
+  entropyWindows,
+  formatSignal,
 } from "../src/detection.ts";
 import type { Experiment, Observation, Topology } from "../src/types.ts";
-import { emptyExperiment } from "../src/types.ts";
+import {
+  detectionFromService,
+  emptyExperiment,
+  normalizeDetection,
+} from "../src/types.ts";
 
 const topology: Topology = {
   version: 1,
@@ -335,4 +342,170 @@ test("the History line says what judged a run and how it answered", () => {
     "No detection · 2 attackers",
   );
   assert.equal(describeRun(base), "");
+});
+
+const windowEvent = (
+  seq: number,
+  data: Record<string, unknown>,
+): Observation => ({
+  run_id: "r",
+  seq,
+  ts: new Date(Date.UTC(2026, 9, 9, 1, 0, seq)).toISOString(),
+  kind: "entropy_window",
+  data,
+});
+
+test("entropy windows are read off their events, with the band when it exists", () => {
+  const events: Observation[] = [
+    windowEvent(1, {
+      window: 1,
+      state: "warmup",
+      total_rate: 12.5,
+      signals: {
+        src: { value: 1.5, lower: null, upper: null, center: null, out: false },
+      },
+    }),
+    windowEvent(2, {
+      window: 2,
+      state: "alarm",
+      flow_rules: 40,
+      streak: 2,
+      needed: 2,
+      measure: "renyi",
+      center_kind: "median",
+      signals: {
+        src: {
+          value: 0.3,
+          lower: 1.2,
+          upper: 1.8,
+          center: 1.5,
+          spread: 0.1,
+          out: true,
+        },
+      },
+      top_src: [["10.0.0.1", 900]],
+      config: { measure: "renyi", order: 10 },
+    }),
+    { ...windowEvent(3, {}), kind: "links" },
+    windowEvent(4, { state: "nonsense" }),
+  ];
+  const windows = entropyWindows(events);
+  assert.equal(windows.length, 3);
+  assert.equal(windows[0].state, "warmup");
+  assert.equal(windows[0].signals.src.lower, null);
+  assert.equal(windows[1].signals.src.out, true);
+  assert.equal(windows[1].rules, 40);
+  assert.deepEqual(windows[1].topSrc, [["10.0.0.1", 900]]);
+  assert.equal(windows[1].measure, "renyi");
+  assert.equal(windows[2].state, "normal"); // an unknown state never breaks the view
+  assert.equal(windows[2].window, 3);
+});
+
+test("a signal is written with its band, or as a dash when it has no value", () => {
+  assert.equal(
+    formatSignal({
+      value: 2.3104,
+      lower: 1.9,
+      upper: 3.4,
+      center: 2.65,
+      spread: 0.3,
+      out: false,
+    }),
+    "2.310 [1.90 – 3.40]",
+  );
+  assert.equal(
+    formatSignal({
+      value: 1,
+      lower: null,
+      upper: null,
+      center: null,
+      spread: null,
+      out: false,
+    }),
+    "1.000",
+  );
+  assert.equal(formatSignal(undefined), "—");
+  assert.equal(
+    formatSignal({
+      value: null,
+      lower: 1,
+      upper: 2,
+      center: 1.5,
+      spread: 0.1,
+      out: false,
+    }),
+    "—",
+  );
+});
+
+test("the entropy settings are described in one line", () => {
+  assert.equal(
+    describeEntropyConfig({
+      measure: "shannon",
+      center: "ewma",
+      context: "normal",
+      k: 2.5,
+    }),
+    "Measure: Shannon · Centre: EWMA mean · Learns from: normal-looking windows · Band: centre ± 2.5 × spread",
+  );
+  const line = describeEntropyConfig({
+    measure: "renyi",
+    order: 10,
+    center: "median",
+    spread: "mad",
+    history: 0,
+    context: "all",
+    k: 3,
+  });
+  assert.match(line, /Rényi \(order 10\)/);
+  assert.match(line, /Centre: rolling median/);
+  assert.match(line, /Spread: MAD/);
+  assert.match(line, /History: the whole run/);
+  assert.match(line, /Learns from: every window/);
+  assert.equal(describeEntropyConfig({}), "");
+});
+
+test("entropy windows are never dropped first when the live view is full", () => {
+  const list: Observation[] = [
+    ...Array.from({ length: liveLimit }, (_, i) => ({
+      run_id: "r",
+      seq: i,
+      ts: new Date(i * 1000).toISOString(),
+      kind: "flows",
+      data: {},
+    })),
+    windowEvent(5000, { state: "alarm" }),
+    windowEvent(5001, { state: "normal" }),
+  ];
+  const kept = retainEvents(list);
+  assert.equal(kept.length, liveLimit);
+  assert.equal(kept.filter((e) => e.kind === "entropy_window").length, 2);
+});
+
+test("older records and the detector's answer fill in the new entropy options", () => {
+  const old = normalizeDetection({ mode: "entropy", entropy: { k: 3 } });
+  assert.equal(old?.entropy.k, 3);
+  assert.equal(old?.entropy.measure, "shannon");
+  assert.equal(old?.entropy.center, "ewma");
+  assert.equal(old?.entropy.context, "normal");
+  assert.equal(old?.entropy.watch_ports, false);
+  const current = detectionFromService({
+    mode: "entropy",
+    entropy: {
+      measure: "renyi",
+      order: 10,
+      center: "median",
+      spread: "mad",
+      history: 30,
+      context: "all",
+      features: ["src", "dst", "dport"],
+    },
+  });
+  assert.equal(current.entropy.measure, "renyi");
+  assert.equal(current.entropy.order, 10);
+  assert.equal(current.entropy.center, "median");
+  assert.equal(current.entropy.history, 30);
+  assert.equal(current.entropy.context, "all");
+  assert.equal(current.entropy.watch_ports, true);
+  assert.equal(current.entropy.watch_protocols, false);
 });

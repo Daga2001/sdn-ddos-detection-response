@@ -77,6 +77,14 @@ the detector and show how it did, with no shell commands:
   run (on by default), the caps and durations, and addresses never to act on.
   "Restore calibrated values" puts back the values measured in this lab
   ([detection modes](detection-modes.md)).
+* **Threshold tab** (below the topology, next to Detection): for the entropy detector, a live chart
+  of what it computes for each watched distribution (source IPs, destination IPs and, if turned on,
+  ports and protocols) against the band it learned and that band's centre, one dot per window
+  coloured by what the detector concluded, plus a log of every window with the measured packet
+  rate, flow rules and busiest talkers. The Detection tab chooses the entropy measure (Shannon,
+  Renyi, Tsallis, normalised, min-entropy), the threshold model (EWMA, rolling mean or median,
+  the improved EWMA of Yu et al.) and whether the band learns every window or only the normal-
+  looking ones ([detection modes](detection-modes.md#entropy-measures-and-threshold-models)).
 * **Detection results tab** (below the topology): a per-host confusion matrix, precision,
   recall, false-positive rate, accuracy and F1, the time to the first and last attacker
   detected, a per-host table, the traffic toward the victim and service probes by phase,

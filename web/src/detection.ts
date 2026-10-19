@@ -470,3 +470,154 @@ export function describeRun(run: Run): string {
     );
   return parts.join(" · ");
 }
+
+/** One monitored distribution in an entropy window: its value and the learned band. */
+export type EntropySignal = {
+  value: number | null;
+  lower: number | null;
+  upper: number | null;
+  center: number | null;
+  spread: number | null;
+  out: boolean;
+};
+export type EntropyState =
+  | "idle"
+  | "warmup"
+  | "normal"
+  | "suspicious"
+  | "alarm";
+/** What the entropy detector saw and concluded in one window (an `entropy_window` event). */
+export type EntropyWindow = {
+  at: number;
+  window: number;
+  state: EntropyState;
+  rate: number;
+  pairs: number;
+  rules: number;
+  switches: number;
+  streak: number;
+  needed: number;
+  measure: string;
+  centerKind: string;
+  signals: Record<string, EntropySignal>;
+  panel: Record<string, Record<string, number>>;
+  topSrc: [string, number][];
+  topDst: [string, number][];
+  topPorts: [string, number][];
+  candidates: string[];
+  /** The settings the window was computed with (measure, centre, context…). */
+  config: Record<string, any>;
+};
+
+const entropyStates = new Set([
+  "idle",
+  "warmup",
+  "normal",
+  "suspicious",
+  "alarm",
+]);
+const numberOrNull = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) ? value : null;
+
+/** The entropy windows of a run, oldest first, read off its `entropy_window` events. */
+export function entropyWindows(events: Observation[]): EntropyWindow[] {
+  const windows: EntropyWindow[] = [];
+  for (const event of events) {
+    if (event.kind !== "entropy_window") continue;
+    const data = event.data;
+    const signals: Record<string, EntropySignal> = {};
+    for (const [name, raw] of Object.entries(data.signals ?? {})) {
+      const signal = raw as Record<string, unknown>;
+      signals[name] = {
+        value: numberOrNull(signal.value),
+        lower: numberOrNull(signal.lower),
+        upper: numberOrNull(signal.upper),
+        center: numberOrNull(signal.center),
+        spread: numberOrNull(signal.spread),
+        out: signal.out === true,
+      };
+    }
+    windows.push({
+      at: Date.parse(event.ts),
+      window: Number(data.window ?? windows.length + 1),
+      state: entropyStates.has(data.state) ? data.state : "normal",
+      rate: Number(data.total_rate ?? 0),
+      pairs: Number(data.pairs ?? 0),
+      rules: Number(data.flow_rules ?? 0),
+      switches: Number(data.switches ?? 0),
+      streak: Number(data.streak ?? 0),
+      needed: Number(data.needed ?? 0),
+      measure: String(data.measure ?? "shannon"),
+      centerKind: String(data.center_kind ?? "ewma"),
+      signals,
+      panel: data.panel ?? {},
+      topSrc: data.top_src ?? [],
+      topDst: data.top_dst ?? [],
+      topPorts: data.top_dport ?? [],
+      candidates: data.candidates ?? [],
+      config: data.config ?? {},
+    });
+  }
+  return windows;
+}
+
+/** `2.310 [1.90 – 3.40]` : the value and the band it is compared with. */
+export function formatSignal(signal: EntropySignal | undefined): string {
+  if (!signal || signal.value === null) return "—";
+  const band =
+    signal.lower !== null && signal.upper !== null
+      ? ` [${signal.lower.toFixed(2)} – ${signal.upper.toFixed(2)}]`
+      : "";
+  return `${signal.value.toFixed(3)}${band}`;
+}
+
+/** The entropies the detector reports side by side for every distribution. */
+export const panelMeasures: [string, string][] = [
+  ["shannon", "Shannon (bits)"],
+  ["norm", "Normalised Shannon"],
+  ["renyi2", "Rényi α=2"],
+  ["renyi10", "Rényi α=10"],
+  ["tsallis2", "Tsallis q=2"],
+  ["min", "Min-entropy (bits)"],
+  ["distinct", "Distinct values"],
+];
+
+export const centerLabels: Record<string, string> = {
+  ewma: "EWMA mean",
+  mean: "rolling mean",
+  median: "rolling median",
+  yu: "improved EWMA (Yu et al.)",
+};
+
+const measureLabels: Record<string, string> = {
+  shannon: "Shannon",
+  norm: "normalised Shannon",
+  renyi: "Rényi",
+  tsallis: "Tsallis",
+  min: "min-entropy",
+};
+
+/** The detector's settings as one readable line, as it computed the window. */
+export function describeEntropyConfig(config: Record<string, any>): string {
+  if (!config || !config.measure) return "";
+  const order =
+    config.measure === "renyi" || config.measure === "tsallis"
+      ? ` (order ${config.order})`
+      : "";
+  const rolling = config.center !== "ewma";
+  const parts = [
+    `Measure: ${measureLabels[config.measure] ?? config.measure}${order}`,
+    `Centre: ${centerLabels[config.center] ?? config.center}`,
+  ];
+  if (config.center === "mean" || config.center === "median")
+    parts.push(`Spread: ${config.spread === "mad" ? "MAD" : "std"}`);
+  if (rolling)
+    parts.push(
+      `History: ${config.history > 0 ? `${config.history} windows` : "the whole run"}`,
+    );
+  parts.push(
+    `Learns from: ${config.context === "all" ? "every window" : "normal-looking windows"}`,
+  );
+  parts.push(`Band: centre ± ${config.k} × spread`);
+  return parts.join(" · ");
+}

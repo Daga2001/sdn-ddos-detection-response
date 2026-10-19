@@ -4,7 +4,7 @@ Hosts both mechanisms behind a single authenticated HTTP API so the lab's
 runner can reach them with the contract it already speaks:
 
     POST /predict          LLM detector (same contract as detection.api)
-    POST /entropy/observe  Shannon-entropy detector (one adaptive state per run)
+    POST /entropy/observe  entropy detector (one adaptive state per run)
     GET  /health           unauthenticated readiness probe used by the lab
     GET  /config, PUT /config, GET /models   choose the active mode/LLM
 
@@ -58,12 +58,24 @@ class FlowIn(BaseModel):
     weight: float = Field(ge=0, allow_inf_nan=False)
 
 
+class BinIn(BaseModel):
+    """`count` distinct values that all carry `weight` (a histogram bin)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    weight: float = Field(ge=0, allow_inf_nan=False)
+    count: int = Field(ge=1, le=10_000_000)
+
+
 class EntropyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     run_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
     scope: int = Field(default=0, ge=0)
     flows: List[FlowIn] = Field(max_length=MAX_FLOWS_PER_WINDOW)
+    # Destination-port and protocol distributions, only when the run watches them.
+    dports: List[BinIn] = Field(default_factory=list, max_length=MAX_FLOWS_PER_WINDOW)
+    protos: List[BinIn] = Field(default_factory=list, max_length=MAX_FLOWS_PER_WINDOW)
 
 
 ENTROPY_FIELDS = (
@@ -77,6 +89,13 @@ ENTROPY_FIELDS = (
     "candidate_min_rate",
     "update_hold",
     "alpha_run",
+    "measure",
+    "order",
+    "center",
+    "spread",
+    "history",
+    "context",
+    "features",
 )
 
 
@@ -95,6 +114,15 @@ class EntropyUpdate(BaseModel):
     candidate_min_rate: Optional[float] = Field(default=None, ge=0, le=1_000_000)
     update_hold: Optional[int] = Field(default=None, ge=0, le=20)
     alpha_run: Optional[float] = Field(default=None, gt=0, le=1)
+    measure: Optional[Literal["shannon", "norm", "renyi", "tsallis", "min"]] = None
+    order: Optional[float] = Field(default=None, gt=0, le=64)
+    center: Optional[Literal["ewma", "mean", "median", "yu"]] = None
+    spread: Optional[Literal["std", "mad"]] = None
+    history: Optional[int] = Field(default=None, ge=0, le=1000)
+    context: Optional[Literal["normal", "all"]] = None
+    features: Optional[List[Literal["src", "dst", "dport", "proto"]]] = Field(
+        default=None, min_length=2, max_length=4
+    )
 
 
 class ConfigUpdate(BaseModel):
@@ -198,7 +226,9 @@ class DetectorService:
         """The values a run that starts now would use."""
 
         detector = self.new_entropy_detector()
-        return {name: getattr(detector, name) for name in ENTROPY_FIELDS}
+        settings = {name: getattr(detector, name) for name in ENTROPY_FIELDS}
+        settings["features"] = list(settings["features"])
+        return settings
 
     def invalidate_health(self) -> None:
         self._health = None
@@ -325,11 +355,18 @@ def create_app(
         if update.entropy is not None:
             # A complete set replaces the previous overrides; fields left out fall
             # back to the environment defaults.
-            service.entropy_params = {
-                name: value
+            params: Dict[str, Any] = {
+                name: tuple(value) if name == "features" else value
                 for name, value in update.entropy.model_dump().items()
                 if value is not None
             }
+            try:  # a combination the detector rejects must fail here, not mid-run
+                dataclasses.replace(EntropyDetector.from_env(), **params)
+            except ValueError as exc:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)
+                ) from exc
+            service.entropy_params = params
         if update.mode is not None:
             service.mode = update.mode
         service.invalidate_health()
@@ -382,8 +419,12 @@ def create_app(
         require_mode("entropy")
         detector = service.entropy_for(payload.run_id)
         flows = [FlowObservation(f.src, f.dst, f.weight) for f in payload.flows]
+        extra = {
+            "dport": [(b.weight, b.count) for b in payload.dports],
+            "proto": [(b.weight, b.count) for b in payload.protos],
+        }
         with service.lock:
-            result = detector.observe(payload.scope, flows)
+            result = detector.observe(payload.scope, flows, extra)
         return {
             "confirmed": result.confirmed,
             "reason": result.reason,

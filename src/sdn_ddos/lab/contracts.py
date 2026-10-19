@@ -49,6 +49,18 @@ class EntropyParams(StrictModel):
     window_seconds: int = Field(default=5, ge=1, le=60)
     window_mode: Literal["snapshot", "mean"] = "mean"
     dedupe_switches: bool = False
+    # Which entropy is computed and how its normal band is learned (see
+    # detection/entropy.py). The defaults are the original detector: Shannon entropy,
+    # EWMA mean and deviation, learned from the windows that look normal.
+    measure: Literal["shannon", "norm", "renyi", "tsallis", "min"] = "shannon"
+    order: float = Field(default=2.0, gt=0, le=64)
+    center: Literal["ewma", "mean", "median", "yu"] = "ewma"
+    spread: Literal["std", "mad"] = "std"
+    history: int = Field(default=0, ge=0, le=1000)
+    context: Literal["normal", "all"] = "normal"
+    # Distributions watched besides the IPs.
+    watch_ports: bool = False
+    watch_protocols: bool = False
 
 
 class ResponseParams(StrictModel):
