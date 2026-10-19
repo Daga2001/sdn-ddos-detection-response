@@ -76,6 +76,8 @@ export type EntropyParams = {
   context: "normal" | "all";
   watch_ports: boolean;
   watch_protocols: boolean;
+  /** false: forwarding rules ignore the layer-4 port (no rule per reply in a SYN flood). */
+  match_ports: boolean;
 };
 export type EntropyMeasure = "shannon" | "norm" | "renyi" | "tsallis" | "min";
 export type ThresholdCenter = "ewma" | "mean" | "median" | "yu";
@@ -140,6 +142,7 @@ export const defaultEntropy: EntropyParams = {
   context: "normal",
   watch_ports: false,
   watch_protocols: false,
+  match_ports: true,
 };
 export const defaultResponse: ResponseParams = {
   policy: "block",

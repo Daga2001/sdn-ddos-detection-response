@@ -103,4 +103,5 @@ class RemoteEntropy:
             measure=str(details.get("measure", "shannon")),
             center=str(details.get("center_kind", "ewma")),
             config=dict(details.get("config") or {}),
+            note=str(details.get("note") or ""),
         )

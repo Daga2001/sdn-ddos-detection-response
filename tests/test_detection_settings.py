@@ -359,3 +359,13 @@ def test_the_entropy_measure_and_threshold_are_part_of_the_detection_config():
     ):
         with pytest.raises(ValidationError):
             DetectionConfig(entropy=bad)
+
+
+def test_the_forwarding_rule_granularity_is_an_entropy_run_setting():
+    assert DetectionConfig().entropy.match_ports is True
+    assert controller_env(DetectionConfig())["SDN_MATCH_L4_PORTS"] == "true"
+    coarse = DetectionConfig(mode="entropy", entropy={"match_ports": False})
+    assert controller_env(coarse)["SDN_MATCH_L4_PORTS"] == "false"
+    # the LLM keeps the ports its prompt needs, whatever the entropy setting says
+    llm = DetectionConfig(mode="llm", entropy={"match_ports": False})
+    assert controller_env(llm)["SDN_MATCH_L4_PORTS"] == "true"

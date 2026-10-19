@@ -526,3 +526,24 @@ test("the Threshold tab says what to do before the detector has reported", async
     page.getByText("The entropy detector has not reported yet."),
   ).toBeVisible();
 });
+
+test("forwarding rules can stop matching ports, and the choice is sent with the run", async ({
+  page,
+}) => {
+  const lab = await mockLab(page);
+  await inspectorTab(page, "Detection").click();
+  await page.getByRole("button", { name: /^Entropy/ }).click();
+  const match = page.getByRole("checkbox", {
+    name: /Match ports in forwarding rules/,
+  });
+  await expect(match).toBeChecked();
+  await match.uncheck();
+  await inspectorTab(page, "Experiment").click();
+  await page.getByLabel(/I confirm these hosts/).check();
+  await page.getByRole("button", { name: "Start experiment" }).click();
+  await expect.poll(() => lab.started.length).toBe(1);
+  const sent = lab.started[0] as {
+    experiment: { detection: { entropy: { match_ports: boolean } } };
+  };
+  expect(sent.experiment.detection.entropy.match_ports).toBe(false);
+});

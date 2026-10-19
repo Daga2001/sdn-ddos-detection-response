@@ -35,6 +35,7 @@ GROUP = {
     "M": "Redes grandes, sin detector, recuperación",
     "T": "Corpus para comparar entropías y umbrales (ventanas completas grabadas, incluye cambios benignos de tráfico)",
     "U": "Modelo de umbral de entropía con respuesta: ¿cambia lo que el servicio aguanta?",
+    "N": "Iteraciones nocturnas del detector de entropía (respuesta real)",
     "S": "Control de la corrida",
 }
 

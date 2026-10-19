@@ -61,6 +61,10 @@ class EntropyParams(StrictModel):
     # Distributions watched besides the IPs.
     watch_ports: bool = False
     watch_protocols: bool = False
+    # Whether the controller's forwarding rules match the layer-4 port (the original
+    # behaviour). Off, a SYN flood no longer creates one rule and one packet-in per
+    # reply, which is what saturates the controller and takes the victim's service down.
+    match_ports: bool = True
 
 
 class ResponseParams(StrictModel):
