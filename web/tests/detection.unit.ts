@@ -10,6 +10,7 @@ import {
   retainEvents,
   liveLimit,
   describeRun,
+  describeBand,
   describeEntropyConfig,
   entropyWindows,
   formatSignal,
@@ -508,4 +509,22 @@ test("older records and the detector's answer fill in the new entropy options", 
   assert.equal(current.entropy.context, "all");
   assert.equal(current.entropy.watch_ports, true);
   assert.equal(current.entropy.watch_protocols, false);
+});
+
+test("the band description leaves the measure out and follows the model", () => {
+  assert.equal(
+    describeBand({ center: "ewma", context: "normal", k: 2.5 }),
+    "Centre: EWMA mean · Learns from: normal-looking windows · Band: centre ± 2.5 × spread",
+  );
+  assert.match(
+    describeBand({
+      center: "median",
+      spread: "mad",
+      history: 40,
+      context: "all",
+      k: 3,
+    }),
+    /Spread: MAD · History: 40 windows · Learns from: every window/,
+  );
+  assert.equal(describeBand({}), "");
 });

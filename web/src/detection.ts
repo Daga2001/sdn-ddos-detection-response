@@ -597,18 +597,11 @@ const measureLabels: Record<string, string> = {
   min: "min-entropy",
 };
 
-/** The detector's settings as one readable line, as it computed the window. */
-export function describeEntropyConfig(config: Record<string, any>): string {
-  if (!config || !config.measure) return "";
-  const order =
-    config.measure === "renyi" || config.measure === "tsallis"
-      ? ` (order ${config.order})`
-      : "";
+/** How the normal band is learned, as one readable line (no measure). */
+export function describeBand(config: Record<string, any>): string {
+  if (!config || !config.center) return "";
   const rolling = config.center !== "ewma";
-  const parts = [
-    `Measure: ${measureLabels[config.measure] ?? config.measure}${order}`,
-    `Centre: ${centerLabels[config.center] ?? config.center}`,
-  ];
+  const parts = [`Centre: ${centerLabels[config.center] ?? config.center}`];
   if (config.center === "mean" || config.center === "median")
     parts.push(`Spread: ${config.spread === "mad" ? "MAD" : "std"}`);
   if (rolling)
@@ -620,4 +613,19 @@ export function describeEntropyConfig(config: Record<string, any>): string {
   );
   parts.push(`Band: centre ± ${config.k} × spread`);
   return parts.join(" · ");
+}
+
+/** The detector's settings as one readable line, as it computed the window. */
+export function describeEntropyConfig(config: Record<string, any>): string {
+  if (!config || !config.measure) return "";
+  const order =
+    config.measure === "renyi" || config.measure === "tsallis"
+      ? ` (order ${config.order})`
+      : "";
+  return [
+    `Measure: ${measureLabels[config.measure] ?? config.measure}${order}`,
+    describeBand(config),
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
