@@ -651,3 +651,34 @@ def test_the_memory_of_a_flood_fades_and_later_alarms_name_again():
     later = detector.observe(1, quiet_leftovers())
     assert later.confirmed and later.note == ""
     assert set(later.candidates) == {"10.0.1.20", "10.0.1.21"} - {later.target_dst}
+
+
+def two_victim_flood() -> list:
+    flows = list(normal_window())
+    for attacker in ("10.0.1.7", "10.0.1.8", "10.0.1.9"):
+        for victim in ("10.0.1.50", "10.0.1.51"):
+            flows.append(FlowObservation(attacker, victim, 400.0))  # the flood
+            flows.append(FlowObservation(victim, attacker, 100.0))  # the answers
+    return flows
+
+
+def test_with_several_victims_none_of_them_is_named_as_an_attacker():
+    detector = warmed_detector()
+    detector.observe(1, two_victim_flood())
+    result = detector.observe(1, two_victim_flood())
+    assert result.confirmed
+    # the second victim sends 300 pkt/s of answers: heavy, but it is not an attacker
+    assert set(result.candidates) == {"10.0.1.7", "10.0.1.8", "10.0.1.9"}
+    assert {"10.0.1.50", "10.0.1.51"}.isdisjoint(result.candidates)
+
+
+def test_a_single_attacker_with_symmetric_traffic_is_still_named():
+    detector = warmed_detector()
+    # an echo flood: every request is answered, so the attacker receives what it sends
+    echo = [
+        *normal_window(),
+        FlowObservation("10.0.1.9", "10.0.1.50", 800.0),
+        FlowObservation("10.0.1.50", "10.0.1.9", 700.0),
+    ]
+    detector.observe(1, echo)
+    assert detector.observe(1, echo).candidates == ("10.0.1.9",)
