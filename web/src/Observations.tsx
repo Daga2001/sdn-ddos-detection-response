@@ -10,6 +10,7 @@ import {
 import { CanvasRenderer } from "echarts/renderers";
 import type { Observation, PhaseSpan } from "./types";
 import { packets, phaseSpans } from "./types";
+import { EntropyView } from "./EntropyView";
 echarts.use([
   LineChart,
   GridComponent,
@@ -23,6 +24,8 @@ echarts.use([
 const tabHints: Record<string, string> = {
   Detection:
     "WHAT: how the detector did on this run — a confusion matrix (true/false positives and negatives per host), precision and recall, how fast it reacted, the measured network and service data around it, and a live chart of the attack against the detections. HOW TO READ: attackers named are true positives, legitimate clients named are false positives; the chart shows the flood reaching the victim and the detections stacking up. WHY: it answers “did the detector work, and at what cost?” without reading event logs.",
+  Threshold:
+    "WHAT: a window-by-window log of the entropy detector — the entropy it computes for source IPs, destination IPs (and ports or protocols if you turned them on), the band of normal values it learned, where the centre of that band sits, and the network it measured (packet rate, flow rules, busiest talkers). HOW TO READ: dots inside the shaded band are normal, outside it they are suspicious; the dashed line is the learned centre (the mean or the median, as chosen in the Detection tab). WHY: it shows in real time why the detector alarmed or stayed quiet, and how its threshold moves as the traffic changes.",
   Traffic:
     "WHAT: a live time chart — the teal line is how much data is crossing the links each second, the orange line is how long the web service takes to answer a normal request, and the shaded bands mark the baseline, attack and recovery phases. HOW TO READ: during an attack the traffic line climbs and the latency line rises or its points drop out when a probe fails. WHY: it is the headline picture of an attack's impact building up and fading away.",
   Packets:
@@ -157,6 +160,8 @@ export function Observations({
     : Date.now();
   const spans = phaseSpans(events, endMs);
   const controller = events.findLast((e) => e.kind === "controller")?.data;
+  // Entropy windows come every few seconds and have their own tab; the Timeline keeps
+  // only the ones that mattered.
   const meaningful = events.filter(
     (e) =>
       ![
@@ -166,7 +171,9 @@ export function Observations({
         "packet",
         "packets",
         "command_output",
-      ].includes(e.kind),
+      ].includes(e.kind) &&
+      (e.kind !== "entropy_window" ||
+        ["suspicious", "alarm"].includes(e.data.state)),
   );
   const commands = events.filter((e) =>
     [
@@ -195,6 +202,7 @@ export function Observations({
         {[
           "Traffic",
           "Detection",
+          "Threshold",
           "Packets",
           "Commands",
           "Timeline",
@@ -214,7 +222,9 @@ export function Observations({
         ))}
         <span>Measured evidence · UTC</span>
       </nav>
-      <div className={`observation-body${tab === "Detection" ? " tall" : ""}`}>
+      <div
+        className={`observation-body${["Detection", "Threshold"].includes(tab) ? " tall" : ""}`}
+      >
         {tab === "Traffic" &&
           (events.some((e) => e.kind === "links") ? (
             <>
@@ -250,6 +260,7 @@ export function Observations({
             </div>
           ))}
         {tab === "Detection" && detectionView}
+        {tab === "Threshold" && <EntropyView events={events} spans={spans} />}
         {tab === "Packets" &&
           (packetRows.length ? (
             <table>

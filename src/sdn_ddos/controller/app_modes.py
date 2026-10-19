@@ -30,9 +30,10 @@ Robustness changes over the baseline (all opt-out through env vars):
 
 from __future__ import annotations
 
+import json
 import os
 import time
-from collections import OrderedDict
+from collections import Counter, OrderedDict, defaultdict
 from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -61,9 +62,13 @@ from sdn_ddos.controller.stats_buffer import StatsReassembler
 from sdn_ddos.decision_log import create_decision_log
 from sdn_ddos.detection.entropy import (
     EntropyDetector,
+    EntropyResult,
     FlowObservation,
+    Histogram,
+    format_signal,
     mean_rates,
     merge_switch_rates,
+    window_state,
 )
 from sdn_ddos.detection.entropy_client import RemoteEntropy, fetch_remote_config
 from sdn_ddos.storage import create_metrics_store
@@ -84,6 +89,7 @@ class _TimeoutSession(requests.Session):
 
 
 MODES = ("llm", "entropy", "off")
+MAX_HISTOGRAM_BINS = 2000  # the detector service accepts at most 5000 per request
 NETWORK_SCOPE = 0  # dpid slot used by the entropy detector for the whole network
 
 
@@ -167,6 +173,21 @@ class ModeSwitchController(EnterpriseDDoSController):
         self._window_polls: Dict[
             int, List[Tuple[float, float, Dict[Tuple[str, str], float]]]
         ] = {}
+        # Destination ports and protocols are only gathered when the detector is told
+        # to watch them (SDN_ENTROPY_FEATURES); polls are kept per switch like the
+        # pairs above, as (read time, seconds covered, packets per (proto, port)).
+        features = os.environ.get("SDN_ENTROPY_FEATURES", "src,dst")
+        self._tracks_ports = any(
+            name.strip() in ("dport", "proto") for name in features.split(",")
+        )
+        self._window_ports: Dict[
+            int, List[Tuple[float, float, Dict[Tuple[int, int], float]]]
+        ] = {}
+        # Every window is published as an `entropy_window` event; with
+        # SDN_ENTROPY_DUMP the full window (flows and histograms) is also appended to
+        # that file, for offline replays of the detector.
+        self.entropy_dump = os.environ.get("SDN_ENTROPY_DUMP", "").strip()
+        self._entropy_windows = 0
         response_settings = ResponseSettings.from_env(
             os.environ, self.settings.block_seconds
         )
@@ -286,6 +307,7 @@ class ModeSwitchController(EnterpriseDDoSController):
         self._last_poll.pop(dpid, None)
         self._window_flows.pop(dpid, None)
         self._window_polls.pop(dpid, None)
+        self._window_ports.pop(dpid, None)
 
     # -- LLM judging off the event loop -------------------------------------
 
@@ -439,6 +461,7 @@ class ModeSwitchController(EnterpriseDDoSController):
         current: Dict[Any, int] = {}
         flows: List[FlowObservation] = []
         pairs: Dict[Tuple[str, str], float] = {}
+        ports: Dict[Tuple[int, int], float] = {}
         for stat in body:
             if stat.priority == 0:
                 continue
@@ -457,6 +480,14 @@ class ModeSwitchController(EnterpriseDDoSController):
                 )
                 pair = (str(source), str(destination))
                 pairs[pair] = pairs.get(pair, 0.0) + delta
+                if self._tracks_ports:
+                    port_key = (
+                        int(stat.match.get("ip_proto") or 0),
+                        int(
+                            stat.match.get("tcp_dst") or stat.match.get("udp_dst") or 0
+                        ),
+                    )
+                    ports[port_key] = ports.get(port_key, 0.0) + delta
         self._packet_history[dpid] = current
         self._last_poll[dpid] = now
         if elapsed:
@@ -465,6 +496,68 @@ class ModeSwitchController(EnterpriseDDoSController):
             polls.append((now, elapsed, pairs))
             horizon = 2 * self.entropy_window
             polls[:] = [poll for poll in polls if now - poll[0] <= horizon]
+            if self._tracks_ports:
+                port_polls = self._window_ports.setdefault(dpid, [])
+                port_polls.append((now, elapsed, ports))
+                port_polls[:] = [p for p in port_polls if now - p[0] <= horizon]
+
+    def _window_histograms(
+        self, now: float
+    ) -> Tuple[Dict[str, Histogram], List[Tuple[str, float]]]:
+        """Destination-port and protocol distributions of the window.
+
+        Under a SYN flood every reply is a flow of its own, so thousands of ports
+        carry the same tiny rate; they are sent as a (weight, count) histogram
+        instead of one entry each. Also returns the busiest ports, for the log.
+        """
+
+        per_switch: Dict[int, Dict[Tuple[int, int], float]] = {}
+        for dpid, polls in self._window_ports.items():
+            if self.entropy_window_mode == "mean":
+                recent = [p for p in polls if now - p[0] < self.entropy_window]
+            else:
+                recent = [
+                    p for p in polls[-1:] if now - p[0] <= 2 * self.entropy_window
+                ]
+            total = sum(elapsed for _, elapsed, _ in recent if elapsed > 0)
+            if total <= 0:
+                continue
+            packets: Dict[Tuple[int, int], float] = defaultdict(float)
+            for _, elapsed, ports in recent:
+                if elapsed > 0:
+                    for key, delta in ports.items():
+                        packets[key] += delta
+            per_switch[dpid] = {key: count / total for key, count in packets.items()}
+        by_port: Dict[Tuple[int, int], float] = {}
+        by_proto: Dict[int, float] = defaultdict(float)
+        for rates in per_switch.values():
+            for key, rate in rates.items():
+                if self.entropy_dedupe:
+                    by_port[key] = max(by_port.get(key, 0.0), rate)
+                else:
+                    by_port[key] = by_port.get(key, 0.0) + rate
+        for (proto, _), rate in by_port.items():
+            by_proto[proto] += rate
+        # Equal rates share a bin. If a flood still leaves too many distinct rates for
+        # the detector service to accept, they are rounded harder until they fit.
+        for digits in (3, 2, 1, 0):
+            port_hist = Counter(
+                round(rate, digits) for rate in by_port.values() if rate > 0
+            )
+            if len(port_hist) <= MAX_HISTOGRAM_BINS:
+                break
+        histograms: Dict[str, Histogram] = {
+            "dport": sorted(port_hist.items()),
+            "proto": [(round(rate, 3), 1) for rate in by_proto.values() if rate > 0],
+        }
+        names = {1: "icmp", 6: "tcp", 17: "udp"}
+        top = [
+            (f"{names.get(proto, proto)}/{port}", round(rate, 3))
+            for (proto, port), rate in sorted(
+                by_port.items(), key=lambda item: item[1], reverse=True
+            )[:5]
+        ]
+        return histograms, top
 
     def _window_observations(
         self, now: float, fresh: Dict[int, Tuple[float, List[FlowObservation], int]]
@@ -513,11 +606,16 @@ class ModeSwitchController(EnterpriseDDoSController):
                 if now - entry[0] <= 2 * self.entropy_window
             }
             flows = self._window_observations(now, fresh)
+            extra: Optional[Dict[str, Histogram]] = None
+            top_ports: List[Tuple[str, float]] = []
+            if self._tracks_ports:
+                extra, top_ports = self._window_histograms(now)
             try:
-                result = self.entropy.observe(NETWORK_SCOPE, flows)
+                result = self.entropy.observe(NETWORK_SCOPE, flows, extra)
             except (requests.RequestException, KeyError, ValueError) as exc:
                 self.logger.error("entropy window skipped, detector failed: %s", exc)
                 continue
+            self._publish_entropy_window(result, fresh, flows, extra, top_ports)
             if result.reason == "idle":
                 continue
             observed_at = datetime.now(timezone.utc)
@@ -560,6 +658,73 @@ class ModeSwitchController(EnterpriseDDoSController):
                 if source == result.target_dst:
                     continue  # never act on the address named as the victim
                 self._maybe_block(source, observed_at)
+
+    def _publish_entropy_window(
+        self,
+        result: EntropyResult,
+        fresh: Dict[int, Tuple[float, List[FlowObservation], int]],
+        flows: List[FlowObservation],
+        extra: Optional[Dict[str, Histogram]],
+        top_ports: List[Tuple[str, float]],
+    ) -> None:
+        """Show what the detector saw in this window: values, bands, busiest talkers.
+
+        Published for every window (idle and warm-up ones too) so the workspace can
+        draw how the band moves, and written to the log in one readable line.
+        """
+
+        self._entropy_windows += 1
+        state = window_state(result)
+        payload = result.as_details()
+        payload.update(
+            {
+                "window": self._entropy_windows,
+                "state": state,
+                "seconds": self.entropy_window,
+                "switches": len(fresh),
+                "flow_rules": sum(entry[2] for entry in fresh.values()),
+                "pairs": len(flows),
+                "streak": result.consecutive,
+                "needed": self.entropy.consecutive_windows,
+                "top_dport": [list(item) for item in top_ports],
+            }
+        )
+        self.telemetry.emit("entropy_window", payload)
+        signals = " ".join(
+            format_signal(name, signal) for name, signal in result.signals.items()
+        )
+        self.logger.info(
+            "ENTROPY w=%d %s rate=%.0f/s pairs=%d rules=%s %s streak=%d/%d "
+            "top_src=%s top_dst=%s",
+            self._entropy_windows,
+            state.upper(),
+            result.total_rate,
+            len(flows),
+            payload["flow_rules"],
+            signals or "-",
+            result.consecutive,
+            self.entropy.consecutive_windows,
+            list(result.top_src[:2]),
+            list(result.top_dst[:2]),
+        )
+        if self.entropy_dump:
+            record = {
+                "run": os.environ.get("SDN_RUN_ID", ""),
+                "window": self._entropy_windows,
+                "at": datetime.now(timezone.utc).isoformat(),
+                "state": state,
+                "flows": [[f.src, f.dst, round(f.weight, 4)] for f in flows],
+                "hist": {
+                    name: [list(item) for item in histogram]
+                    for name, histogram in (extra or {}).items()
+                },
+            }
+            try:
+                with open(self.entropy_dump, "a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(record) + "\n")
+            except OSError as exc:
+                self.logger.error("cannot write %s: %s", self.entropy_dump, exc)
+                self.entropy_dump = ""
 
     # -- response ---------------------------------------------------------
 

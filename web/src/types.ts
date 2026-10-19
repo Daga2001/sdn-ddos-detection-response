@@ -67,7 +67,18 @@ export type EntropyParams = {
   window_seconds: number;
   window_mode: "snapshot" | "mean";
   dedupe_switches: boolean;
+  /** Which entropy is computed and how its normal band is learned. */
+  measure: EntropyMeasure;
+  order: number;
+  center: ThresholdCenter;
+  spread: "std" | "mad";
+  history: number;
+  context: "normal" | "all";
+  watch_ports: boolean;
+  watch_protocols: boolean;
 };
+export type EntropyMeasure = "shannon" | "norm" | "renyi" | "tsallis" | "min";
+export type ThresholdCenter = "ewma" | "mean" | "median" | "yu";
 export type ResponseParams = {
   policy: ResponsePolicy;
   dry_run: boolean;
@@ -121,6 +132,14 @@ export const defaultEntropy: EntropyParams = {
   window_seconds: 5,
   window_mode: "mean",
   dedupe_switches: false,
+  measure: "shannon",
+  order: 2,
+  center: "ewma",
+  spread: "std",
+  history: 0,
+  context: "normal",
+  watch_ports: false,
+  watch_protocols: false,
 };
 export const defaultResponse: ResponseParams = {
   policy: "block",
@@ -193,6 +212,14 @@ export function detectionFromService(
         entropy.candidate_min_rate ?? defaultEntropy.candidate_min_rate,
       update_hold: entropy.update_hold ?? defaultEntropy.update_hold,
       alpha_run: entropy.alpha_run ?? null,
+      measure: entropy.measure ?? defaultEntropy.measure,
+      order: entropy.order ?? defaultEntropy.order,
+      center: entropy.center ?? defaultEntropy.center,
+      spread: entropy.spread ?? defaultEntropy.spread,
+      history: entropy.history ?? defaultEntropy.history,
+      context: entropy.context ?? defaultEntropy.context,
+      watch_ports: (entropy.features ?? []).includes("dport"),
+      watch_protocols: (entropy.features ?? []).includes("proto"),
     },
     response: {
       ...defaultResponse,

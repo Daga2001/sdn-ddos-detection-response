@@ -332,3 +332,90 @@ def test_entropy_tuning_rejects_out_of_range_values() -> None:
     for bad in ({"k": 0}, {"alpha": 0}, {"warmup_windows": 0}, {"unknown": 1}):
         reply = api.put("/config", json={"entropy": bad}, headers=KEY)
         assert reply.status_code == 422, bad
+
+
+def test_the_entropy_measure_and_threshold_are_tunable_and_histograms_accepted() -> (
+    None
+):
+    api = client("entropy")
+    tuning = {
+        "measure": "renyi",
+        "order": 10,
+        "center": "median",
+        "spread": "mad",
+        "history": 30,
+        "context": "all",
+        "features": ["src", "dst", "dport"],
+        "warmup_windows": 3,
+        "min_total_rate": 1,
+    }
+    assert api.put("/config", json={"entropy": tuning}, headers=KEY).status_code == 200
+    settings = api.get("/config", headers=KEY).json()["entropy"]
+    assert (settings["measure"], settings["order"]) == ("renyi", 10.0)
+    assert (settings["center"], settings["spread"], settings["history"]) == (
+        "median",
+        "mad",
+        30,
+    )
+    assert settings["context"] == "all"
+    assert settings["features"] == ["src", "dst", "dport"]
+    body = {
+        "run_id": "tuned",
+        "flows": window(6),
+        "dports": [{"weight": 100.0, "count": 2}],
+    }
+    for _ in range(4):
+        reply = api.post("/entropy/observe", json=body, headers=KEY).json()
+    details = reply["details"]
+    assert details["reason"] == "evaluated"
+    assert (details["measure"], details["center_kind"]) == ("renyi", "median")
+    assert set(details["signals"]) == {"src", "dst", "dport"}
+    assert details["panel"]["dport"]["distinct"] == 2.0
+    assert details["top_src"][0][1] == 100.0
+
+
+def test_a_combination_the_detector_rejects_fails_when_configured() -> None:
+    api = client("entropy")
+    for bad in (
+        {"features": ["src", "dport"]},  # destination IPs are always watched
+        {"features": ["src"]},
+        {"measure": "nope"},
+        {"order": 0},
+        {"history": 5000},
+    ):
+        response = api.put("/config", json={"entropy": bad}, headers=KEY)
+        assert response.status_code == 422, bad
+    assert api.get("/config", headers=KEY).json()["entropy"]["measure"] == "shannon"
+
+
+def test_remote_entropy_sends_the_histograms_and_reads_the_extra_details() -> None:
+    api = client("entropy")
+    sent: List[Dict[str, Any]] = []
+
+    class Session:
+        def post(
+            self,
+            url: str,
+            json: Dict[str, Any],
+            headers: Dict[str, str],
+            timeout: float,
+        ) -> Any:
+            sent.append(json)
+            return Adapter(
+                api.post(url.replace("http://detector", ""), json=json, headers=headers)
+            )
+
+    features = {"features": ["src", "dst", "dport"], "warmup_windows": 1}
+    api.put("/config", json={"entropy": features}, headers=KEY)
+    remote = RemoteEntropy("http://detector", "secret", "run-d", session=Session())  # type: ignore[arg-type]
+    flows = [FlowObservation("10.0.0.1", "10.0.0.2", 100.0)]
+    extra = {"dport": [(50.0, 2)], "proto": [(100.0, 1)]}
+    result = remote.observe(0, flows, extra)
+    assert sent[0]["dports"] == [{"weight": 50.0, "count": 2}]
+    assert sent[0]["protos"] == [{"weight": 100.0, "count": 1}]
+    assert result.measure == "shannon" and result.center == "ewma"
+    assert result.top_src[0][0] == "10.0.0.1" and "dport" in result.panel
+    later = remote.observe(0, flows, extra)
+    assert "dport" in later.signals and later.evaluated
+    remote.observe(0, flows)
+    assert "dports" not in sent[2] and "protos" not in sent[2]

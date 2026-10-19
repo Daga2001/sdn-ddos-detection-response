@@ -71,6 +71,83 @@ function recordedEvents() {
     event(90, "attack_stopped", {}),
     event(90, "phase", { state: "recovery" }),
     event(110, "phase", { state: "completed" }),
+    ...entropyWindows(),
+  ];
+}
+
+// What the entropy detector reported while it learned, saw normal traffic, then a flood.
+const entropyConfig = {
+  measure: "shannon",
+  order: 2,
+  center: "median",
+  spread: "mad",
+  history: 0,
+  context: "all",
+  k: 2.5,
+};
+const panel = (shannon: number) => ({
+  src: {
+    shannon,
+    norm: 0.9,
+    renyi2: 1.3,
+    renyi10: 1.1,
+    tsallis2: 0.6,
+    min: 1,
+    distinct: 3,
+  },
+  dst: {
+    shannon: 0.2,
+    norm: 0.1,
+    renyi2: 0.1,
+    renyi10: 0.1,
+    tsallis2: 0.05,
+    min: 0.1,
+    distinct: 1,
+  },
+});
+const signal = (value: number, band: number[] | null, out = false) => ({
+  value,
+  lower: band ? band[0] : null,
+  upper: band ? band[1] : null,
+  center: band ? (band[0] + band[1]) / 2 : null,
+  spread: band ? 0.1 : null,
+  out,
+});
+function entropyWindows() {
+  const window = (
+    second: number,
+    n: number,
+    state: string,
+    value: number,
+    band: number[] | null,
+    streak: number,
+  ) =>
+    event(second, "entropy_window", {
+      window: n,
+      state,
+      total_rate: state === "alarm" ? 1520 : 31,
+      pairs: 4,
+      flow_rules: 30 + n,
+      switches: 1,
+      streak,
+      needed: 2,
+      measure: "shannon",
+      center_kind: "median",
+      config: entropyConfig,
+      signals: {
+        src: signal(value, band, state === "suspicious" || state === "alarm"),
+        dst: signal(0.2, band && [0, 1]),
+      },
+      panel: panel(value),
+      top_src: [["10.0.0.1", 900]],
+      top_dst: [["10.0.0.3", 910]],
+      top_dport: [],
+    });
+  return [
+    window(111, 1, "warmup", 1.5, null, 0),
+    window(112, 2, "normal", 1.52, [1.2, 1.8], 0),
+    window(113, 3, "suspicious", 0.4, [1.2, 1.8], 1),
+    window(114, 4, "alarm", 0.3, [1.2, 1.8], 2),
   ];
 }
 
@@ -336,4 +413,116 @@ test("results are not invented before anything has run", async ({ page }) => {
   await expect(
     page.getByLabel("False negative 1", { exact: true }),
   ).toHaveCount(0);
+});
+
+test("the entropy measure and the threshold model are sent with the experiment", async ({
+  page,
+}) => {
+  const lab = await mockLab(page);
+  await inspectorTab(page, "Detection").click();
+  await page.getByRole("button", { name: /^Entropy/ }).click();
+  await page
+    .getByRole("combobox", { name: /^Entropy measure/ })
+    .selectOption("renyi");
+  await page.getByRole("spinbutton", { name: /^Order/ }).fill("10");
+  await page
+    .getByRole("combobox", { name: /^Threshold centre/ })
+    .selectOption("median");
+  await page.getByRole("combobox", { name: /^Spread/ }).selectOption("mad");
+  await page.getByRole("spinbutton", { name: /^History/ }).fill("40");
+  await page.getByRole("combobox", { name: /^Learn from/ }).selectOption("all");
+  await page
+    .getByRole("checkbox", { name: /Also watch destination ports/ })
+    .check();
+  await inspectorTab(page, "Experiment").click();
+  await page.getByLabel(/I confirm these hosts/).check();
+  await page.getByRole("button", { name: "Start experiment" }).click();
+  await expect.poll(() => lab.started.length).toBe(1);
+  const sent = lab.started[0] as {
+    experiment: {
+      detection: { mode: string; entropy: Record<string, unknown> };
+    };
+  };
+  expect(sent.experiment.detection.mode).toBe("entropy");
+  expect(sent.experiment.detection.entropy).toMatchObject({
+    measure: "renyi",
+    order: 10,
+    center: "median",
+    spread: "mad",
+    history: 40,
+    context: "all",
+    watch_ports: true,
+    watch_protocols: false,
+  });
+});
+
+test("the spread and history only apply to the models that use them", async ({
+  page,
+}) => {
+  await mockLab(page);
+  await inspectorTab(page, "Detection").click();
+  await page.getByRole("button", { name: /^Entropy/ }).click();
+  // The original EWMA has neither a history nor a choice of spread.
+  await expect(
+    page.getByRole("spinbutton", { name: /^History/ }),
+  ).toBeDisabled();
+  await expect(page.getByRole("combobox", { name: /^Spread/ })).toBeDisabled();
+  await expect(page.getByRole("spinbutton", { name: /^Order/ })).toHaveCount(0);
+  await page
+    .getByRole("combobox", { name: /^Threshold centre/ })
+    .selectOption("mean");
+  await expect(
+    page.getByRole("spinbutton", { name: /^History/ }),
+  ).toBeEnabled();
+  await expect(page.getByRole("combobox", { name: /^Spread/ })).toBeEnabled();
+  await page
+    .getByRole("combobox", { name: /^Threshold centre/ })
+    .selectOption("yu");
+  await expect(page.getByRole("combobox", { name: /^Spread/ })).toBeDisabled();
+});
+
+test("the Threshold tab shows every window, its band and the verdict", async ({
+  page,
+}) => {
+  await mockLab(page);
+  await inspectorTab(page, "History").click();
+  await page.getByRole("button", { name: "Replay" }).click();
+  await page.getByLabel("Replay position", { exact: true }).fill("13");
+  await observationTab(page, "Threshold").click();
+  await expect(page.locator(".entropy-summary")).toContainText(
+    "Centre: rolling median",
+  );
+  await expect(page.locator(".entropy-summary")).toContainText(
+    "Learns from: every window",
+  );
+  await expect(page.locator(".entropy-chart canvas")).toBeVisible();
+  const rows = page.locator(".entropy-log tbody tr");
+  await expect(rows).toHaveCount(4);
+  // Latest first: the alarm; its value is outside the band.
+  await expect(rows.first().locator(".state-badge")).toHaveText("alarm");
+  await expect(rows.first()).toContainText("0.300 [1.20 – 1.80]");
+  await expect(rows.first().locator("td.outside")).toHaveCount(1);
+  await expect(rows.last().locator(".state-badge")).toHaveText("warmup");
+  await expect(rows.first()).toContainText("10.0.0.1 900");
+  // The other entropies of the same window, for comparison.
+  await expect(
+    page.getByRole("row", { name: /Rényi α=10/ }).first(),
+  ).toContainText("1.100");
+  await page.locator(".entropy-controls select").nth(1).selectOption("renyi10");
+  await expect(page.locator(".entropy-chart canvas")).toBeVisible();
+  // The Timeline keeps only the windows that mattered.
+  await observationTab(page, "Timeline").click();
+  await expect(
+    page.locator(".timeline strong", { hasText: "entropy window" }),
+  ).toHaveCount(2);
+});
+
+test("the Threshold tab says what to do before the detector has reported", async ({
+  page,
+}) => {
+  await mockLab(page);
+  await observationTab(page, "Threshold").click();
+  await expect(
+    page.getByText("The entropy detector has not reported yet."),
+  ).toBeVisible();
 });

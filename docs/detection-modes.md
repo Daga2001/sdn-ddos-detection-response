@@ -277,6 +277,80 @@ held a share of that little traffic (4 legitimate hosts were blocked in one
 verification run). Suspicious windows do
 not update the baseline.
 
+### Entropy measures and threshold models
+
+The detector above is the default. Every part of it can be changed per run (Detection tab,
+`Experiment.detection.entropy`, or the `SDN_ENTROPY_*` variables of the detector service),
+so measures and thresholds can be compared on the same traffic.
+
+**Measure** (`SDN_ENTROPY_MEASURE`, `SDN_ENTROPY_ORDER`), computed on the packet-rate
+distribution of each watched feature:
+
+| measure | formula | note |
+|---|---|---|
+| `shannon` | `-sum p log2 p` | the default |
+| `norm` | Shannon / `log2(distinct values)` | 0 to 1, independent of how many hosts talk |
+| `renyi` | `log2(sum p^a) / (1 - a)` | order `a`; higher orders weigh the busiest value more |
+| `tsallis` | `(1 - sum p^q) / (q - 1)` | order `q`; tends to Shannon (in nats) as `q` tends to 1 |
+| `min` | `-log2(max p)` | the limit of Renyi for a to infinity |
+
+**Features** (`SDN_ENTROPY_FEATURES`): `src` and `dst` (always) plus, when asked, `dport`
+(destination ports) and `proto` (protocols). The controller reads them from the match fields
+of the flow statistics; under a SYN flood every reply is a flow to another port, so they are
+sent to the detector as a histogram of (rate, number of ports with that rate). Each feature has
+its own band; a window is suspicious when any of them leaves its band (the destination
+entropy only counts when it drops).
+
+**Threshold model** (`SDN_ENTROPY_CENTER`, `SDN_ENTROPY_SPREAD`, `SDN_ENTROPY_HISTORY`):
+the band is `centre +/- k * spread`.
+
+| `center` | centre | spread |
+|---|---|---|
+| `ewma` | exponentially weighted mean (`alpha`) | its exponentially weighted deviation (the original detector) |
+| `mean` | mean of the last `history` windows | standard deviation, or MAD with `spread=mad` |
+| `median` | median of the last `history` windows | standard deviation, or MAD (scaled by 1.4826) with `spread=mad` |
+| `yu` | mean of the last `history` predictions of the improved EWMA of Yu et al. (2024) | their standard deviation; `history` defaults to 15 |
+
+`history = 0` keeps every window of the run: the centre is then computed from the whole run,
+not only from the baseline.
+
+**Learning context** (`SDN_ENTROPY_CONTEXT`): with `normal` (the default) only windows that
+look normal update the band, so a flood cannot move it (suspicious windows are discarded;
+`SDN_ENTROPY_UPDATE_HOLD` also applies). With `all` every window is learned, attack windows
+included: the model itself must then resist outliers, which a mean does not and a median
+does up to the point where more than half of the remembered windows are the attack.
+
+### What the workspace shows: the Threshold tab and the logs
+
+Every window, the controller publishes an `entropy_window` event (and writes one `ENTROPY`
+line to its log) with the value of each watched entropy, the band it was compared with and
+its centre, the state (`warmup`, `idle`, `normal`, `suspicious`, `alarm`), the packet rate,
+the number of flow rules, the busiest sources, destinations and ports, and the same window
+through the other usual entropies. The **Threshold** tab (below the topology) draws it live:
+one dot per window coloured by state, the shaded band and the dashed centre, with a table of
+the windows and a selector to look at the same traffic through another entropy. The Timeline
+keeps only the windows that were suspicious or alarmed. The events are stored with the run, so
+the tab works in a replay and on older runs that have them.
+
+### Replaying recorded windows
+
+`SDN_ENTROPY_DUMP=/tmp/entropy_windows.jsonl` (runner container) makes the controller append
+every window, with all its flows and histograms, to that file. `scripts/export_entropy_runs.py`
+writes when each attack really started and stopped from the database, and
+`scripts/replay_entropy.py` feeds the recorded windows to the real detector with other
+settings and scores them (detections, delay, false alarms, share of attack windows flagged),
+so detector variants are compared on identical traffic without running the lab:
+
+```bash
+python3 scripts/replay_entropy.py entropy_windows.jsonl runs.json
+python3 scripts/replay_entropy.py entropy_windows.jsonl runs.json \
+    --detail "measure=renyi,order=10,center=median,spread=mad,context=all"
+```
+
+(The flow rows the controller stores in the database are capped by
+`SDN_MAX_FLOW_ROWS_PER_POLL`, so they cannot be used for this: during a flood the cap keeps
+about 300 of tens of thousands of flows and the entropies come out wrong.)
+
 ## LLM detector
 
 `SDN_LLM_MODEL` selects the Ollama model (no code change). Only the

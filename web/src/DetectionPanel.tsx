@@ -15,9 +15,11 @@ import type {
   DetectionConfig,
   DetectionMode,
   DetectionOptions,
+  EntropyMeasure,
   EntropyParams,
   Experiment,
   ResponseParams,
+  ThresholdCenter,
 } from "./types";
 
 const modes: { id: DetectionMode; label: string; note: string }[] = [
@@ -317,7 +319,7 @@ export function DetectionPanel({
           <div className="field-pair">
             <NumberField
               label="Band width · k"
-              hint="How many standard deviations around the learned normal still count as normal. Smaller catches more but raises false alarms; larger is calmer but can miss a flood. 0.5 to 10."
+              hint="How many standard deviations (or MADs) around the learned normal still count as normal. Smaller catches more but raises false alarms; larger is calmer but can miss a flood. 0.5 to 10."
               value={config.entropy.k}
               min={0.5}
               max={10}
@@ -356,17 +358,134 @@ export function DetectionPanel({
               onChange={(value) => setEntropy({ min_rate: value })}
             />
           </div>
+          <h4 className="subsection">
+            Measure and threshold
+            <Hint text="Which entropy is computed and how the normal band around it is learned. The defaults are the original detector: Shannon entropy and an exponentially weighted mean." />
+          </h4>
+          <div className="field-pair">
+            <Field
+              label="Entropy measure"
+              hint="Shannon: the classic one. Rényi: its order tunes how much the busiest source weighs (higher means more); Yu et al. (2024) found an order near 10 best on their datasets. Tsallis: a polynomial cousin. Normalised Shannon: scaled to 0–1 so it does not depend on how many hosts talk. Min-entropy: only the largest share counts."
+            >
+              <select
+                value={config.entropy.measure}
+                disabled={disabled}
+                onChange={(event) =>
+                  setEntropy({ measure: event.target.value as EntropyMeasure })
+                }
+              >
+                <option value="shannon">Shannon</option>
+                <option value="renyi">Rényi</option>
+                <option value="tsallis">Tsallis</option>
+                <option value="norm">Normalised Shannon</option>
+                <option value="min">Min-entropy</option>
+              </select>
+            </Field>
+            {(config.entropy.measure === "renyi" ||
+              config.entropy.measure === "tsallis") && (
+              <NumberField
+                label="Order"
+                hint="Order α of Rényi (q of Tsallis). 1 is Shannon; higher values look more at the busiest value. 0.1 to 64."
+                value={config.entropy.order}
+                min={0.1}
+                max={64}
+                step={0.5}
+                disabled={disabled}
+                onChange={(value) => setEntropy({ order: value })}
+              />
+            )}
+          </div>
+          <div className="field-pair">
+            <Field
+              label="Threshold centre"
+              hint="How the normal level is learned. EWMA mean: exponentially weighted mean (the original detector). Rolling mean and rolling median: the mean or the median of the last windows; the median shrugs off up to half of the windows being abnormal, so it is the one to pair with “Every window”. Improved EWMA: the model of Yu et al. (2024)."
+            >
+              <select
+                value={config.entropy.center}
+                disabled={disabled}
+                onChange={(event) =>
+                  setEntropy({ center: event.target.value as ThresholdCenter })
+                }
+              >
+                <option value="ewma">EWMA mean (original)</option>
+                <option value="mean">Rolling mean</option>
+                <option value="median">Rolling median</option>
+                <option value="yu">Improved EWMA (Yu et al.)</option>
+              </select>
+            </Field>
+            <Field
+              label="Spread"
+              hint="How far normal windows scatter around the centre: the standard deviation, or the median absolute deviation (MAD), which a few abnormal windows cannot inflate. Only for the rolling mean and median."
+            >
+              <select
+                value={config.entropy.spread}
+                disabled={
+                  disabled ||
+                  (config.entropy.center !== "mean" &&
+                    config.entropy.center !== "median")
+                }
+                onChange={(event) =>
+                  setEntropy({ spread: event.target.value as "std" | "mad" })
+                }
+              >
+                <option value="std">Standard deviation</option>
+                <option value="mad">MAD (robust)</option>
+              </select>
+            </Field>
+          </div>
+          <div className="field-pair">
+            <NumberField
+              label="History · windows"
+              hint="How many past windows the rolling mean, median and improved EWMA remember. 0 means every window since the run started: the whole run, not only the baseline (the improved EWMA then uses 15). A smaller number adapts faster."
+              value={config.entropy.history}
+              min={0}
+              max={1000}
+              disabled={disabled || config.entropy.center === "ewma"}
+              onChange={(value) => setEntropy({ history: value })}
+            />
+            <Field
+              label="Learn from"
+              hint="Normal-looking windows only: the band is frozen while a window is suspicious, so a flood cannot move it. Every window: the band uses the whole run's context, attack included; pair it with the median so the flood does not drag the centre."
+            >
+              <select
+                value={config.entropy.context}
+                disabled={disabled}
+                onChange={(event) =>
+                  setEntropy({
+                    context: event.target.value as "normal" | "all",
+                  })
+                }
+              >
+                <option value="normal">Normal-looking windows</option>
+                <option value="all">Every window (full context)</option>
+              </select>
+            </Field>
+          </div>
+          <CheckField
+            disabled={disabled}
+            label="Also watch destination ports"
+            hint="Adds the entropy of the destination ports. A SYN flood makes every reply a flow to a different port, so this entropy jumps."
+            checked={config.entropy.watch_ports}
+            onChange={(on) => !disabled && setEntropy({ watch_ports: on })}
+          />
+          <CheckField
+            disabled={disabled}
+            label="Also watch protocols"
+            hint="Adds the entropy of the protocols (TCP, UDP, ICMP). It changes when a flood uses a protocol the network rarely carries."
+            checked={config.entropy.watch_protocols}
+            onChange={(on) => !disabled && setEntropy({ watch_protocols: on })}
+          />
           <details className="advanced">
             <summary>Advanced entropy settings</summary>
             <div className="field-pair">
               <NumberField
                 label="Smoothing · alpha"
-                hint="How fast the normal band follows the traffic while learning. 0 to 1."
+                hint="How fast the EWMA band follows the traffic while learning. 0 to 1. Only the EWMA mean uses it."
                 value={config.entropy.alpha}
                 min={0.01}
                 max={1}
                 step={0.05}
-                disabled={disabled}
+                disabled={disabled || config.entropy.center !== "ewma"}
                 onChange={(value) => setEntropy({ alpha: value })}
               />
               <NumberField
@@ -411,9 +530,9 @@ export function DetectionPanel({
               onChange={(value) => setEntropy({ update_hold: value })}
             />
             <CheckField
-              disabled={disabled}
+              disabled={disabled || config.entropy.center !== "ewma"}
               label="Slower smoothing after warm-up"
-              hint="Makes the band follow the traffic more slowly once the warm-up is over, so a flood cannot drag it along."
+              hint="Makes the EWMA band follow the traffic more slowly once the warm-up is over, so a flood cannot drag it along."
               checked={config.entropy.alpha_run !== null}
               onChange={(on) =>
                 !disabled && setEntropy({ alpha_run: on ? 0.05 : null })

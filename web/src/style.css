@@ -1721,3 +1721,97 @@ button.client-chip.removable:hover {
 .detection-results .traffic-chart {
   height: 250px;
 }
+
+/* Entropy tab: the detector's windows, live */
+.entropy-view {
+  padding: 10px 20px 18px;
+}
+.entropy-summary {
+  margin: 0 0 8px;
+  font: 11px monospace;
+  color: #43665b;
+}
+.entropy-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 4px;
+}
+.entropy-controls label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink);
+}
+.entropy-controls select,
+.entropy-controls button {
+  font-size: 12px;
+  padding: 4px 8px;
+}
+.entropy-controls button {
+  margin-left: auto;
+}
+.traffic-chart.entropy-chart {
+  height: 250px;
+}
+.state-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  margin-right: 12px;
+}
+.state-chip i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.entropy-log-wrap {
+  max-height: 260px;
+  overflow: auto;
+  margin-top: 10px;
+  border: 1px solid var(--line);
+}
+.entropy-log {
+  table-layout: auto;
+  width: max-content;
+  min-width: 100%;
+  margin-top: 0;
+}
+.entropy-log td,
+.entropy-log th {
+  white-space: nowrap;
+}
+.entropy-log td.outside {
+  color: #b3261e;
+  font-weight: bold;
+}
+.state-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 9px;
+  font-size: 11px;
+  color: #fff;
+  background: #087e83;
+}
+.state-badge[data-state="alarm"] {
+  background: #b3261e;
+}
+.state-badge[data-state="suspicious"] {
+  background: #c16b41;
+}
+.state-badge[data-state="warmup"] {
+  background: #8a8f98;
+}
+.state-badge[data-state="idle"] {
+  background: #c9cdd3;
+  color: #43665b;
+}
+h4.subsection {
+  margin: 14px 0 8px;
+  font-size: 12px;
+  color: var(--ink);
+}

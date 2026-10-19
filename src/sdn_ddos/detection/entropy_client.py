@@ -7,12 +7,12 @@ to another detector: a failed call raises and the caller skips that window.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Dict, Optional
 
 import requests
 
-from sdn_ddos.detection.entropy import EntropyResult, FlowObservation
+from sdn_ddos.detection.entropy import EntropyResult, FlowObservation, Histogram
 
 
 def fetch_remote_config(
@@ -55,16 +55,25 @@ class RemoteEntropy:
         self.session = session or requests.Session()
         self.consecutive_windows = 2
 
-    def observe(self, scope: int, flows: Sequence[FlowObservation]) -> EntropyResult:
+    def observe(
+        self,
+        scope: int,
+        flows: Sequence[FlowObservation],
+        extra: Optional[Mapping[str, Histogram]] = None,
+    ) -> EntropyResult:
+        payload: Dict[str, Any] = {
+            "run_id": self.run_id,
+            "scope": scope,
+            "flows": [{"src": f.src, "dst": f.dst, "weight": f.weight} for f in flows],
+        }
+        for name, key in (("dport", "dports"), ("proto", "protos")):
+            if extra and extra.get(name):
+                payload[key] = [
+                    {"weight": weight, "count": count} for weight, count in extra[name]
+                ]
         response = self.session.post(
             f"{self.base_url}/entropy/observe",
-            json={
-                "run_id": self.run_id,
-                "scope": scope,
-                "flows": [
-                    {"src": f.src, "dst": f.dst, "weight": f.weight} for f in flows
-                ],
-            },
+            json=payload,
             headers={"X-Api-Key": self.api_key},
             timeout=self.timeout,
         )
@@ -87,4 +96,11 @@ class RemoteEntropy:
             consecutive=int(body["consecutive"]),
             target_dst=body["target_dst"],
             candidates=tuple(body["candidates"]),
+            signals=dict(details.get("signals") or {}),
+            panel=dict(details.get("panel") or {}),
+            top_src=tuple((str(n), float(w)) for n, w in details.get("top_src") or ()),
+            top_dst=tuple((str(n), float(w)) for n, w in details.get("top_dst") or ()),
+            measure=str(details.get("measure", "shannon")),
+            center=str(details.get("center_kind", "ewma")),
+            config=dict(details.get("config") or {}),
         )

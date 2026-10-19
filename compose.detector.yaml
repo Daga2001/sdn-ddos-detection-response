@@ -30,6 +30,14 @@ services:
       # Baseline protection (see docs/detection-modes.md): 0 / empty keep the original behaviour.
       SDN_ENTROPY_UPDATE_HOLD: ${SDN_ENTROPY_UPDATE_HOLD:-0}
       SDN_ENTROPY_ALPHA_RUN: ${SDN_ENTROPY_ALPHA_RUN:-}
+      # Which entropy and how the band is learned (docs/detection-modes.md); the lab
+      # overrides these per run from the Detection tab.
+      SDN_ENTROPY_MEASURE: ${SDN_ENTROPY_MEASURE:-shannon}
+      SDN_ENTROPY_ORDER: ${SDN_ENTROPY_ORDER:-2}
+      SDN_ENTROPY_CENTER: ${SDN_ENTROPY_CENTER:-ewma}
+      SDN_ENTROPY_SPREAD: ${SDN_ENTROPY_SPREAD:-std}
+      SDN_ENTROPY_HISTORY: ${SDN_ENTROPY_HISTORY:-0}
+      SDN_ENTROPY_CONTEXT: ${SDN_ENTROPY_CONTEXT:-normal}
     # `control` is internal (no internet); `egress` lets the LLM backend (Ollama
     # on the Windows host) be reached.
     networks: [control, egress]
@@ -63,6 +71,9 @@ services:
       SDN_ENTROPY_WINDOW_SECONDS: ${SDN_ENTROPY_WINDOW_SECONDS:-5}
       SDN_ENTROPY_WINDOW_MODE: ${SDN_ENTROPY_WINDOW_MODE:-mean}
       SDN_ENTROPY_DEDUPE_SWITCHES: ${SDN_ENTROPY_DEDUPE_SWITCHES:-false}
+      # Research: append every entropy window (flows and histograms) to this file
+      # inside the runner container, to replay detector variants offline.
+      SDN_ENTROPY_DUMP: ${SDN_ENTROPY_DUMP:-}
       # Response policy (only acts when the run has mitigation enabled).
       SDN_RESPONSE_POLICY: ${SDN_RESPONSE_POLICY:-block}
       SDN_RESPONSE_DRY_RUN: ${SDN_RESPONSE_DRY_RUN:-true}
