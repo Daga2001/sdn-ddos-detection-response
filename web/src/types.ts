@@ -210,7 +210,10 @@ export function normalizeDetection(value: unknown): DetectionConfig | null {
     ...(saved.entropy ?? {}),
   };
   entropy.center = legacy[entropy.center] ?? entropy.center;
-  if (saved.entropy?.epsilon !== undefined && saved.entropy?.margin === undefined)
+  if (
+    saved.entropy?.epsilon !== undefined &&
+    saved.entropy?.margin === undefined
+  )
     entropy.margin = saved.entropy.epsilon;
   return {
     ...defaultDetection,
