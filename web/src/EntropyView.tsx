@@ -59,6 +59,7 @@ const featureNames: Record<string, string> = {
   dst: "Destination IPs",
   dport: "Destination ports",
   proto: "Protocols",
+  pair: "Source–destination pairs",
 };
 
 function EntropyChart({
@@ -242,7 +243,9 @@ export function EntropyView({
     const found = new Set<string>(["src", "dst"]);
     for (const row of windows)
       for (const name of Object.keys(row.signals)) found.add(name);
-    return ["src", "dst", "dport", "proto"].filter((name) => found.has(name));
+    return ["src", "dst", "dport", "proto", "pair"].filter((name) =>
+      found.has(name),
+    );
   }, [windows]);
   if (!windows.length)
     return (

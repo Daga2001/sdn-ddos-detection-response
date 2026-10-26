@@ -587,6 +587,8 @@ export const centerLabels: Record<string, string> = {
   mean: "rolling mean",
   median: "rolling median",
   yu: "improved EWMA (Yu et al.)",
+  ewma_margin: "EWMA minus a margin",
+  ewma2: "second-order EWMA",
 };
 
 const measureLabels: Record<string, string> = {
@@ -611,7 +613,13 @@ export function describeBand(config: Record<string, any>): string {
   parts.push(
     `Learns from: ${config.context === "all" ? "every window" : "normal-looking windows"}`,
   );
-  parts.push(`Band: centre ± ${config.k} × spread`);
+  if (config.center === "ewma_margin")
+    parts.push(`Threshold: EWMA − ${config.margin ?? 0.01}`);
+  else if (config.center === "ewma2")
+    parts.push(`Threshold: trend − ${config.k} × volatility`);
+  else parts.push(`Band: centre ± ${config.k} × spread`);
+  if (Array.isArray(config.decide) && config.decide.length)
+    parts.push(`Alarm decided by: ${config.decide.join(" + ")}`);
   return parts.join(" · ");
 }
 

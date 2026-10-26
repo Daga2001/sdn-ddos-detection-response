@@ -575,3 +575,70 @@ test("the fast-reaction preset sets the whole setup in one click, and Original u
     page.getByRole("checkbox", { name: /Match ports in forwarding rules/ }),
   ).toBeChecked();
 });
+
+test("the destination-entropy and pair-entropy presets are one click away and their settings are sent with the run", async ({
+  page,
+}) => {
+  const lab = await mockLab(page);
+  await inspectorTab(page, "Detection").click();
+  await page.getByRole("button", { name: /^Entropy/ }).click();
+  const decided = page.getByRole("combobox", { name: /^Alarm decided by/ });
+  const pairs = page.getByRole("checkbox", {
+    name: /Also watch source–destination pairs/,
+  });
+  await expect(decided).toHaveValue("all");
+  await expect(pairs).not.toBeChecked();
+  await expect(page.getByRole("spinbutton", { name: /^Margin/ })).toHaveCount(
+    0,
+  );
+
+  await page
+    .getByRole("button", { name: "Destination entropy", exact: true })
+    .click();
+  await expect(
+    page.getByRole("combobox", { name: /^Threshold centre/ }),
+  ).toHaveValue("ewma_margin");
+  await expect(decided).toHaveValue("dst");
+  await expect(page.getByRole("spinbutton", { name: /^Margin/ })).toHaveValue(
+    "0.01",
+  );
+  await expect(
+    page.getByRole("spinbutton", { name: /^Consecutive windows/ }),
+  ).toHaveValue("1");
+
+  await page.getByRole("button", { name: "Pair entropy", exact: true }).click();
+  await expect(
+    page.getByRole("combobox", { name: /^Threshold centre/ }),
+  ).toHaveValue("ewma2");
+  await expect(decided).toHaveValue("pair");
+  await expect(pairs).toBeChecked();
+  await expect(
+    page.getByRole("spinbutton", { name: /^No-decrease rate/ }),
+  ).toHaveValue("800");
+  await expect(
+    page.getByRole("spinbutton", { name: /^Band width/ }),
+  ).toHaveValue("4");
+  // Pairs cannot decide when they are not watched.
+  await pairs.uncheck();
+  await expect(decided).toHaveValue("all");
+
+  await pairs.check();
+  await decided.selectOption("pair");
+  await inspectorTab(page, "Experiment").click();
+  await page.getByLabel(/I confirm these hosts/).check();
+  await page.getByRole("button", { name: "Start experiment" }).click();
+  await expect.poll(() => lab.started.length).toBe(1);
+  const sent = lab.started[0] as {
+    experiment: { detection: { entropy: Record<string, unknown> } };
+  };
+  expect(sent.experiment.detection.entropy).toMatchObject({
+    measure: "norm",
+    center: "ewma2",
+    alpha: 0.1,
+    k: 4,
+    watch_pairs: true,
+    decide: ["pair"],
+    rate_threshold: 800,
+    match_ports: false,
+  });
+});

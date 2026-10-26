@@ -528,3 +528,39 @@ test("the band description leaves the measure out and follows the model", () => 
   );
   assert.equal(describeBand({}), "");
 });
+
+test("the margin and second-order thresholds are described with their own rule and decision", () => {
+  assert.match(
+    describeBand({
+      center: "ewma_margin",
+      context: "normal",
+      k: 1,
+      margin: 0.05,
+      decide: ["dst"],
+    }),
+    /Centre: EWMA minus a margin.*Threshold: EWMA − 0\.05 · Alarm decided by: dst/,
+  );
+  assert.match(
+    describeBand({
+      center: "ewma2",
+      context: "normal",
+      k: 4,
+      decide: ["pair"],
+    }),
+    /second-order EWMA.*Threshold: trend − 4 × volatility · Alarm decided by: pair/,
+  );
+  const current = detectionFromService({
+    mode: "entropy",
+    entropy: {
+      center: "ewma2",
+      features: ["src", "dst", "pair"],
+      decide: ["pair"],
+      margin: 0.02,
+      rate_threshold: 500,
+    },
+  }).entropy;
+  assert.equal(current.watch_pairs, true);
+  assert.deepEqual(current.decide, ["pair"]);
+  assert.equal(current.margin, 0.02);
+  assert.equal(current.rate_threshold, 500);
+});
