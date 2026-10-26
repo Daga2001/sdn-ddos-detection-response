@@ -295,7 +295,8 @@ distribution of each watched feature:
 | `min` | `-log2(max p)` | the limit of Renyi for a to infinity |
 
 **Features** (`SDN_ENTROPY_FEATURES`): `src` and `dst` (always) plus, when asked, `dport`
-(destination ports) and `proto` (protocols). The controller reads them from the match fields
+(destination ports), `proto` (protocols) and `pair` (the (source, destination) pairs, from the
+flows themselves). The controller reads them from the match fields
 of the flow statistics; under a SYN flood every reply is a flow to another port, so they are
 sent to the detector as a histogram of (rate, number of ports with that rate). Each feature has
 its own band; a window is suspicious when any of them leaves its band (the destination
@@ -310,9 +311,47 @@ the band is `centre +/- k * spread`.
 | `mean` | mean of the last `history` windows | standard deviation, or MAD with `spread=mad` |
 | `median` | median of the last `history` windows | standard deviation, or MAD (scaled by 1.4826) with `spread=mad` |
 | `yu` | mean of the last `history` predictions of the improved EWMA of Yu et al. (2024) | their standard deviation; `history` defaults to 15 |
+| `ewma_margin` | EWMA of the entropy (`alpha`, 0.13 in the paper) | a fixed margin `margin` (0.01): the threshold is EWMA - `margin` (Ding et al., 2022) |
+| `ewma2` | trend `T` of a second-order EWMA (`alpha` is their beta, 0.1) | volatility `sqrt(T2 - T^2)`; the threshold is `T - k * volatility` (their kappa 4) and falls at most 10 % per window (Zhang et al., 2026) |
 
 `history = 0` keeps every window of the run: the centre is then computed from the whole run,
 not only from the baseline.
+
+#### Entropy detectors taken from the literature
+
+`ewma_margin` and `ewma2` follow the papers' algorithms step by step so that a detector from the
+literature can be run in the lab as it was written; neither was tuned on our traffic.
+
+* **Destination entropy + EWMA margin** (`ewma_margin`; Ding, Savi and Siracusa, "Tracking Normalized
+  Network Traffic Entropy to Detect DDoS Attacks in P4", IEEE TDSC 19(6), 2022): normalised Shannon entropy of the destination
+  addresses of 1 s intervals; alarm when it falls below `lambda`; `lambda(k+1) = EWMA(k) -
+  margin` (EWMA weight 0.13, `margin` 0.01) and `lambda` is left unchanged in an interval
+  with an alarm. Settings: `measure=norm`, `center=ewma_margin`, `alpha=0.13`, `margin=0.01`,
+  `decide=dst`.
+* **Pair entropy + second-order EWMA** (`ewma2`; Zhang et al., "When Time Meets Space: Entropy
+  Integration and Dynamic Threshold for Adaptive DDoS Detection in SDN", WF-IoT 2026, arXiv
+  2608.15642): normalised entropy of the
+  (source, destination) pairs against `T - kappa * sigma` from a second-order EWMA (their
+  Algorithm 2: cold start, no update on an alarm, a threshold that cannot decrease above
+  `theta` = 800 packets/s and otherwise falls at most 10 % per window). Settings: `measure=norm`,
+  `center=ewma2`, `alpha=0.1` (their beta), `k=4` (their kappa), `features=src,dst,pair`,
+  `decide=pair`, `rate_threshold=800`.
+
+`decide` (`SDN_ENTROPY_DECIDE`) limits which monitored distributions can raise the alarm; the
+others are still computed and shown. Differences from the papers, all forced by how this lab
+measures: the window is 1 s of flow statistics, not 400 packets (Zhang) or a hardware interval
+(Ding); the temporal entropy of Zhang et al. is not used because flow statistics carry no
+packet timestamps (their spatial-only result is their `alpha` = 1 case); the pair is fixed to
+(source, destination) instead of picked among 28 combinations against a MAWI profile; the
+warm-up is 30 windows with traffic instead of 3 or none (idle windows do not count).
+
+Replayed offline on the 24 recorded university runs (11 flood scenarios twice, `scripts/replay_entropy.py`),
+with the original 5 s windows: both detectors catch every flood (22 of 22), but with the papers'
+own settings they raise alarms on ordinary windows (Ding: margin 0.01 and one window, 242
+alarmed windows before or after the floods; Zhang: 3 warm-up windows and one window, 112).
+Asking two windows in a row and 16 warm-up windows brings them to 31 and 1; a margin of 0.05
+(inside the range Ding et al. test, where they report no false alarms above about 0.04) brings
+Ding to 2. The normalised entropy with the original EWMA band had 1.
 
 **Learning context** (`SDN_ENTROPY_CONTEXT`): with `normal` (the default) only windows that
 look normal update the band, so a flood cannot move it (suspicious windows are discarded;

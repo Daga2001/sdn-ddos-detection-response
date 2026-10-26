@@ -374,9 +374,41 @@ def test_the_entropy_measure_and_threshold_are_tunable_and_histograms_accepted()
     assert details["top_src"][0][1] == 100.0
 
 
+def test_a_published_threshold_can_be_configured_and_decides_on_the_pairs() -> None:
+    api = client("entropy")
+    tuning = {
+        "measure": "norm",
+        "center": "ewma2",
+        "alpha": 0.1,
+        "k": 4,
+        "features": ["src", "dst", "pair"],
+        "decide": ["pair"],
+        "margin": 0.02,
+        "rate_threshold": 500,
+        "warmup_windows": 3,
+        "consecutive_windows": 1,
+        "min_total_rate": 1,
+    }
+    assert api.put("/config", json={"entropy": tuning}, headers=KEY).status_code == 200
+    settings = api.get("/config", headers=KEY).json()["entropy"]
+    assert settings["center"] == "ewma2" and settings["decide"] == ["pair"]
+    assert (settings["margin"], settings["rate_threshold"]) == (0.02, 500.0)
+    for _ in range(4):
+        reply = api.post(
+            "/entropy/observe",
+            json={"run_id": "pairs", "flows": window(6)},
+            headers=KEY,
+        ).json()
+    assert set(reply["details"]["signals"]) == {"src", "dst", "pair"}
+    assert reply["details"]["config"]["decide"] == ["pair"]
+
+
 def test_a_combination_the_detector_rejects_fails_when_configured() -> None:
     api = client("entropy")
     for bad in (
+        {"decide": ["pair"]},  # the pairs are not watched
+        {"features": ["src", "dst"], "decide": ["pair"]},
+        {"margin": -1},
         {"features": ["src", "dport"]},  # destination IPs are always watched
         {"features": ["src"]},
         {"measure": "nope"},
