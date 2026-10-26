@@ -36,6 +36,7 @@ GROUP = {
     "T": "Corpus para comparar entropías y umbrales (ventanas completas grabadas, incluye cambios benignos de tráfico)",
     "U": "Modelo de umbral de entropía con respuesta: ¿cambia lo que el servicio aguanta?",
     "N": "Iteraciones nocturnas del detector de entropía (respuesta real)",
+    "P": "Entropía de destinos (umbral EWMA menos margen) y de pares (EWMA de segundo orden) tal como se publicaron; respuesta real",
     "S": "Control de la corrida",
 }
 
