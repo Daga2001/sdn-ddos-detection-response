@@ -6,7 +6,9 @@ from sdn_ddos.detection.entropy import (
     AdaptiveBand,
     EntropyDetector,
     FlowObservation,
+    MarginBand,
     RollingBand,
+    SecondOrderBand,
     YuBand,
     entropy_of,
     entropy_panel,
@@ -682,3 +684,140 @@ def test_a_single_attacker_with_symmetric_traffic_is_still_named():
     ]
     detector.observe(1, echo)
     assert detector.observe(1, echo).candidates == ("10.0.1.9",)
+
+
+def test_the_ding_threshold_is_the_ewma_minus_the_margin():
+    band = MarginBand(alpha=0.13, margin=0.01, warmup=3)
+    for _ in range(3):
+        band.update(0.8)
+    assert band.ready
+    assert math.isclose(band.center, 0.8) and math.isclose(band.lower, 0.79)
+    band.update(0.7)
+    expected = 0.13 * 0.7 + 0.87 * 0.8
+    assert math.isclose(band.center, expected)
+    assert math.isclose(band.lower, expected - 0.01)
+
+
+def test_the_z26_threshold_starts_from_the_cold_windows():
+    band = SecondOrderBand(beta=0.1, kappa=4.0, warmup=3, rate_threshold=800.0)
+    for value in (0.8, 0.8, 0.8):
+        band.update(value)
+    assert band.ready
+    assert math.isclose(band.center, 0.8) and math.isclose(band.lower, 0.8)
+    # the first steady window moves the trend and the volatility, and the threshold
+    # follows them down by less than 10 %
+    band.update(0.82, rate=10.0)
+    trend = 0.1 * 0.82 + 0.9 * 0.8
+    second = 0.1 * 0.82**2 + 0.9 * 0.64
+    sigma = math.sqrt(second - trend**2)
+    assert math.isclose(band.center, trend)
+    assert math.isclose(band.lower, trend - 4.0 * sigma)
+
+
+def test_the_z26_threshold_cannot_decrease_in_heavy_traffic_or_fall_over_ten_percent():
+    def cold() -> SecondOrderBand:
+        band = SecondOrderBand(beta=0.1, kappa=4.0, warmup=3, rate_threshold=800.0)
+        for _ in range(3):
+            band.update(0.8)
+        return band
+
+    heavy = cold()
+    heavy.update(0.1, rate=2000.0)
+    assert math.isclose(heavy.lower, 0.8)
+    ordinary = cold()
+    ordinary.update(0.1, rate=10.0)
+    assert math.isclose(ordinary.lower, 0.72)
+
+
+def pair_detector(**overrides) -> EntropyDetector:
+    settings = {
+        "measure": "norm",
+        "center": "ewma2",
+        "alpha": 0.1,
+        "k": 4.0,
+        "warmup_windows": 3,
+        "consecutive_windows": 1,
+        "features": ("src", "dst", "pair"),
+        "decide": ("pair",),
+    }
+    return EntropyDetector(**{**settings, **overrides})
+
+
+def test_the_z26_detector_decides_on_the_entropy_of_the_pairs_only():
+    detector = pair_detector()
+    for _ in range(3):
+        assert detector.observe(1, normal_window()).reason == "warmup"
+    quiet = detector.observe(1, normal_window())
+    assert not quiet.suspicious and "pair" in quiet.signals
+    result = detector.observe(1, flood_window())
+    assert result.suspicious and result.confirmed
+    assert result.signals["pair"]["out"] is True
+    # the source and destination entropies also fall but cannot raise the alarm
+    assert result.signals["src"]["out"] is False
+    assert result.signals["dst"]["out"] is False
+    assert result.candidates == ("10.0.1.1",)
+
+
+def test_the_ding_detector_decides_on_the_destinations_only():
+    detector = EntropyDetector(
+        measure="norm",
+        center="ewma_margin",
+        alpha=0.13,
+        margin=0.01,
+        warmup_windows=3,
+        consecutive_windows=1,
+        decide=("dst",),
+    )
+    for _ in range(3):
+        detector.observe(1, normal_window())
+    result = detector.observe(1, flood_window())
+    assert result.confirmed and result.signals["dst"]["out"] is True
+    assert result.signals["src"]["out"] is False
+
+
+def test_an_alarm_does_not_move_the_published_thresholds():
+    for settings in (
+        {"center": "ewma_margin", "decide": ("dst",), "alpha": 0.13},
+        {
+            "center": "ewma2",
+            "alpha": 0.1,
+            "k": 4.0,
+            "features": ("src", "dst", "pair"),
+            "decide": ("pair",),
+        },
+    ):
+        detector = EntropyDetector(
+            measure="norm", warmup_windows=3, consecutive_windows=1, **settings
+        )
+        for _ in range(3):
+            detector.observe(1, normal_window())
+        detector.observe(1, normal_window())
+        floods = [detector.observe(1, flood_window()) for _ in range(10)]
+        assert all(result.suspicious for result in floods)
+        assert len({result.signals["dst"]["lower"] for result in floods}) == 1
+
+
+def test_deciding_on_a_distribution_that_is_not_watched_is_rejected():
+    with pytest.raises(ValueError):
+        EntropyDetector(decide=("pair",))
+    with pytest.raises(ValueError):
+        EntropyDetector(decide=("dport",))
+    with pytest.raises(ValueError):
+        EntropyDetector(margin=-0.1)
+    assert EntropyDetector(decide=("dst",)).decide == ("dst",)
+
+
+def test_from_env_reads_the_published_threshold_options():
+    detector = EntropyDetector.from_env(
+        {
+            "SDN_ENTROPY_CENTER": "ewma2",
+            "SDN_ENTROPY_FEATURES": "src,dst,pair",
+            "SDN_ENTROPY_DECIDE": " pair ",
+            "SDN_ENTROPY_MARGIN": "0.05",
+            "SDN_ENTROPY_RATE_THRESHOLD": "500",
+        }
+    )
+    assert detector.center == "ewma2" and detector.decide == ("pair",)
+    assert (detector.margin, detector.rate_threshold) == (0.05, 500.0)
+    config = detector._config()
+    assert config["decide"] == ["pair"] and config["margin"] == 0.05

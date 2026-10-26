@@ -5,7 +5,7 @@ from __future__ import annotations
 import ipaddress
 from typing import Literal, Optional
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from sdn_ddos.experiments.attack_launcher import (
     MAX_DURATION_SECONDS,
@@ -54,17 +54,44 @@ class EntropyParams(StrictModel):
     # EWMA mean and deviation, learned from the windows that look normal.
     measure: Literal["shannon", "norm", "renyi", "tsallis", "min"] = "shannon"
     order: float = Field(default=2.0, gt=0, le=64)
-    center: Literal["ewma", "mean", "median", "yu"] = "ewma"
+    center: Literal["ewma", "mean", "median", "yu", "ewma_margin", "ewma2"] = "ewma"
     spread: Literal["std", "mad"] = "std"
     history: int = Field(default=0, ge=0, le=1000)
     context: Literal["normal", "all"] = "normal"
     # Distributions watched besides the IPs.
     watch_ports: bool = False
     watch_protocols: bool = False
+    # The entropy of the (source, destination) pairs, which `ewma2` decides on.
+    watch_pairs: bool = False
+    # The distributions allowed to raise an alarm (empty: all of them); the published
+    # detectors decide on one: `dst` for `ewma_margin`, `pair` for `ewma2`.
+    decide: list[Literal["src", "dst", "dport", "proto", "pair"]] = Field(
+        default_factory=list, max_length=5
+    )
+    # Margin of the `ewma_margin` threshold (EWMA - margin) and packet rate above which
+    # the `ewma2` threshold cannot decrease; the defaults are the values of the papers.
+    margin: float = Field(default=0.01, ge=0, le=1)
+    rate_threshold: float = Field(default=800.0, ge=0, le=1_000_000)
     # Whether the controller's forwarding rules match the layer-4 port (the original
     # behaviour). Off, a SYN flood no longer creates one rule and one packet-in per
     # reply, which is what saturates the controller and takes the victim's service down.
     match_ports: bool = True
+
+    @model_validator(mode="after")
+    def decide_only_on_watched_distributions(self) -> "EntropyParams":
+        watched = {"src", "dst"}
+        if self.watch_ports:
+            watched.add("dport")
+        if self.watch_protocols:
+            watched.add("proto")
+        if self.watch_pairs:
+            watched.add("pair")
+        missing = [name for name in self.decide if name not in watched]
+        if missing:
+            raise ValueError(
+                f"decide names {missing}, which are not watched; turn them on first"
+            )
+        return self
 
 
 class ResponseParams(StrictModel):

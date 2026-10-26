@@ -20,6 +20,13 @@ Two choices shape the detector and both can be changed per run:
   mean or the median of the last `history` windows (0 = every window of the run);
   `yu` is the improved EWMA of Yu et al. (2024). `context` decides which windows
   feed that history: only the ones that look normal, or all of them.
+
+Two threshold models follow published detectors step by step so they can be run as
+they were written (see `MarginBand` and `SecondOrderBand`): `ewma_margin` (Ding, Savi
+and Siracusa, IEEE TDSC 2022: normalised entropy of the destination addresses against
+an EWMA minus a margin) and `ewma2` (Zhang et al., WF-IoT 2026: normalised entropy of
+the source-destination pairs against a second-order EWMA threshold). `decide` limits
+which monitored distributions can raise an alarm; the others are only recorded.
 """
 
 from __future__ import annotations
@@ -33,14 +40,20 @@ from dataclasses import dataclass, field
 from typing import Deque, Dict, List, Optional, Set, Tuple
 
 MEASURES = ("shannon", "norm", "renyi", "tsallis", "min")
-CENTERS = ("ewma", "mean", "median", "yu")
+CENTERS = ("ewma", "mean", "median", "yu", "ewma_margin", "ewma2")
 SPREADS = ("std", "mad")
 CONTEXTS = ("normal", "all")
-FEATURES = ("src", "dst", "dport", "proto")
+FEATURES = ("src", "dst", "dport", "proto", "pair")
 # Which side of the band is an anomaly. A flood from few sources lowers the source
 # entropy, spoofed sources raise it; traffic converging on a victim only lowers the
-# destination entropy.
-SIDES = {"src": "both", "dst": "lower", "dport": "both", "proto": "both"}
+# destination entropy, and so does a concentration on few (source, destination) pairs.
+SIDES = {
+    "src": "both",
+    "dst": "lower",
+    "dport": "both",
+    "proto": "both",
+    "pair": "lower",
+}
 # Weights histogram: (weight, number of distinct values with that weight).
 Histogram = Sequence[Tuple[float, int]]
 MAD_TO_STD = 1.4826  # scales the median absolute deviation to a normal std
@@ -237,7 +250,9 @@ class Band:
     def upper(self) -> float:
         return self.center + self.k * self.spread
 
-    def update(self, value: float) -> None:
+    def update(self, value: float, rate: float = 0.0) -> None:
+        """Learn one window; `rate` is its packet rate (only some models use it)."""
+
         raise NotImplementedError
 
 
@@ -275,7 +290,7 @@ class AdaptiveBand(Band):
     def std(self) -> float:
         return max(math.sqrt(self._var), self.min_std)
 
-    def update(self, value: float) -> None:
+    def update(self, value: float, rate: float = 0.0) -> None:
         if self.count == 0:
             self.mean = value
         else:
@@ -344,7 +359,7 @@ class RollingBand(Band):
     def spread(self) -> float:
         return self._compute()[1]
 
-    def update(self, value: float) -> None:
+    def update(self, value: float, rate: float = 0.0) -> None:
         self._values.append(value)
         self._stats = None
         self.count += 1
@@ -393,7 +408,7 @@ class YuBand(Band):
         values = self._predicted or self._observed
         return max(statistics.pstdev(values) if len(values) > 1 else 0.0, self.min_std)
 
-    def update(self, value: float) -> None:
+    def update(self, value: float, rate: float = 0.0) -> None:
         if self._observed:
             beta = self._beta()
             previous = self._predicted[-1] if self._predicted else self._observed[-1]
@@ -402,6 +417,100 @@ class YuBand(Band):
         if not self._predicted:
             self._predicted.append(value)
         self.count += 1
+
+
+class MarginBand(Band):
+    """EWMA minus a fixed margin: the threshold of Ding, Savi and Siracusa (TDSC 2022).
+
+    Their P4DDoS detector tracks the normalised entropy H of the destination addresses
+    of 1 s intervals with an EWMA, EWMA_k = alpha * H_k + (1 - alpha) * EWMA_(k-1) with
+    alpha = 0.13, and raises an alarm when H_k < lambda_k. The threshold is
+    lambda_(k+1) = EWMA_k - margin (margin = 0.01) and is left unchanged in an
+    interval with an alarm, so an attack does not pull it down: the detector calls
+    `update` only for windows that look normal (context `normal`).
+    """
+
+    def __init__(self, alpha: float, margin: float, warmup: int) -> None:
+        self.alpha = alpha
+        self.margin = margin
+        self.k = 1.0
+        self.min_std = 0.0
+        self.warmup = warmup
+        self.count = 0
+        self.ewma = 0.0
+
+    @property
+    def center(self) -> float:
+        return self.ewma
+
+    @property
+    def spread(self) -> float:
+        return self.margin
+
+    def update(self, value: float, rate: float = 0.0) -> None:
+        if self.count == 0:
+            self.ewma = value
+        else:
+            self.ewma = self.alpha * value + (1 - self.alpha) * self.ewma
+        self.count += 1
+
+
+class SecondOrderBand(Band):
+    """Second-order EWMA threshold: Algorithm 2 of Zhang et al. (WF-IoT 2026).
+
+    The threshold is T_n - kappa * sigma_n, from a second-order EWMA: T_n is the EWMA of
+    the entropy H, T2_n the EWMA of H squared and sigma_n = sqrt(max(T2_n - T_n^2, 0)),
+    both with smoothing beta (their kappa 4, beta 0.1). Three constraints go with it:
+
+    * cold start: the first `warmup` windows are only cached; at the last one T_0 and
+      T2_0 are their mean and mean of squares and the first threshold is set;
+    * attack freezing: a window below the threshold changes nothing (the detector calls
+      `update` only for windows that look normal);
+    * adaptation and smoothing: with a packet rate above `rate_threshold` the threshold
+      cannot decrease, and otherwise it falls by at most 10 % per window.
+    """
+
+    def __init__(
+        self, beta: float, kappa: float, warmup: int, rate_threshold: float
+    ) -> None:
+        self.beta = beta
+        self.k = kappa
+        self.min_std = 0.0
+        self.warmup = max(1, warmup)
+        self.rate_threshold = rate_threshold
+        self.count = 0
+        self._cold: List[float] = []
+        self.trend = 0.0
+        self.second = 0.0
+        self.threshold = 0.0
+
+    @property
+    def center(self) -> float:
+        return self.trend
+
+    @property
+    def spread(self) -> float:
+        return math.sqrt(max(self.second - self.trend**2, 0.0))
+
+    @property
+    def lower(self) -> float:
+        return self.threshold
+
+    def update(self, value: float, rate: float = 0.0) -> None:
+        self.count += 1
+        if self.count <= self.warmup:
+            self._cold.append(value)
+            self.trend = sum(self._cold) / len(self._cold)
+            self.second = sum(x * x for x in self._cold) / len(self._cold)
+            self.threshold = max(self.trend - self.k * self.spread, 0.0)
+            return
+        self.trend = self.beta * value + (1 - self.beta) * self.trend
+        self.second = self.beta * value * value + (1 - self.beta) * self.second
+        candidate = max(self.trend - self.k * self.spread, 0.0)
+        if rate > self.rate_threshold:
+            self.threshold = max(candidate, self.threshold)
+        else:
+            self.threshold = max(candidate, 0.9 * self.threshold)
 
 
 @dataclass(frozen=True)
@@ -533,6 +642,15 @@ class EntropyDetector:
     # Distributions monitored besides the IPs; they need the `extra` histograms of
     # `observe` (destination ports and protocols).
     features: Tuple[str, ...] = ("src", "dst")
+    # The distributions allowed to raise an alarm (empty: every one of `features`); the
+    # others are still computed and shown. `ewma_margin` decides on `dst`, `ewma2` on
+    # `pair`.
+    decide: Tuple[str, ...] = ()
+    # Margin of the `ewma_margin` threshold, EWMA - margin (the paper uses 0.01).
+    margin: float = 0.01
+    # With a packet rate above this the `ewma2` threshold cannot decrease (800 in the
+    # paper).
+    rate_threshold: float = 800.0
     _states: Dict[int, _DpidState] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -552,6 +670,13 @@ class EntropyDetector:
                 "features must include src and dst and only use "
                 f"{FEATURES}, got {self.features!r}"
             )
+        if any(name not in self.features for name in self.decide):
+            raise ValueError(
+                f"decide must be a subset of features {self.features!r}, "
+                f"got {self.decide!r}"
+            )
+        if self.margin < 0 or self.rate_threshold < 0:
+            raise ValueError("margin and rate_threshold cannot be negative")
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "EntropyDetector":
@@ -584,6 +709,13 @@ class EntropyDetector:
                 for name in source.get("SDN_ENTROPY_FEATURES", "src,dst").split(",")
                 if name.strip()
             ),
+            decide=tuple(
+                name.strip()
+                for name in source.get("SDN_ENTROPY_DECIDE", "").split(",")
+                if name.strip()
+            ),
+            margin=float(source.get("SDN_ENTROPY_MARGIN", "0.01")),
+            rate_threshold=float(source.get("SDN_ENTROPY_RATE_THRESHOLD", "800")),
         )
 
     def _config(self) -> Dict[str, object]:
@@ -596,6 +728,9 @@ class EntropyDetector:
             "context": self.context,
             "k": self.k,
             "features": list(self.features),
+            "decide": list(self.decide),
+            "margin": self.margin,
+            "rate_threshold": self.rate_threshold,
         }
 
     def _floor(self) -> float:
@@ -610,6 +745,13 @@ class EntropyDetector:
             )
         if self.center == "yu":
             return YuBand(self.k, floor, self.warmup_windows, self.history)
+        if self.center == "ewma_margin":
+            return MarginBand(self.alpha, self.margin, self.warmup_windows)
+        if self.center == "ewma2":
+            # alpha is the smoothing factor beta of the paper, k its kappa.
+            return SecondOrderBand(
+                self.alpha, self.k, self.warmup_windows, self.rate_threshold
+            )
         return RollingBand(
             self.k,
             floor,
@@ -666,14 +808,18 @@ class EntropyDetector:
 
         src_weights: Dict[str, float] = defaultdict(float)
         dst_weights: Dict[str, float] = defaultdict(float)
+        pair_weights: Dict[Tuple[str, str], float] = defaultdict(float)
         for flow in flows:
             if flow.weight > 0:
                 src_weights[flow.src] += flow.weight
                 dst_weights[flow.dst] += flow.weight
+                pair_weights[(flow.src, flow.dst)] += flow.weight
         distributions: Dict[str, Tuple[List[float], Optional[List[int]]]] = {
             "src": (list(src_weights.values()), None),
             "dst": (list(dst_weights.values()), None),
         }
+        if "pair" in self.features:
+            distributions["pair"] = (list(pair_weights.values()), None)
         for name in ("dport", "proto"):
             histogram = (extra or {}).get(name)
             if histogram:
@@ -697,7 +843,7 @@ class EntropyDetector:
 
         if not all(state.bands[name].ready for name in active):
             for name in active:
-                state.bands[name].update(values[name])
+                state.bands[name].update(values[name], total_rate)
             return EntropyResult(
                 dpid,
                 False,
@@ -717,8 +863,10 @@ class EntropyDetector:
                 config=self._config(),
             )
 
+        deciding = [name for name in active if not self.decide or name in self.decide]
         out = {
-            name: self._outside(state.bands[name], values[name], SIDES[name])
+            name: name in deciding
+            and self._outside(state.bands[name], values[name], SIDES[name])
             for name in active
         }
         suspicious = any(out.values())
@@ -737,7 +885,7 @@ class EntropyDetector:
             # Every window is learned: the model itself has to resist the outliers.
             state.streak = state.streak + 1 if suspicious else 0
             for name in active:
-                state.bands[name].update(values[name])
+                state.bands[name].update(values[name], total_rate)
         elif suspicious:
             state.streak += 1
             state.pending.clear()
@@ -748,7 +896,7 @@ class EntropyDetector:
                 old = state.pending.pop(0)
                 for name in active:
                     if name in old:
-                        state.bands[name].update(old[name])
+                        state.bands[name].update(old[name], total_rate)
 
         confirmed = suspicious and state.streak >= self.consecutive_windows
         target_dst: Optional[str] = None

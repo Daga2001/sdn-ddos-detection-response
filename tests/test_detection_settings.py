@@ -361,6 +361,37 @@ def test_the_entropy_measure_and_threshold_are_part_of_the_detection_config():
             DetectionConfig(entropy=bad)
 
 
+def test_the_published_thresholds_are_part_of_the_detection_config():
+    config = DetectionConfig(
+        mode="entropy",
+        entropy={
+            "measure": "norm",
+            "center": "ewma2",
+            "alpha": 0.1,
+            "k": 4,
+            "watch_pairs": True,
+            "decide": ["pair"],
+            "rate_threshold": 500,
+        },
+    )
+    update = detector_update(config)["entropy"]
+    assert (update["center"], update["decide"]) == ("ewma2", ["pair"])
+    assert update["features"] == ["src", "dst", "pair"]
+    assert (update["margin"], update["rate_threshold"]) == (0.01, 500.0)
+    assert controller_env(config)["SDN_ENTROPY_FEATURES"] == "src,dst,pair"
+    assert DetectionConfig().entropy.decide == []
+    ewma_margin = DetectionConfig(entropy={"center": "ewma_margin", "decide": ["dst"]})
+    assert detector_update(ewma_margin)["entropy"]["decide"] == ["dst"]
+    for bad in (
+        {"decide": ["pair"]},  # the pairs are not watched
+        {"decide": ["dport"]},
+        {"decide": ["ip"]},
+        {"margin": -1},
+    ):
+        with pytest.raises(ValidationError):
+            DetectionConfig(entropy=bad)
+
+
 def test_the_forwarding_rule_granularity_is_an_entropy_run_setting():
     assert DetectionConfig().entropy.match_ports is True
     assert controller_env(DetectionConfig())["SDN_MATCH_L4_PORTS"] == "true"

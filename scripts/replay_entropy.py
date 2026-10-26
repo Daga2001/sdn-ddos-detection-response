@@ -57,7 +57,7 @@ def parse_settings(text: str) -> Dict[str, Any]:
     for item in filter(None, (part.strip() for part in text.split(","))):
         name, _, raw = item.partition("=")
         name = name.strip()
-        if name == "features":
+        if name in ("features", "decide"):
             settings[name] = tuple(raw.split("+"))
         elif name in STR_FIELDS:
             settings[name] = raw

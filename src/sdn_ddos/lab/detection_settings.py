@@ -36,6 +36,8 @@ def entropy_features(entropy: EntropyParams) -> list[str]:
         features.append("dport")
     if entropy.watch_protocols:
         features.append("proto")
+    if entropy.watch_pairs:
+        features.append("pair")
     return features
 
 
@@ -94,6 +96,9 @@ def detector_update(detection: DetectionConfig) -> dict[str, Any]:
             "history": entropy.history,
             "context": entropy.context,
             "features": entropy_features(entropy),
+            "decide": list(entropy.decide),
+            "margin": entropy.margin,
+            "rate_threshold": entropy.rate_threshold,
         },
     }
     if detection.mode == "llm":

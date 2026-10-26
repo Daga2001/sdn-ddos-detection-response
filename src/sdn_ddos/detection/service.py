@@ -96,7 +96,11 @@ ENTROPY_FIELDS = (
     "history",
     "context",
     "features",
+    "decide",
+    "margin",
+    "rate_threshold",
 )
+TUPLE_FIELDS = ("features", "decide")
 
 
 class EntropyUpdate(BaseModel):
@@ -116,13 +120,20 @@ class EntropyUpdate(BaseModel):
     alpha_run: Optional[float] = Field(default=None, gt=0, le=1)
     measure: Optional[Literal["shannon", "norm", "renyi", "tsallis", "min"]] = None
     order: Optional[float] = Field(default=None, gt=0, le=64)
-    center: Optional[Literal["ewma", "mean", "median", "yu"]] = None
+    center: Optional[
+        Literal["ewma", "mean", "median", "yu", "ewma_margin", "ewma2"]
+    ] = None
     spread: Optional[Literal["std", "mad"]] = None
     history: Optional[int] = Field(default=None, ge=0, le=1000)
     context: Optional[Literal["normal", "all"]] = None
-    features: Optional[List[Literal["src", "dst", "dport", "proto"]]] = Field(
-        default=None, min_length=2, max_length=4
+    features: Optional[List[Literal["src", "dst", "dport", "proto", "pair"]]] = Field(
+        default=None, min_length=2, max_length=5
     )
+    decide: Optional[List[Literal["src", "dst", "dport", "proto", "pair"]]] = Field(
+        default=None, max_length=5
+    )
+    margin: Optional[float] = Field(default=None, ge=0, le=1)
+    rate_threshold: Optional[float] = Field(default=None, ge=0, le=1_000_000)
 
 
 class ConfigUpdate(BaseModel):
@@ -227,7 +238,8 @@ class DetectorService:
 
         detector = self.new_entropy_detector()
         settings = {name: getattr(detector, name) for name in ENTROPY_FIELDS}
-        settings["features"] = list(settings["features"])
+        for name in TUPLE_FIELDS:
+            settings[name] = list(settings[name])
         return settings
 
     def invalidate_health(self) -> None:
@@ -356,7 +368,7 @@ def create_app(
             # A complete set replaces the previous overrides; fields left out fall
             # back to the environment defaults.
             params: Dict[str, Any] = {
-                name: tuple(value) if name == "features" else value
+                name: tuple(value) if name in TUPLE_FIELDS else value
                 for name, value in update.entropy.model_dump().items()
                 if value is not None
             }
