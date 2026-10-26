@@ -76,11 +76,26 @@ export type EntropyParams = {
   context: "normal" | "all";
   watch_ports: boolean;
   watch_protocols: boolean;
+  /** Also compute the entropy of the (source, destination) pairs. */
+  watch_pairs: boolean;
+  /** The distributions allowed to raise an alarm; empty means every watched one. */
+  decide: EntropyFeature[];
+  /** Margin of the margin threshold: EWMA minus a fixed margin. */
+  margin: number;
+  /** Packet rate above which the second-order EWMA threshold cannot decrease. */
+  rate_threshold: number;
   /** false: forwarding rules ignore the layer-4 port (no rule per reply in a SYN flood). */
   match_ports: boolean;
 };
 export type EntropyMeasure = "shannon" | "norm" | "renyi" | "tsallis" | "min";
-export type ThresholdCenter = "ewma" | "mean" | "median" | "yu";
+export type EntropyFeature = "src" | "dst" | "dport" | "proto" | "pair";
+export type ThresholdCenter =
+  | "ewma"
+  | "mean"
+  | "median"
+  | "yu"
+  | "ewma_margin"
+  | "ewma2";
 export type ResponseParams = {
   policy: ResponsePolicy;
   dry_run: boolean;
@@ -142,6 +157,10 @@ export const defaultEntropy: EntropyParams = {
   context: "normal",
   watch_ports: false,
   watch_protocols: false,
+  watch_pairs: false,
+  decide: [],
+  margin: 0.01,
+  rate_threshold: 800,
   match_ports: true,
 };
 export const defaultResponse: ResponseParams = {
@@ -181,10 +200,22 @@ export const knownModels: { name: string; note: string }[] = [
 export function normalizeDetection(value: unknown): DetectionConfig | null {
   if (!value || typeof value !== "object") return null;
   const saved = value as Record<string, any>;
+  // Runs recorded while the two thresholds were named after the papers they follow.
+  const legacy: Record<string, ThresholdCenter> = {
+    ding: "ewma_margin",
+    z26: "ewma2",
+  };
+  const entropy: Record<string, any> = {
+    ...defaultEntropy,
+    ...(saved.entropy ?? {}),
+  };
+  entropy.center = legacy[entropy.center] ?? entropy.center;
+  if (saved.entropy?.epsilon !== undefined && saved.entropy?.margin === undefined)
+    entropy.margin = saved.entropy.epsilon;
   return {
     ...defaultDetection,
     ...saved,
-    entropy: { ...defaultEntropy, ...(saved.entropy ?? {}) },
+    entropy: entropy as EntropyParams,
     response: { ...defaultResponse, ...(saved.response ?? {}) },
   };
 }
@@ -223,6 +254,10 @@ export function detectionFromService(
       context: entropy.context ?? defaultEntropy.context,
       watch_ports: (entropy.features ?? []).includes("dport"),
       watch_protocols: (entropy.features ?? []).includes("proto"),
+      watch_pairs: (entropy.features ?? []).includes("pair"),
+      decide: entropy.decide ?? defaultEntropy.decide,
+      margin: entropy.margin ?? defaultEntropy.margin,
+      rate_threshold: entropy.rate_threshold ?? defaultEntropy.rate_threshold,
     },
     response: {
       ...defaultResponse,

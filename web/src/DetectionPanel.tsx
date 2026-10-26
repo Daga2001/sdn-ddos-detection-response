@@ -15,6 +15,7 @@ import type {
   DetectionConfig,
   DetectionMode,
   DetectionOptions,
+  EntropyFeature,
   EntropyMeasure,
   EntropyParams,
   Experiment,
@@ -327,6 +328,58 @@ export function DetectionPanel({
             >
               Fast reaction
             </button>
+            <button
+              type="button"
+              disabled={disabled}
+              title="Normalised entropy of the destination addresses in 1 s windows. The alarm threshold is an EWMA of that entropy (weight 0.13) minus a margin of 0.01, and it is not updated while an alarm lasts. One window raises the alarm. From Ding, Savi and Siracusa (IEEE TDSC 2022); the fast-reaction timing, 30 warm-up windows and port-free rules are this lab's."
+              onClick={() =>
+                set({
+                  poll_seconds: 0.5,
+                  entropy: {
+                    ...config.entropy,
+                    window_seconds: 1,
+                    warmup_windows: 30,
+                    consecutive_windows: 1,
+                    measure: "norm",
+                    center: "ewma_margin",
+                    alpha: 0.13,
+                    margin: 0.01,
+                    watch_pairs: false,
+                    decide: ["dst"],
+                    context: "normal",
+                    match_ports: false,
+                  },
+                })
+              }
+            >
+              Destination entropy
+            </button>
+            <button
+              type="button"
+              disabled={disabled}
+              title="Normalised entropy of the (source, destination) pairs in 1 s windows. The alarm threshold comes from a second-order EWMA of the entropy (weight 0.1): its trend minus 4 times its volatility, not updated while an alarm lasts and never falling more than 10 % per window. One window raises the alarm. From Zhang et al. (WF-IoT 2026), spatial part; the fast-reaction timing, 30 warm-up windows and port-free rules are this lab's."
+              onClick={() =>
+                set({
+                  poll_seconds: 0.5,
+                  entropy: {
+                    ...config.entropy,
+                    window_seconds: 1,
+                    warmup_windows: 30,
+                    consecutive_windows: 1,
+                    measure: "norm",
+                    center: "ewma2",
+                    alpha: 0.1,
+                    k: 4,
+                    watch_pairs: true,
+                    decide: ["pair"],
+                    context: "normal",
+                    match_ports: false,
+                  },
+                })
+              }
+            >
+              Pair entropy
+            </button>
           </div>
           <div className="field-pair">
             <NumberField
@@ -438,7 +491,7 @@ export function DetectionPanel({
           <div className="field-pair">
             <Field
               label="Threshold centre"
-              hint="How the normal level is learned. EWMA mean: exponentially weighted mean (the original detector). Rolling mean and rolling median: the mean or the median of the last windows; the median shrugs off up to half of the windows being abnormal, so it is the one to pair with “Every window”. Improved EWMA: the model of Yu et al. (2024)."
+              hint="How the normal level is learned. EWMA mean: exponentially weighted mean (the original detector). Rolling mean and rolling median: the mean or the median of the last windows; the median shrugs off up to half of the windows being abnormal, so it is the one to pair with “Every window”. Improved EWMA: the model of Yu et al. (2024). EWMA minus a margin: the threshold is an EWMA of the entropy minus a fixed margin. Second-order EWMA: an EWMA of the entropy and of its square, minus kappa times their volatility; it never falls more than 10 % per window."
             >
               <select
                 value={config.entropy.center}
@@ -451,6 +504,8 @@ export function DetectionPanel({
                 <option value="mean">Rolling mean</option>
                 <option value="median">Rolling median</option>
                 <option value="yu">Improved EWMA (Yu et al.)</option>
+                <option value="ewma_margin">EWMA minus a margin</option>
+                <option value="ewma2">Second-order EWMA</option>
               </select>
             </Field>
             <Field
@@ -501,6 +556,30 @@ export function DetectionPanel({
               </select>
             </Field>
           </div>
+          {config.entropy.center === "ewma_margin" && (
+            <NumberField
+              label="Margin"
+              hint="The threshold is the EWMA of the entropy minus this margin (0.01 by default). Larger is calmer: its authors report no false alarms above about 0.04 at the price of some missed attacks. 0 to 1. The smoothing is the 'Smoothing · alpha' of the advanced settings (0.13 in the paper)."
+              value={config.entropy.margin}
+              min={0}
+              max={1}
+              step={0.01}
+              disabled={disabled}
+              onChange={(value) => setEntropy({ margin: value })}
+            />
+          )}
+          {config.entropy.center === "ewma2" && (
+            <NumberField
+              label="No-decrease rate · pkt/s"
+              hint="With traffic above this packet rate the threshold cannot decrease, so a flood cannot lower it (800 by default); below it the threshold falls by at most 10 % per window. Band width k is kappa (4) and the 'Smoothing · alpha' of the advanced settings is beta (0.1)."
+              value={config.entropy.rate_threshold}
+              min={0}
+              max={1000000}
+              step={50}
+              disabled={disabled}
+              onChange={(value) => setEntropy({ rate_threshold: value })}
+            />
+          )}
           <CheckField
             disabled={disabled}
             label="Also watch destination ports"
@@ -517,6 +596,55 @@ export function DetectionPanel({
           />
           <CheckField
             disabled={disabled}
+            label="Also watch source–destination pairs"
+            hint="Adds the entropy of the (source, destination) pairs, the distribution the pair-entropy preset decides on. A flood from a few hosts to one victim concentrates it."
+            checked={config.entropy.watch_pairs}
+            onChange={(on) =>
+              !disabled &&
+              setEntropy({
+                watch_pairs: on,
+                decide: on
+                  ? config.entropy.decide
+                  : config.entropy.decide.filter((name) => name !== "pair"),
+              })
+            }
+          />
+          <Field
+            label="Alarm decided by"
+            hint="Which distributions may raise an alarm. All: any watched entropy leaving its band (the original detector). Destinations only: what the destination-entropy preset uses. Pairs only: what the pair-entropy preset uses. The other entropies are still shown."
+          >
+            <select
+              value={
+                config.entropy.decide.length === 0
+                  ? "all"
+                  : config.entropy.decide.join("+")
+              }
+              disabled={disabled}
+              onChange={(event) => {
+                const value = event.target.value;
+                setEntropy({
+                  decide:
+                    value === "all"
+                      ? []
+                      : (value.split("+") as EntropyFeature[]),
+                  watch_pairs:
+                    value === "pair" ? true : config.entropy.watch_pairs,
+                });
+              }}
+            >
+              <option value="all">All the watched distributions</option>
+              <option value="dst">Destinations only</option>
+              <option value="pair">Source–destination pairs only</option>
+              {config.entropy.decide.length > 0 &&
+                !["dst", "pair"].includes(config.entropy.decide.join("+")) && (
+                  <option value={config.entropy.decide.join("+")}>
+                    {config.entropy.decide.join(" + ")}
+                  </option>
+                )}
+            </select>
+          </Field>
+          <CheckField
+            disabled={disabled}
             label="Match ports in forwarding rules"
             hint="On (the original behaviour): every reply of a SYN flood goes to another source port, so each one becomes a flow of its own, a rule and a packet to the controller; thousands per second saturate it and the victim's service stops answering. Off: a rule covers a source, a destination and a protocol, so the flood adds no rules after its first packet and the controller keeps up. The detector sees the same IPs either way."
             checked={config.entropy.match_ports}
@@ -527,12 +655,17 @@ export function DetectionPanel({
             <div className="field-pair">
               <NumberField
                 label="Smoothing · alpha"
-                hint="How fast the EWMA band follows the traffic while learning. 0 to 1. Only the EWMA mean uses it."
+                hint="How fast the EWMA band follows the traffic while learning. 0 to 1. The EWMA mean and the two published thresholds use it (0.13 in the destination-entropy preset, 0.1 in the pair-entropy one)."
                 value={config.entropy.alpha}
                 min={0.01}
                 max={1}
                 step={0.05}
-                disabled={disabled || config.entropy.center !== "ewma"}
+                disabled={
+                  disabled ||
+                  !["ewma", "ewma_margin", "ewma2"].includes(
+                    config.entropy.center,
+                  )
+                }
                 onChange={(value) => setEntropy({ alpha: value })}
               />
               <NumberField
