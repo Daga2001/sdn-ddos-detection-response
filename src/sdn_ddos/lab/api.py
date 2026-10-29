@@ -22,7 +22,12 @@ from pydantic import BaseModel, Field, ValidationError
 from sdn_ddos.config import DatabaseSettings
 from sdn_ddos.lab.browser_ownership import BrowserOwnership
 from sdn_ddos.lab.client import RunnerClient
-from sdn_ddos.lab.contracts import Capture, Diagnostic, StartRequest
+from sdn_ddos.lab.contracts import (
+    FORWARDING_MESSAGE,
+    Capture,
+    Diagnostic,
+    StartRequest,
+)
 from sdn_ddos.lab.explain import describe, describe_exception
 from sdn_ddos.lab.manager import LabManager
 from sdn_ddos.lab.repository import PostgreSQLRepository, Repository
@@ -31,6 +36,12 @@ from sdn_ddos.lab.settings import LabSettings
 from sdn_ddos.lab.topology import Topology, export_miniedit, import_miniedit, presets
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _rejection(errors: list[dict[str, Any]]) -> str:
+    if any("forwarding" in (error.get("loc") or ()) for error in errors):
+        return FORWARDING_MESSAGE
+    return describe(errors)
 
 
 class Login(BaseModel):
@@ -89,7 +100,7 @@ def create_app(
     async def malformed(
         request: Request, error: RequestValidationError
     ) -> JSONResponse:
-        return JSONResponse({"detail": describe(error.errors())}, status_code=422)
+        return JSONResponse({"detail": _rejection(error.errors())}, status_code=422)
 
     @app.exception_handler(ValueError)
     async def invalid(request: Request, error: ValueError) -> JSONResponse:

@@ -468,6 +468,12 @@ export function describeRun(run: Run): string {
     parts.push(
       `${run.policy ?? "response"} ${run.dry_run === "true" ? "(simulated)" : "(real rules)"}`,
     );
+  parts.push(
+    run.forwarding === "port_free" ||
+      (run.detector_mode === "entropy" && run.match_ports === "false")
+      ? "Port-free rules (Experiment B)"
+      : "Per-port rules (Experiment A)",
+  );
   return parts.join(" · ");
 }
 

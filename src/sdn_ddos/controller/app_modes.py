@@ -22,8 +22,8 @@ Robustness changes over the baseline (all opt-out through env vars):
   still computed over ALL flows.
 * Only SDN_LLM_MAX_SAMPLES samples per poll (highest packet rate) are sent to
   the LLM, which costs ~0.5 s each; the rest keep prob_ddos NULL.
-* SDN_MATCH_L4_PORTS (default true): set to false so that rules do not match the layer-4
-  port; see the comment on MATCH_L4_PORTS.
+* SDN_MATCH_L4_PORTS is required and is true or false. Missing or any other
+  value refuses to start. False omits the layer-4 port; see MATCH_L4_PORTS.
 * SDN_FINE_GRAINED_MATCH (default true): forwarding rules always include
   eth_type and, for IPv4, the addresses and protocol. The baseline installs an
   Ethernet-only rule after the first ARP/ICMP packet of a host pair, which then
@@ -105,12 +105,9 @@ def _truthy(value: str) -> bool:
 
 
 FINE_GRAINED_MATCH = _truthy(os.environ.get("SDN_FINE_GRAINED_MATCH", "true"))
-# With the layer-4 port in the rule (the default) every reply of a SYN flood goes to
-# another source port, so each reply is a flow of its own: tens of thousands of rules
-# and packet-ins a minute, enough to saturate this single-threaded controller. Without
-# the port a rule covers a source, a destination and a protocol, and a flood adds no
-# rules after its first packet.
-MATCH_L4_PORTS = _truthy(os.environ.get("SDN_MATCH_L4_PORTS", "true"))
+# No default. EnterpriseDDoSController.__init__ refuses to start unless the variable
+# is true or false, then copies the choice here for _packet_match.
+MATCH_L4_PORTS: Optional[bool] = None
 
 
 class ModeSwitchController(EnterpriseDDoSController):
@@ -118,6 +115,8 @@ class ModeSwitchController(EnterpriseDDoSController):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
+        global MATCH_L4_PORTS
+        MATCH_L4_PORTS = self.match_l4_ports
         # With the detector service the mode is chosen there (PUT /config) and
         # fixed for this run; without it (standalone scripts) the env decides.
         detector_base = self.settings.inference_url.rsplit("/", 1)[0]
@@ -284,6 +283,9 @@ class ModeSwitchController(EnterpriseDDoSController):
         body = self._stats.add(dpid, int(message.xid), message.body, more)
         if body is None:
             return
+        # Full reply, before the row cap, in every detection mode.
+        self._emit_switch_table(dpid, body)
+        self._switch_table_already_emitted = True
         total_flows = len(body)
         if self.settings.mitigation_enabled:
             self._review_limits(dpid, body)

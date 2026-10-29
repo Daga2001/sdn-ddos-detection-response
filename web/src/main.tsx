@@ -11,6 +11,8 @@ import { createRoot } from "react-dom/client";
 import { TopologyCanvas } from "./TopologyCanvas";
 import { Observations } from "./Observations";
 import { useRunClock, useRunOwnership } from "./useRunOwnership";
+import { FORWARDING_OPTIONS } from "./traffic";
+import type { Forwarding } from "./traffic";
 import {
   api,
   download,
@@ -80,6 +82,8 @@ function App() {
   const [panel, setPanel] = useState("Experiment");
   const [events, setEvents] = useState<Observation[]>([]);
   const [experiment, setExperiment] = useState<Experiment>(defaultExperiment);
+  const [forwarding, setForwarding] = useState<Forwarding | null>(null);
+  const [liveExperiment, setLiveExperiment] = useState(false);
   const [detectorOptions, setDetectorOptions] = useState<DetectionOptions>({});
   const [replay, setReplay] = useState<{
     run: Run;
@@ -339,13 +343,15 @@ function App() {
     setRuns(await api("/runs"));
   }
   async function start(withExperiment: boolean) {
-    if (!topology) return;
+    if (!topology || !forwarding) return;
     if (!ownerId)
       throw new Error("Reload to establish ownership before starting a run.");
+    setLiveExperiment(withExperiment);
     await api("/runs", {
       topology,
       owner_id: ownerId,
       experiment: withExperiment ? experiment : null,
+      forwarding,
     });
     setReplay(null);
     setStatus(await api("/status"));
@@ -639,6 +645,20 @@ function App() {
             options={detectorOptions}
             disabled={locked}
           />
+          <fieldset className="forwarding-choice" disabled={locked}>
+            <legend>Forwarding</legend>
+            {FORWARDING_OPTIONS.map((option) => (
+              <label key={option.id}>
+                <input
+                  type="radio"
+                  name="forwarding"
+                  checked={forwarding === option.id}
+                  onChange={() => setForwarding(option.id)}
+                />
+                {option.text}
+              </label>
+            ))}
+          </fieldset>
           <span className={`phase ${phase}`}>{phase}</span>
           {elapsedMs !== null && (
             <span
@@ -653,7 +673,9 @@ function App() {
             </span>
           )}
           <button
-            disabled={!topology || locked || !connected || !ownerId}
+            disabled={
+              !topology || locked || !connected || !ownerId || !forwarding
+            }
             onClick={() =>
               void task(
                 () => start(false),
@@ -953,6 +975,16 @@ function App() {
             events={visible}
             tab={tab}
             setTab={setTab}
+            topology={shownTopology}
+            experiment={
+              (
+                replay
+                  ? (replay.run.settings?.attackers?.length ?? 0) > 0
+                  : liveExperiment
+              )
+                ? roleSettings
+                : null
+            }
             detectionView={
               roleSettings.detection?.mode === "llm" ? (
                 <DetectionResults
@@ -997,6 +1029,7 @@ function App() {
               connected={connected && !!ownerId}
               task={task}
               start={start}
+              forwardingChosen={forwarding !== null}
             />
           )}
           {panel === "Detection" && (

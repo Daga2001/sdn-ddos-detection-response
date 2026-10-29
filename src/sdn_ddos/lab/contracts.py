@@ -31,7 +31,11 @@ MAX_GENERATORS = 16
 
 DetectionMode = Literal["llm", "entropy", "off"]
 ResponsePolicy = Literal["block", "rate_limit", "escalate"]
+Forwarding = Literal["per_port", "port_free"]
 MODEL_NAME = r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$"
+FORWARDING_MESSAGE = (
+    "Choose the forwarding rules: per-port (Experiment A) or port-free (Experiment B)."
+)
 
 
 class EntropyParams(StrictModel):
@@ -73,10 +77,6 @@ class EntropyParams(StrictModel):
     # the `ewma2` threshold cannot decrease; the defaults are the values of the papers.
     margin: float = Field(default=0.01, ge=0, le=1)
     rate_threshold: float = Field(default=800.0, ge=0, le=1_000_000)
-    # Whether the controller's forwarding rules match the layer-4 port (the original
-    # behaviour). Off, a SYN flood no longer creates one rule and one packet-in per
-    # reply, which is what saturates the controller and takes the victim's service down.
-    match_ports: bool = True
 
     @model_validator(mode="after")
     def decide_only_on_watched_distributions(self) -> "EntropyParams":
@@ -159,6 +159,9 @@ class StartRequest(StrictModel):
     topology: Topology
     experiment: Optional[Experiment] = None
     owner_id: Optional[UUID] = None
+    # Required for observation sessions and experiments. No default: a start that
+    # does not choose is rejected with FORWARDING_MESSAGE.
+    forwarding: Forwarding
 
 
 class Diagnostic(StrictModel):

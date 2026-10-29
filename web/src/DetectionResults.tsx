@@ -243,6 +243,12 @@ function criteria(config: Record<string, any> | null): string[] {
         : `Response applied: policy ${r.policy ?? config.response}.`,
     );
   }
+  const forwarding =
+    config.forwarding === "port_free" ||
+    (config.mode === "entropy" && config.entropy?.match_ports === false)
+      ? "Port-free rules (Experiment B)"
+      : "Per-port rules (Experiment A)";
+  lines.push(`Forwarding: ${forwarding}.`);
   return lines;
 }
 

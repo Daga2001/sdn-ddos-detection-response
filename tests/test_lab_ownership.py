@@ -18,7 +18,9 @@ def test_owner_release_is_scoped_and_cannot_be_revived():
     manager = LabManager(MemoryRepository(), FakeRuntime)
     owner = manager.create_owner()
     viewer = manager.create_owner()
-    run = manager.start(StartRequest(topology=presets()[2], owner_id=owner))
+    run = manager.start(
+        StartRequest(topology=presets()[2], owner_id=owner, forwarding="per_port")
+    )
     manager.release_owner(viewer)
     assert not manager.stop_event.is_set()
     manager.release_owner(owner)
@@ -28,11 +30,15 @@ def test_owner_release_is_scoped_and_cannot_be_revived():
     with pytest.raises(ValueError, match="expired"):
         manager.renew_owner(owner)
     with pytest.raises(ValueError, match="expired"):
-        manager.start(StartRequest(topology=presets()[2], owner_id=owner))
+        manager.start(
+            StartRequest(topology=presets()[2], owner_id=owner, forwarding="per_port")
+        )
     assert manager.repository.run(run)["status"] == "stopped"
     assert any(e["kind"] == "stop_requested" for e in manager.events(0)["events"])
     second = manager.create_owner()
-    manager.start(StartRequest(topology=presets()[2], owner_id=second))
+    manager.start(
+        StartRequest(topology=presets()[2], owner_id=second, forwarding="per_port")
+    )
     manager.release_owner(owner)
     assert not manager.stop_event.is_set()
     manager.close()
@@ -45,9 +51,11 @@ def test_expired_owner_rejected_and_headless_run_survives(monkeypatch):
     owner = manager.create_owner()
     clock[0] += 6
     with pytest.raises(ValueError, match="expired"):
-        manager.start(StartRequest(topology=presets()[2], owner_id=owner))
+        manager.start(
+            StartRequest(topology=presets()[2], owner_id=owner, forwarding="per_port")
+        )
     assert not manager.repository.runs()
-    manager.start(StartRequest(topology=presets()[2]))
+    manager.start(StartRequest(topology=presets()[2], forwarding="per_port"))
     manager.expire_owners()
     assert not manager.stop_event.is_set()
     manager.close()
@@ -58,7 +66,9 @@ def test_owner_watchdog_stops_an_active_run(monkeypatch):
     clock = [10.0]
     monkeypatch.setattr(manager.owners, "clock", lambda: clock[0])
     owner = manager.create_owner()
-    manager.start(StartRequest(topology=presets()[2], owner_id=owner))
+    manager.start(
+        StartRequest(topology=presets()[2], owner_id=owner, forwarding="per_port")
+    )
     clock[0] += 4
     manager.renew_owner(owner)
     clock[0] += 4
@@ -72,7 +82,7 @@ def test_owner_watchdog_stops_an_active_run(monkeypatch):
 
 def test_snapshot_resets_foreign_cursor_and_clock_survives_buffer_loss():
     manager = LabManager(MemoryRepository(), FakeRuntime)
-    run = manager.start(StartRequest(topology=presets()[2]))
+    run = manager.start(StartRequest(topology=presets()[2], forwarding="per_port"))
     try:
         time.sleep(0.02)
         page = manager.events(99999, str(uuid4()))
@@ -145,14 +155,14 @@ def test_worker_refuses_duplicate_before_recovering_any_runs(monkeypatch):
 
 def test_lost_runner_lock_stops_and_rejects_new_work():
     manager = LabManager(MemoryRepository(), FakeRuntime)
-    manager.start(StartRequest(topology=presets()[2]))
+    manager.start(StartRequest(topology=presets()[2], forwarding="per_port"))
     manager.lose_ownership()
     assert manager.stop_event.is_set()
     manager.close()
     assert manager.runtime.closed
     assert manager.status()["unavailable"]
     with pytest.raises(ValueError, match="ownership was lost"):
-        manager.start(StartRequest(topology=presets()[2]))
+        manager.start(StartRequest(topology=presets()[2], forwarding="per_port"))
     with pytest.raises(ValueError, match="ownership was lost"):
         manager.create_owner()
 
@@ -174,7 +184,7 @@ def test_worker_watchdogs_stop_on_lock_loss_and_release_after_cleanup(monkeypatc
     monkeypatch.setattr(worker, "RunnerLock", lambda settings: guard)
     monkeypatch.setattr(worker.os, "kill", terminated)
     with TestClient(worker.create_app()):
-        manager.start(StartRequest(topology=presets()[2]))
+        manager.start(StartRequest(topology=presets()[2], forwarding="per_port"))
         deadline = time.monotonic() + 3
         while not terminated.called:
             assert time.monotonic() < deadline
@@ -190,7 +200,9 @@ def test_release_before_start_and_owner_capacity_are_bounded():
     owner = manager.create_owner()
     manager.release_owner(owner)
     with pytest.raises(ValueError, match="expired"):
-        manager.start(StartRequest(topology=presets()[2], owner_id=owner))
+        manager.start(
+            StartRequest(topology=presets()[2], owner_id=owner, forwarding="per_port")
+        )
     assert manager.runtime is None
     for _ in range(128):
         manager.create_owner()

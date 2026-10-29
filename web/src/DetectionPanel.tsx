@@ -319,7 +319,7 @@ export function DetectionPanel({
             <button
               type="button"
               disabled={disabled}
-              title="1 s windows, polls every 0.5 s, normalised Shannon entropy, 30 warm-up windows, forwarding rules without the port. In the university lab it named and blocked three attackers 1.7 s into a SYN flood and the service never stopped answering."
+              title="1 s windows, polls every 0.5 s, normalised Shannon entropy, 30 warm-up windows. In the university lab it named and blocked three attackers 1.7 s into a SYN flood and the service never stopped answering."
               onClick={() =>
                 set({
                   poll_seconds: 0.5,
@@ -329,7 +329,6 @@ export function DetectionPanel({
                     warmup_windows: 30,
                     consecutive_windows: 2,
                     measure: "norm",
-                    match_ports: false,
                   },
                 })
               }
@@ -339,7 +338,7 @@ export function DetectionPanel({
             <button
               type="button"
               disabled={disabled}
-              title="Normalised entropy of the destination addresses in 1 s windows. The alarm threshold is an EWMA of that entropy (weight 0.13) minus a margin of 0.01, and it is not updated while an alarm lasts. One window raises the alarm. From Ding, Savi and Siracusa (IEEE TDSC 2022); the fast-reaction timing, 30 warm-up windows and port-free rules are this lab's."
+              title="Normalised entropy of the destination addresses in 1 s windows. The alarm threshold is an EWMA of that entropy (weight 0.13) minus a margin of 0.01, and it is not updated while an alarm lasts. One window raises the alarm. From Ding, Savi and Siracusa (IEEE TDSC 2022); the fast-reaction timing, 30 warm-up windows are this lab's."
               onClick={() =>
                 set({
                   poll_seconds: 0.5,
@@ -355,7 +354,6 @@ export function DetectionPanel({
                     watch_pairs: false,
                     decide: ["dst"],
                     context: "normal",
-                    match_ports: false,
                   },
                 })
               }
@@ -365,7 +363,7 @@ export function DetectionPanel({
             <button
               type="button"
               disabled={disabled}
-              title="Normalised entropy of the (source, destination) pairs in 1 s windows. The alarm threshold comes from a second-order EWMA of the entropy (weight 0.1): its trend minus 4 times its volatility, not updated while an alarm lasts and never falling more than 10 % per window. One window raises the alarm. From Zhang et al. (WF-IoT 2026), spatial part; the fast-reaction timing, 30 warm-up windows and port-free rules are this lab's."
+              title="Normalised entropy of the (source, destination) pairs in 1 s windows. The alarm threshold comes from a second-order EWMA of the entropy (weight 0.1): its trend minus 4 times its volatility, not updated while an alarm lasts and never falling more than 10 % per window. One window raises the alarm. From Zhang et al. (WF-IoT 2026), spatial part; the fast-reaction timing, 30 warm-up windows are this lab's."
               onClick={() =>
                 set({
                   poll_seconds: 0.5,
@@ -381,7 +379,6 @@ export function DetectionPanel({
                     watch_pairs: true,
                     decide: ["pair"],
                     context: "normal",
-                    match_ports: false,
                   },
                 })
               }
@@ -651,13 +648,6 @@ export function DetectionPanel({
                 )}
             </select>
           </Field>
-          <CheckField
-            disabled={disabled}
-            label="Match ports in forwarding rules"
-            hint="On (the original behaviour): every reply of a SYN flood goes to another source port, so each one becomes a flow of its own, a rule and a packet to the controller; thousands per second saturate it and the victim's service stops answering. Off: a rule covers a source, a destination and a protocol, so the flood adds no rules after its first packet and the controller keeps up. The detector sees the same IPs either way."
-            checked={config.entropy.match_ports}
-            onChange={(on) => !disabled && setEntropy({ match_ports: on })}
-          />
           <details className="advanced">
             <summary>Advanced entropy settings</summary>
             <div className="field-pair">

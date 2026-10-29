@@ -319,7 +319,7 @@ test("the History line says what judged a run and how it answered", () => {
       policy: "escalate",
       dry_run: "false",
     }),
-    "LLM llama3.2:3b · 3 attackers · escalate (real rules)",
+    "LLM llama3.2:3b · 3 attackers · escalate (real rules) · Per-port rules (Experiment A)",
   );
   assert.equal(
     describeRun({
@@ -330,9 +330,17 @@ test("the History line says what judged a run and how it answered", () => {
       policy: "block",
       dry_run: "true",
     }),
-    "Entropy · 1 attacker · block (simulated)",
+    "Entropy · 1 attacker · block (simulated) · Per-port rules (Experiment A)",
   );
-  // Detection off never shows a response; an old run with no setup shows nothing.
+  assert.equal(
+    describeRun({
+      ...base,
+      detector_mode: "entropy",
+      match_ports: "false",
+    }),
+    "Entropy · Port-free rules (Experiment B)",
+  );
+  // Detection off never shows a response. An old row still shows the rules it ran.
   assert.equal(
     describeRun({
       ...base,
@@ -340,9 +348,9 @@ test("the History line says what judged a run and how it answered", () => {
       attackers: 2,
       mitigation: "true",
     }),
-    "No detection · 2 attackers",
+    "No detection · 2 attackers · Per-port rules (Experiment A)",
   );
-  assert.equal(describeRun(base), "");
+  assert.equal(describeRun(base), "Per-port rules (Experiment A)");
 });
 
 const windowEvent = (

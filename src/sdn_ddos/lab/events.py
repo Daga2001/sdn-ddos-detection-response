@@ -55,16 +55,34 @@ class EventJournal:
 
 class RateCounters:
     def __init__(self) -> None:
-        self.previous: dict[str, tuple[int, int, float]] = {}
+        self.previous: dict[str, tuple[int, int, int, int, float]] = {}
 
     def observe(
-        self, key: str, rx: int, tx: int, now: float
+        self,
+        key: str,
+        rx: int,
+        tx: int,
+        now: float,
+        rx_packets: int = 0,
+        tx_packets: int = 0,
     ) -> Optional[dict[str, float]]:
+        """Byte and packet rates. A counter that goes backwards is unknown."""
+
         old = self.previous.get(key)
-        self.previous[key] = (rx, tx, now)
-        if old is None or now <= old[2] or rx < old[0] or tx < old[1]:
+        self.previous[key] = (rx, tx, rx_packets, tx_packets, now)
+        if (
+            old is None
+            or now <= old[4]
+            or rx < old[0]
+            or tx < old[1]
+            or rx_packets < old[2]
+            or tx_packets < old[3]
+        ):
             return None
+        elapsed = now - old[4]
         return {
-            "rx_bps": (rx - old[0]) * 8 / (now - old[2]),
-            "tx_bps": (tx - old[1]) * 8 / (now - old[2]),
+            "rx_bps": (rx - old[0]) * 8 / elapsed,
+            "tx_bps": (tx - old[1]) * 8 / elapsed,
+            "rx_pps": (rx_packets - old[2]) / elapsed,
+            "tx_pps": (tx_packets - old[3]) / elapsed,
         }

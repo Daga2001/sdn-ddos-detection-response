@@ -69,9 +69,9 @@ is unavailable. Shutdown reasons are recorded as `stop_requested` events.
 - One **Download** button, with a dropdown for the format: project JSON or the supported MiniEdit v2 `.mn` subset. Both files import again unchanged, including the project name and description. JSON preserves fractional link settings. MiniEdit exports require whole-number bandwidth/loss, because its properties dialog parses integers. A topology that is not yet valid is not written to a file, because such a file could not be imported back; the reason is shown instead. Import warns when controller settings are remapped to the managed controller.
 - **Observe** starts a fresh network with mitigation off. Select a host for interface details or three bounded pings; select a switch for its flow table. These diagnostics are disabled during experiments so they do not change the measurement workload.
 - An experiment chooses one or more attackers and one or more victims in the same subnet, plus the traffic kinds to send — TCP SYN, UDP, ICMP, or a mix. Attackers and victims are picked from a paginated host table (host name, IP address, switch parent, 5 or 10 rows per page); a host already taken by the other role is shown but locked so it can never be both. Every observation and inspector tab carries a plain-language hover tooltip explaining what it shows and why it is useful. Legitimate clients are not chosen: every remaining host in the victims' subnet is inferred as one, and the workspace probes them against the victims to measure whether normal traffic still gets through. Each attacker floods every victim, so the attacker × victim product is capped (at 16 flows) to keep a run bounded; selected traffic kinds are spread across the attackers. Defaults are 30 seconds baseline, 20 seconds at 100 packets/second per flow, and 30 seconds recovery. Limits are 1,000 packets/second per flow and 300 seconds for attack traffic. The independent GNU `timeout` supervisor sends TERM at the deadline and KILL after a two-second grace period; each generator's packet count is bounded as well. No public/custom target input, spoofing, unrestricted shell, or unlimited flood is provided.
-- A run clock in the header uses the runner's monotonic elapsed time, independent of browser wall-clock changes or retained event buffers, and the traffic chart shades the measured baseline, attack, and recovery phases against the clock with their durations, so the time spent in each phase is readable directly from the graph.
+- A run clock in the header uses the runner's monotonic elapsed time, independent of browser wall-clock changes or retained event buffers. The Traffic tab stacks five panels on one clock — packets/s by role, website checks, ping, Packet-Ins and flow rules, and CPU — with the same phase bands. A table under the panels, for experiment runs only, compares baseline, attack and recovery and states the recovery rule.
+- Website checks run on their own loop, one client→victim pair a second, and do not pause the 1 s sampler. A failed check is a red ✗, not a gap. Experiment runs also ping each victim five times a second from the first legitimate client. That adds 5 ICMP packets/s of normal traffic per victim, the same for every detector.
 - Select a link to capture headers: at most 60 seconds / 2,000 packets, one capture at a time. Expand a packet row for Ethernet/IP/transport header fields. No payload or PCAP is persisted. Snap length is 256 bytes; this is a teaching view, not full Wireshark.
-- **History** loads saved topology snapshots and completed/interrupted runs. Replay supports pause, speed, stepping and seeking. It reads records only—no runner commands or traffic. JSON/CSV exports contain run configuration and observations, not credentials or model artifacts.
 
 Rejected requests answer in one sentence that names the device and the fix ("h1, h2 and h3 have no link yet; drag from each host handle to a switch"), for topology rules, import failures, and out-of-range experiment settings alike.
 
@@ -125,7 +125,10 @@ Where the setup is saved: inside the experiment settings of the run record
 the runner also records a `detection_config` event at the start of every experiment. At
 run start the runner pushes the detector-side part to the detector service (`PUT /config`)
 and hands the controller-side part (window shape, samples per poll, response limits) to
-the Ryu process as environment variables. An experiment without a detection setup leaves
+the Ryu process as environment variables. The required forwarding choice is stored on
+the same settings object and in that `detection_config` event, and History shows it.
+An old row with no `forwarding` field is not rewritten: the workspace shows per-port,
+except an entropy row that stored `match_ports` false. An experiment without a detection setup leaves
 the detector as `scripts/detector.sh` set it. Asking for a detector from a lab without the
 detector service, or for an LLM that Ollama does not have, is refused before any run is
 created. The response stays off unless turned on, and starts as a dry run; the workspace
@@ -135,8 +138,11 @@ warns before real rules would be installed in the emulated switches.
 
 | Observation | Interpretation |
 | --- | --- |
-| Link widths, rates, and traffic chart | Measured interface-byte deltas, targeted every second; delays under load are possible. Orange means over 1 Mb/s, not a detector verdict. Summed links count a packet again at each hop. |
-| HTTP latency / failures | Bounded probes from inferred legitimate clients to the victims' minimal port-8080 HTTP responders, cycling one client→victim pair every three seconds. Failed probes are missing latency points. |
+| Link widths, rates, and traffic chart | Measured interface counters on the switch side of each host link, sampled every second. rx is what the host sent; tx is what was delivered to the host. The Traffic tab plots packets/s, with kilobits/s in the tooltip. |
+| HTTP latency / failures | Website checks run on their own loop, one client→victim pair every second, with curl's 2 s limit. A failed check is drawn. It does not pause the sampler. |
+| Ping | Experiment runs only. The first legitimate client pings each victim 5 times a second. A ping with no reply within 1 s is lost. |
+| Packet-Ins and flow rules | Each controller sample counts Packet-Ins Ryu handled. Each switch poll emits the table-miss packet rate on the switch clock and the number of other flow rules, counted before the poll cap. |
+| CPU | Once a second: whole-machine CPU, plus CPU and RSS of `ovs-vswitchd`. The kernel's packet forwarding is not included in `ovs-vswitchd`'s CPU. Ryu's own CPU and RAM stay on the controller sample. |
 | Controller CPU/RAM and flow table | Resource use of the **Ryu controller process alone** (the `ryu-manager` process, via psutil) — not the host, the container, or Mininet. CPU is a percentage of one core, so brief spikes above 100% are possible. Inference/flow polling remains five seconds by default. |
 | Detection events | Actual controller/model decisions, not labels inferred from red links or scenario state. |
 | Mitigation requests / observed rules | Separate request events and five-second switch-table observations (`mitigation_observed` in Timeline). A drop rule's presence does not itself prove service recovery. |

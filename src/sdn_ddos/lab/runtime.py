@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import json
 import os
@@ -18,6 +19,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Optional
 
+import psutil
 import requests
 
 from sdn_ddos.config import ControllerSettings, validate_lab_target
@@ -28,15 +30,29 @@ from sdn_ddos.lab.contracts import (
     Diagnostic,
     Experiment,
     attack_plan,
+    legitimate_clients,
 )
 from sdn_ddos.lab.detection_settings import controller_env as controller_env_for
 from sdn_ddos.lab.events import RateCounters, utc_now
+from sdn_ddos.lab.measurements import (
+    PingTracker,
+    forwarding_flag,
+    parse_curl_probe,
+    read_system,
+)
 from sdn_ddos.lab.processes import Emit, ManagedProcess
 from sdn_ddos.lab.telemetry import grow_buffer
 from sdn_ddos.lab.topology import Topology
 
 CONTROLLER_KINDS = frozenset(
-    {"controller", "flows", "detection", "mitigation_requested", "entropy_window"}
+    {
+        "controller",
+        "flows",
+        "detection",
+        "mitigation_requested",
+        "entropy_window",
+        "switch_table",
+    }
 )
 INBOX_LIMIT = 20000
 DGRAM_QUEUE = 4096
@@ -98,18 +114,24 @@ class MininetRuntime:
         mitigation: bool,
         emit: Emit,
         detection: Optional[DetectionConfig] = None,
+        *,
+        forwarding: str,
     ) -> None:
         self.topology = topology
         self.run_id = run_id
         self.emit = emit
         self.mitigation = mitigation
         self.detection = detection
+        self.forwarding = forwarding
         self.network: Any = None
         self.processes: list[ManagedProcess] = []
         self.controller: Optional[ManagedProcess] = None
         self.capture_process: Optional[ManagedProcess] = None
         self.attack_processes: list[ManagedProcess] = []
         self.service_processes: list[ManagedProcess] = []
+        self.ping_processes: list[ManagedProcess] = []
+        self.ping_trackers: list[PingTracker] = []
+        self.probe_processes: list[Any] = []
         self.interfaces: dict[str, str] = {}
         self.counters = RateCounters()
         self.temp = tempfile.TemporaryDirectory(prefix="sdn-lab-")
@@ -175,6 +197,7 @@ class MininetRuntime:
             SDN_TELEMETRY_SOCKET=self.socket_path,
             SDN_RUN_ID=self.run_id,
             SDN_MITIGATION_ENABLED=str(self.mitigation).lower(),
+            SDN_MATCH_L4_PORTS=forwarding_flag(self.forwarding),
         )
         if self.detection is not None:
             controller_env.update(controller_env_for(self.detection))
@@ -307,40 +330,99 @@ class MininetRuntime:
         ]
         return self.attack_processes
 
-    def probe(self, client: str, target: str) -> None:
+    def start_probe(self, client: str, target: str, started_at: str) -> None:
+        """One website check on its own thread. The sampler never waits for it."""
+
+        thread = threading.Thread(
+            target=self.probe,
+            args=(client, target, started_at),
+            name="service-check",
+            daemon=True,
+        )
+        thread.start()
+
+    def probe(self, client: str, target: str, started_at: Optional[str] = None) -> None:
         command = [
             "curl",
             "--silent",
             "--output",
             "/dev/null",
             "--write-out",
-            "%{http_code} %{time_total}",
+            "%{http_code} %{time_connect} %{time_total}",
             "--max-time",
             "2",
             "--noproxy",
             "*",
             f"http://{self.address(target)}:8080/",
         ]
+        started_at = started_at or utc_now()
         process = self.network.get(client).popen(
             command, shell=False, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
         )
+        with self.lock:
+            self.probe_processes.append(process)
+        output = b""
         try:
+            if self.closed:
+                process.kill()
+                process.wait()
+                return
             output, _ = process.communicate(timeout=3)
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
-            output = b"000 0"
-        fields = output.decode().split()
+            output = b""
+        finally:
+            with self.lock:
+                if process in self.probe_processes:
+                    self.probe_processes.remove(process)
+        if self.closed:
+            return
+        parsed = parse_curl_probe(output.decode(errors="replace"), process.returncode)
         self.emit(
             "service",
             {
                 "client": client,
                 "target": target,
-                "success": process.returncode == 0 and fields[0:1] == ["200"],
-                "latency_ms": float(fields[1]) * 1000 if len(fields) == 2 else None,
+                "success": parsed["success"],
+                "latency_ms": parsed["latency_ms"],
+                "connect_ms": parsed["connect_ms"],
+                "http_code": parsed["http_code"],
                 "argv": command,
+                "observed_at": started_at,
             },
         )
+
+    def start_pings(self, experiment: Experiment) -> None:
+        """5 ICMP/s from the first legitimate client to each victim, for the run."""
+
+        clients = legitimate_clients(self.topology, experiment)
+        if not clients:
+            return
+        client = clients[0]
+        deadline = experiment.baseline + experiment.duration + experiment.recovery + 5
+        for victim in experiment.victims:
+            tracker = PingTracker(client, victim, time.monotonic())
+            self.ping_trackers.append(tracker)
+            command = [
+                "ping",
+                "-n",
+                "-i",
+                "0.2",
+                "-W",
+                "1",
+                "-w",
+                str(deadline),
+                self.address(victim),
+            ]
+            self.ping_processes.append(
+                self._spawn(command, client, line_handler=tracker.feed)
+            )
+
+    def stop_pings(self) -> None:
+        for process in self.ping_processes:
+            process.close()
+        self.ping_processes = []
 
     def sample(self) -> None:
         if any(
@@ -372,12 +454,31 @@ class MininetRuntime:
             if row:
                 stats = row.get("stats64", row.get("stats", {}))
                 rate = self.counters.observe(
-                    link_id, int(stats["rx"]["bytes"]), int(stats["tx"]["bytes"]), now
+                    link_id,
+                    int(stats["rx"]["bytes"]),
+                    int(stats["tx"]["bytes"]),
+                    now,
+                    int(stats["rx"].get("packets", 0)),
+                    int(stats["tx"].get("packets", 0)),
                 )
                 rates.append(
                     {"link_id": link_id, "interface": interface, "rates": rate}
                 )
         self.emit("links", {"links": rates, "interval_seconds": 1})
+        for tracker in self.ping_trackers:
+            for event in tracker.take(now):
+                self.emit("ping", event)
+        try:
+            self.emit("system", read_system(psutil))
+        except Exception:
+            self.emit(
+                "system",
+                {
+                    "cpu_percent": None,
+                    "ovs_cpu_percent": None,
+                    "ovs_rss_bytes": None,
+                },
+            )
         self.pump()
         for _ in range(SAMPLE_EVENT_LIMIT):
             try:
@@ -563,6 +664,9 @@ class MininetRuntime:
             if self.closed:
                 return
             self.closed = True
+            for process in list(self.probe_processes):
+                with contextlib.suppress(Exception):
+                    process.kill()
             errors = []
             if (
                 self.listener is not None
