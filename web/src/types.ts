@@ -422,6 +422,11 @@ export type Status = {
   state: string;
   run_id: string | null;
   persistence_error?: boolean;
+  runner_instance_id?: string;
+  started_at?: string | null;
+  ended_at?: string | null;
+  elapsed_ms?: number;
+  unavailable?: boolean;
 };
 
 export type Notice = {

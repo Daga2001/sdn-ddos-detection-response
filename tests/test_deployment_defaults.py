@@ -37,8 +37,6 @@ def render_compose(workspace: Path) -> subprocess.CompletedProcess[str]:
         [
             "docker",
             "compose",
-            "--project-name",
-            ROOT.name,
             "config",
             "--format",
             "json",
@@ -78,10 +76,13 @@ def test_default_compose_connects_the_lab_to_the_detector(
     assert services["detector"]["environment"]["SDN_RESPONSE_DRY_RUN"] == "true"
     assert not services["detector"].get("ports")
     assert config["networks"]["control"]["internal"] is True
-    assert (
-        config["networks"]["database"]["name"]
-        == (config["networks"]["default"]["name"])
+    assert config["name"] == "sdn-ddos-detection-response"
+    assert services["web"]["environment"]["SDN_RUNNER_URL"] == (
+        "http://lab-runner-control:9001"
     )
+    assert runner["networks"]["control"]["aliases"] == ["lab-runner-control"]
+    assert "lab-runner-control" not in runner["networks"]["default"].get("aliases", [])
+    assert not config["networks"]["default"].get("external", False)
     assert config["volumes"]["sdn-postgres-data"]["name"] == (
         f"{ROOT.name}_sdn-postgres-data"
     )
@@ -118,3 +119,29 @@ def test_fresh_databases_create_detection_decisions() -> None:
     ):
         assert fragment in schema, f"schema.sql lacks: {fragment}"
         assert fragment in migration, f"migration lacks: {fragment}"
+
+
+def test_external_database_uses_the_same_project_without_starting_postgres(
+    compose_workspace: Path,
+) -> None:
+    env = compose_workspace / ".env"
+    env.write_text(
+        env.read_text()
+        .replace("COMPOSE_PROFILES=local-db", "COMPOSE_PROFILES=")
+        .replace("SDN_LAB_DB_EXTERNAL=false", "SDN_LAB_DB_EXTERNAL=true")
+    )
+    result = render_compose(compose_workspace)
+    assert result.returncode == 0, result.stderr
+    config = json.loads(result.stdout)
+    assert "postgres" not in config["services"]
+    assert config["networks"]["default"]["external"] is True
+    assert config["name"] == "sdn-ddos-detection-response"
+
+
+@pytest.mark.parametrize("script", ["scripts/lab.sh", "scripts/lab_detector.sh"])
+def test_retired_startup_commands_never_invoke_docker(script: str) -> None:
+    result = subprocess.run(
+        ["bash", str(ROOT / script), "up"], capture_output=True, text=True
+    )
+    assert result.returncode == 2
+    assert "docker compose up" in result.stderr

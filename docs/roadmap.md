@@ -32,3 +32,7 @@ evidence yet.
 6. Implement the proposal’s controller, switch, single-host, multi-host, and subtle low-rate scenarios.
 7. Add baseline/attack/recovery analysis scripts and reproducible result reports.
 8. Decide whether to migrate from Ryu to OS-Ken after preserving an equivalent comparison baseline.
+
+Implemented: canonical Compose startup, isolated runner control addressing,
+database ownership locking, GUI owner disconnect cleanup, and runner-based live
+timing. Privileged network lifecycle verification remains an isolated-VM gate.

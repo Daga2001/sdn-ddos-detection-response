@@ -46,3 +46,24 @@ The controller does not infer authorization, discover targets, or download threa
 3. Complete samples are sent in bounded batches to `/predict` when an API key is configured.
 4. Predictions, flow rows, and resource metrics are persisted in UTC.
 5. Detection is logged. Mitigation is separately guarded and auditable.
+
+## Deployment and GUI run ownership
+
+The root Compose project is the only startup path. The web service addresses the
+runner through `lab-runner-control`, registered only on its private control network.
+A dedicated PostgreSQL session holds an advisory lock before runner recovery; a
+second runner refuses startup, and lock loss initiates shutdown without accepting
+new runs. No application startup DDL is introduced.
+
+A GUI page obtains an owner ID through an authenticated same-origin WebSocket and
+passes it with its start request. The runner validates the live owner under the
+same lock as run startup. Release is idempotent and scoped to that owner; delayed
+releases cannot affect a new run. The runner expires unrenewed ownership after
+five seconds even if the web process crashes. Native WebSocket ping/pong detects
+silent browser failures; explicit page departure and logout request an immediate
+stop. Cleanup remains supervised by the runner. Owner IDs are not stored in run
+exports. API experiments without an owner retain their bounded headless behavior.
+
+Runner snapshots bind status and event cursors to the same run. Live elapsed time
+uses the runner's monotonic clock and fixed UTC start/end timestamps; browser
+clock changes or dropped phase events cannot restart the clock.

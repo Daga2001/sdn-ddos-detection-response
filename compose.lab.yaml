@@ -1,4 +1,4 @@
-name: sdn-lab
+# Internal service definitions; start through the root compose.yaml only.
 
 x-database: &database
   SDN_DB_ENABLED: "true"
@@ -21,15 +21,22 @@ services:
       dockerfile: containers/web.Dockerfile
     environment:
       <<: [*database, *access]
-      SDN_RUNNER_URL: http://runner:9001
+      SDN_RUNNER_URL: http://lab-runner-control:9001
       SDN_ALLOWED_TARGET_CIDRS: ${SDN_ALLOWED_TARGET_CIDRS:-10.0.0.0/8}
     ports: ["127.0.0.1:8080:8080"]
-    networks: [control, database]
+    networks: [control, default]
     read_only: true
     tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    depends_on: [runner, inference]
+    depends_on:
+      runner:
+        condition: service_started
+      inference:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+        required: false
     mem_limit: 768m
     cpus: 1.0
     pids_limit: 128
@@ -54,7 +61,14 @@ services:
       SDN_ALLOWED_TARGET_CIDRS: ${SDN_ALLOWED_TARGET_CIDRS:-10.0.0.0/8}
       SDN_MITIGATION_ENABLED: "false"
       DDOS_MODEL_SHA256: ${DDOS_MODEL_SHA256:-}
-    networks: [control, database]
+    networks:
+      control:
+        aliases: [lab-runner-control]
+      default: {}
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
     volumes: []
     mem_limit: 2g
     cpus: 2.0
@@ -85,6 +99,3 @@ services:
 networks:
   control:
     internal: true
-  database:
-    external: true
-    name: ${SDN_LAB_DB_NETWORK:-sdn-ddos-detection-response_default}

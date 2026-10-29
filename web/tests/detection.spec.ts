@@ -192,6 +192,11 @@ async function mockLab(
     }
     (window as unknown as { EventSource: unknown }).EventSource = OpenStream;
   });
+  await page.routeWebSocket("**/api/ownership", (socket) => {
+    socket.send(
+      JSON.stringify({ owner_id: "12345678-1234-4234-8234-123456789abc" }),
+    );
+  });
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname.slice(4);
