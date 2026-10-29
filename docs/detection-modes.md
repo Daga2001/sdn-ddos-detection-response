@@ -139,8 +139,9 @@ the dataset scripts such as `compare_llms.py`; thresholds and examples from the
 InSDN dataset; the lab container defaults to `lab` instead) and `lab` (thresholds and
 examples from the graphical lab's own traffic). The two `pktrate` are different
 measurements: InSDN's is CICFlowMeter packets/duration of individual (often
-microsecond-long) flows, the lab's is the controller's packets/s of an aggregated
-flow over the last 5 s poll. Labeled lab samples (9 runs, SYN/UDP at 100-1000
+microsecond-long) flows. The lab's is the change in the switch's packet
+counter divided by the change in that flow's OpenFlow age, not the time the
+controller took to process the reply. Labeled lab samples (9 runs, SYN/UDP at 100-1000
 pkt/s, 7792 flows) separate cleanly: legitimate <= 3.6 pkt/s, attack >= 95 pkt/s.
 
 Same 200 flows (100 attack, 100 legitimate, half of them the highest-rate

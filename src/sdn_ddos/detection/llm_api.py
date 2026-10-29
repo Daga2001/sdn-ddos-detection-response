@@ -124,8 +124,9 @@ este orden: "comparacion" (compara el pktrate de arriba con los umbrales), "is_d
 
 
 # Same structure as the InSDN prompt, calibrated with the graphical lab's own
-# traffic: pktrate there is the controller's packets/s of an aggregated flow over
-# the last 5 s poll, not CICFlowMeter's packets/duration. In 7792 labeled flow
+# traffic. pktrate is the change in the switch's packet counter divided by the
+# change in that flow's OpenFlow age, not the controller's processing delay and
+# not CICFlowMeter's packets/duration. In 7792 labeled flow
 # samples (9 runs, SYN/UDP at 100-1000 pkt/s) legitimate flows peaked at 3.6 pkt/s
 # and attack flows started at 95 pkt/s; the examples are real rows of that data.
 LAB_PROMPT_TEMPLATE = """Sos un clasificador de trafico de red. Decidis UNICAMENTE con la tasa de \

@@ -33,6 +33,7 @@ from sdn_ddos.controller.core import (
     BlockRegistry,
     FlowRateTracker,
     build_model_sample,
+    observe_flow_rate,
     probability_is_attack,
 )
 from sdn_ddos.lab.telemetry import Telemetry
@@ -340,7 +341,6 @@ class EnterpriseDDoSController(app_manager.RyuApp):
     def _flow_batch(self, event: Any) -> FlowBatch:
         dpid = event.msg.datapath.id
         observed_at = datetime.now(timezone.utc)
-        observed_clock = time.monotonic()
         rows: List[Dict[str, Any]] = []
         samples: List[Dict[str, Any]] = []
         sample_indexes: List[int] = []
@@ -350,11 +350,13 @@ class EnterpriseDDoSController(app_manager.RyuApp):
                 continue
             packet_count = int(stat.packet_count)
             byte_count = int(stat.byte_count)
-            rates = self.flow_rates.observe(
+            rates = observe_flow_rate(
+                self.flow_rates,
                 self._flow_key(dpid, stat),
                 packet_count,
                 byte_count,
-                observed_clock,
+                int(getattr(stat, "duration_sec", 0)),
+                int(getattr(stat, "duration_nsec", 0)),
             )
             match = stat.match
             l4_source = match.get("tcp_src", match.get("udp_src"))

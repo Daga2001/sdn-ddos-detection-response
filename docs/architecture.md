@@ -42,7 +42,7 @@ The controller does not infer authorization, discover targets, or download threa
 ## Data lifecycle
 
 1. Open vSwitch reports flow and port counters to the controller.
-2. The controller computes counter deltas and rates, ignoring the first sample and treating counter resets as a new baseline.
+2. The controller computes counter deltas and rates from the flow's own OpenFlow age (`duration_sec` + `duration_nsec`), ignoring the first sample. If the age or a counter goes down, the rule was replaced and that sample starts a new baseline. The controller's processing delay is not the rate clock. Port byte rates still use the time between port-stats replies.
 3. Complete samples are sent in bounded batches to `/predict` when an API key is configured.
 4. Predictions, flow rows, and resource metrics are persisted in UTC.
 5. Detection is logged. Mitigation is separately guarded and auditable.
