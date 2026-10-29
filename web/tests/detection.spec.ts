@@ -271,6 +271,7 @@ test("the detector can be switched from the top bar and from the Detection tab",
   const quick = page.getByLabel("Detector", { exact: true });
   // It starts from what the detector service is set to.
   await expect(quick).toHaveValue("llm:llama3.2:3b");
+  await observationTab(page, "Detection").click();
   await quick.selectOption("llm:gemma2:2b");
   await inspectorTab(page, "Detection").click();
   await expect(page.getByRole("combobox", { name: /^Model/ })).toHaveValue(
@@ -278,6 +279,22 @@ test("the detector can be switched from the top bar and from the Detection tab",
   );
   await page.getByRole("button", { name: /^Entropy/ }).click();
   await expect(quick).toHaveValue("entropy");
+  await expect(quick.locator("option:checked")).toHaveText("Entropy · Shannon");
+  await expect(observationTab(page, "Detection")).toHaveCount(0);
+  await expect(observationTab(page, "Traffic")).toHaveClass("active");
+  for (const [measure, name] of [
+    ["renyi", "Rényi"],
+    ["tsallis", "Tsallis"],
+    ["norm", "Normalised Shannon"],
+    ["min", "Min-entropy"],
+  ]) {
+    await page
+      .getByRole("combobox", { name: /^Entropy measure/ })
+      .selectOption(measure);
+    await expect(quick.locator("option:checked")).toHaveText(
+      `Entropy · ${name}`,
+    );
+  }
   await expect(
     page.getByRole("spinbutton", { name: /^Band width/ }),
   ).toBeVisible();
@@ -285,9 +302,17 @@ test("the detector can be switched from the top bar and from the Detection tab",
   await expect(page.getByText(/needs about 40 s of baseline/)).toBeVisible();
   await page.getByRole("button", { name: /^No detection/ }).click();
   await expect(quick).toHaveValue("off");
+  await expect(observationTab(page, "Detection")).toHaveCount(0);
   await expect(
     page.getByRole("spinbutton", { name: /^Band width/ }),
   ).toHaveCount(0);
+  await quick.selectOption("llm:gemma2:2b");
+  await expect(observationTab(page, "Detection")).toBeVisible();
+  await expect(observationTab(page, "Traffic")).toHaveClass("active");
+  await observationTab(page, "Detection").click();
+  await quick.selectOption("off");
+  await expect(observationTab(page, "Detection")).toHaveCount(0);
+  await expect(observationTab(page, "Traffic")).toHaveClass("active");
 });
 
 test("the detection setup is sent with the experiment so it is saved with the run", async ({
@@ -378,6 +403,7 @@ test("a replay scores the detector against the experiment's ground truth", async
   page,
 }) => {
   await mockLab(page);
+  await page.getByLabel("Detector", { exact: true }).selectOption("off");
   await inspectorTab(page, "History").click();
   await expect(
     page.getByText("LLM gemma2:2b · 2 attackers · escalate (real rules)"),
@@ -408,6 +434,35 @@ test("a replay scores the detector against the experiment's ground truth", async
     page.getByRole("checkbox", { name: /Apply a response/ }),
   ).toBeDisabled();
 });
+
+for (const mode of ["entropy", "off", null]) {
+  test(`a non-LLM replay hides detection results (${mode ?? "unset"})`, async ({
+    page,
+  }) => {
+    await mockLab(page);
+    await page.route("**/api/runs/record", (route) =>
+      route.fulfill({
+        json: {
+          id: "record",
+          topology,
+          status: "completed",
+          settings: {
+            ...settings,
+            detection: mode ? { ...settings.detection, mode } : null,
+          },
+        },
+      }),
+    );
+    await observationTab(page, "Detection").click();
+    await inspectorTab(page, "History").click();
+    await page.getByRole("button", { name: "Replay" }).click();
+    await expect(observationTab(page, "Detection")).toHaveCount(0);
+    await expect(observationTab(page, "Traffic")).toHaveClass("active");
+    await page.getByRole("button", { name: "Exit", exact: true }).click();
+    await expect(observationTab(page, "Detection")).toBeVisible();
+    await expect(observationTab(page, "Traffic")).toHaveClass("active");
+  });
+}
 
 test("results are not invented before anything has run", async ({ page }) => {
   await mockLab(page);

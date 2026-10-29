@@ -1488,7 +1488,7 @@ button.client-chip.removable:hover {
   text-transform: uppercase;
 }
 .detector-switch select {
-  max-width: 190px;
+  max-width: 240px;
 }
 .mode-cards {
   display: grid;
@@ -1811,15 +1811,22 @@ button.client-chip.removable:hover {
   color: #43665b;
 }
 .preset-row {
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: auto repeat(2, 1fr);
   gap: 8px;
-  margin: 0 0 8px;
+  margin: 12px 0 16px;
   font-size: 12px;
 }
+.preset-row > span {
+  grid-column: 1 / -1;
+}
 .preset-row button {
+  min-width: 0;
+  min-height: 40px;
   font-size: 12px;
-  padding: 3px 10px;
+  line-height: 1.35;
+  padding: 8px 10px;
 }
 h4.subsection {
   margin: 14px 0 8px;

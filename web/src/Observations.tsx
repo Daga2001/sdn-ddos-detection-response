@@ -146,7 +146,7 @@ function Chart({
 
 export function Observations({
   events,
-  tab,
+  tab: requestedTab,
   setTab,
   detectionView,
 }: {
@@ -156,6 +156,11 @@ export function Observations({
   detectionView?: ReactNode;
 }) {
   const [expanded, setExpanded] = useState(-1);
+  const tab =
+    requestedTab === "Detection" && !detectionView ? "Traffic" : requestedTab;
+  useEffect(() => {
+    if (tab !== requestedTab) setTab(tab);
+  }, [tab, requestedTab, setTab]);
   const packetRows = packets(events);
   const endMs = events.length
     ? Date.parse(events[events.length - 1].ts)
@@ -203,7 +208,7 @@ export function Observations({
       <nav className="tabs" aria-label="Observations">
         {[
           "Traffic",
-          "Detection",
+          ...(detectionView ? ["Detection"] : []),
           "Threshold",
           "Packets",
           "Commands",
