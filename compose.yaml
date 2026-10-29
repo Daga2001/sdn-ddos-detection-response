@@ -1,3 +1,11 @@
+include:
+  - path:
+      - compose.lab.yaml
+      - compose.detector.yaml
+    env_file:
+      - .env
+      - .lab/env
+
 services:
   postgres:
     image: postgres:16-alpine
