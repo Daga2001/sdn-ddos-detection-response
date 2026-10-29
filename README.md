@@ -27,17 +27,23 @@ Choose one way to run the lab. You do not need to follow both:
 
 **The GUI and Mininet lab run in Docker. You do not install Mininet, Ryu, Python libraries, or Node.js on your computer for this option.** Docker builds the application images and installs those dependencies inside them.
 
-The [Docker Compose file](compose.lab.yaml) starts three containers together:
+After first-time setup, `docker compose up -d` uses [compose.yaml](compose.yaml)
+to start the workspace and detector alongside the repository database. It reuses
+[compose.lab.yaml](compose.lab.yaml) and [compose.detector.yaml](compose.detector.yaml):
 
 - **`web`:** the GUI and its backend, accessed in your browser at http://localhost:8080.
 - **`runner`:** Mininet, Open vSwitch, Ryu, and the tools used for lab experiments.
 - **`inference`:** the existing attack-detection API.
+- **`detector`:** the selectable LLM/entropy detection service, connected to the runner.
+- **`postgres`:** the repository database, using its existing persistent volume.
 
-Your **existing PostgreSQL container stays separate**. The GUI stack connects to it; it does not replace it. The containers keep the current technologies rather than introducing a different network simulator.
+For a separate PostgreSQL deployment, the explicit lab scripts remain available
+as described below. Choose one Compose workflow; the default project and the
+separate `sdn-lab` project both publish the workspace on port 8080.
 
 ### What your computer still needs
 
-Use a dedicated, isolated Linux lab machine with local Docker Engine, Docker Compose, Bash, Make, OpenSSL, and curl. Docker must run in its normal rootful mode, not rootless mode. This first version does not support Docker Desktop, macOS, Windows, or a remote Docker engine.
+Use a dedicated, isolated Linux lab machine with local Docker Engine, Docker Compose 2.20.3 or newer (for `include`), Bash, Make, OpenSSL, and curl. Docker must run in its normal rootful mode, not rootless mode. This first version does not support Docker Desktop, macOS, Windows, or a remote Docker engine.
 
 If Docker is not installed yet, install [Docker Engine](https://docs.docker.com/engine/install/) and the [Docker Compose plugin](https://docs.docker.com/compose/install/linux/) for your Linux distribution. Confirm both are available before continuing:
 
@@ -58,24 +64,25 @@ Run the following from the repository root. This is the shortest setup path when
 # Preserve an existing configuration; create one only when it is missing.
 test -f .env || cp .env.example .env
 
+# Generate ignored local login credentials before any default Compose command.
+# Re-running this keeps the existing credentials.
+make lab-setup
+
 # Start PostgreSQL, wait for it to be healthy, and add the GUI tables.
 docker compose up -d --wait postgres
 docker compose exec -T postgres psql -U sdn_user -d sdn_monitor \
   -v ON_ERROR_STOP=1 < database/migrations/002_lab.sql
-
-# Generate ignored local login credentials. Re-running this keeps them.
-make lab-setup
 
 # Load the host networking support required by the Mininet container.
 # Run this only on the intended isolated lab machine.
 sudo modprobe openvswitch
 make lab-doctor
 
-# Build and start the web, runner, and inference containers.
-make lab-up
+# Start the full workspace, including the detector (builds missing images).
+docker compose up -d
 ```
 
-The migration is additive and safe to repeat for the repository database. It is still necessary for a database volume created before the GUI tables were added. `make lab-up` checks the host again and may take several minutes and several GB of disk space during the first image build.
+The migration is additive and safe to repeat for the repository database. It is still necessary for a database volume created before the GUI tables were added. The first image build may take several minutes and several GB of disk space. Direct Compose commands do not run the host checks, so run `make lab-doctor` first as shown above.
 
 Verify that the web service is ready:
 
@@ -109,15 +116,36 @@ SDN_LAB_PG_HOST=postgres
 
 Apply `database/migrations/002_lab.sql` explicitly with your database's container, user, and database names. Application startup never changes the schema automatically. After the migration, continue with `make lab-setup`, load `openvswitch`, run `make lab-doctor`, and then run `make lab-up` as shown above. See the [full GUI guide](docs/lab-workspace.md#start-with-your-existing-database) for the detailed database-network explanation.
 
-A trained model is not included. You can use the editor and observe traffic without one, but actual model-based detection remains `not_ready` until you supply a verified model. Mitigation is off by default.
+A trained Random Forest model is not included; the baseline `inference` service
+remains `not_ready` until you supply a verified model. The default Compose stack
+connects the runner to `detector`, where you can choose **Entropy** without a model
+artifact or **LLM** with a reachable Ollama server and installed model. Mitigation
+is off by default. See [detection modes](docs/detection-modes.md).
 
 ### Starting again, stopping, and troubleshooting
 
-After the first launch, use `make lab-up` to start the workspace. If the host rebooted, you may need to load Open vSwitch again when the host check asks.
+After the first launch, use `docker compose up -d` to start the workspace and
+detector. Use `docker compose up -d --build` after changing application code.
+If the host rebooted, run `make lab-doctor` and load Open vSwitch if requested.
 
-- `make lab-logs` shows the recent container logs if startup fails.
+If the workspace is already running from `make lab-up` or `scripts/lab_detector.sh`,
+stop any active run in the UI, then switch projects once:
+
+```bash
+bash scripts/lab_detector.sh down
+docker compose up -d
+```
+
+The first command removes the old `sdn-lab` containers and leaves PostgreSQL and
+its volume in place. Credentials in `.lab/env` are reused automatically. Refresh
+the Detection tab after startup. For this default workflow, use the Detection tab
+to choose the detector; `scripts/detector.sh` manages the separate `sdn-lab` project.
+
+- `docker compose logs --tail 100 detector` shows recent detector logs.
+- `docker compose ps` shows the services and their status.
 - **Stop lab** in the GUI stops the active network. Closing the browser does not stop an experiment.
-- `make lab-down` stops and removes the GUI stack's containers, but leaves your separate PostgreSQL container and saved records in place.
+- `docker compose down` stops the default stack, including PostgreSQL; it retains the database volume. Do not add `-v` if you need the records.
+- For the separate external-database workflow, keep using `make lab-up`, `make lab-logs`, and `make lab-down` (or `scripts/lab_detector.sh` for detection).
 
 Common startup failures:
 
@@ -125,8 +153,8 @@ Common startup failures:
 | --- | --- |
 | `Open vSwitch is not loaded` | On the isolated lab host, run `sudo modprobe openvswitch`, then `make lab-doctor` again. If the module is unavailable, install kernel Open vSwitch support before continuing. |
 | External database network does not exist | Start the repository database with `docker compose up -d postgres`, or correct `SDN_LAB_DB_NETWORK` for your existing container. |
-| http://localhost:8080 does not respond | Run `make lab-logs`. Also confirm another program is not already using local port 8080. |
-| Detector reports `not_ready` | This is expected without a project-owned model and verified checksum; topology editing and observation still work. |
+| http://localhost:8080 does not respond | Run `docker compose logs --tail 100 web runner`. Also confirm the old `sdn-lab` project is stopped and port 8080 is available. |
+| Detector reports `not_ready` | For LLM mode, check Ollama connectivity and the installed model, or select Entropy. The baseline `inference` service needs a verified model artifact. |
 
 See the [full GUI guide](docs/lab-workspace.md) for topology editing, bounded experiments, replay, and limitations.
 
@@ -143,6 +171,7 @@ The development environment uses Python 3.9+ with [`uv`](https://docs.astral.sh/
 ```bash
 test -e .env || cp .env.example .env
 uv sync --group dev
+make lab-setup  # credentials required when parsing the default Compose stack
 docker compose up -d postgres
 set -a; . .env; set +a
 ```
