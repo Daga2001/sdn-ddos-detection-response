@@ -69,8 +69,10 @@ function Chart({
     chart.current?.setOption({
       animation: false,
       color: ["#087e83", "#c16b41"],
-      grid: { left: 60, right: 62, top: 40, bottom: 30 },
+      // Reserve space for the time-axis labels and the legend below them.
+      grid: { left: 60, right: 62, top: 40, bottom: 60 },
       legend: {
+        bottom: 4,
         data: ["Summed link traffic (kb/s)", "Service latency (ms)"],
         textStyle: { fontSize: 11 },
       },

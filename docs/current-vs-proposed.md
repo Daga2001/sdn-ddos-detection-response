@@ -16,3 +16,6 @@
 | Container option | After first-time setup, `docker compose up -d` starts PostgreSQL, the workspace, and the separate detector using the existing lab/detector definitions; privileged Mininet/OVS runner, mitigation still opt-in. The explicit lab scripts remain an alternative for an external database. | Privileged isolated-VM smoke test is still required before live integration is considered verified |
 
 These differences are intentional documentation, not evidence that the proposal has been completed. Future changes must update this table and add experiment evidence.
+
+The Traffic tab reserves space below the time-axis labels for its traffic and
+service-latency legend, keeping the legend clear of the plotted data.
