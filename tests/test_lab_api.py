@@ -153,7 +153,11 @@ def test_sse_observations_gaps_unavailable_and_expiry(monkeypatch):
     )
     control = MagicMock()
     control.status.return_value = {"run_id": "record", "state": "completed"}
-    control.events.return_value = {"gap": True, "events": [{"seq": 4, "kind": "test"}]}
+    control.events.return_value = {
+        "status": control.status.return_value,
+        "gap": True,
+        "events": [{"seq": 4, "kind": "test"}],
+    }
     app = create_app(settings, MemoryRepository(), control)
     stream = next(route.endpoint for route in app.routes if route.path == "/api/events")
 
@@ -174,7 +178,7 @@ def test_sse_observations_gaps_unavailable_and_expiry(monkeypatch):
         content = asyncio.run(read(dict(client.cookies)))
         assert "event: status" in content and "event: gap" in content
         assert "event: observation" in content
-        control.status.side_effect = RuntimeError("private internal failure")
+        control.events.side_effect = RuntimeError("private internal failure")
         content = asyncio.run(read(dict(client.cookies)))
         assert "event: unavailable" in content
         assert "private internal" not in content

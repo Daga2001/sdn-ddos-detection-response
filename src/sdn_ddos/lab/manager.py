@@ -1,4 +1,4 @@
-"""Single-run orchestration; the browser never owns experiment lifetime."""
+"""Single-run orchestration with bounded deadlines and optional browser ownership."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from sdn_ddos.lab.contracts import (
 )
 from sdn_ddos.lab.detection_settings import DetectorClient
 from sdn_ddos.lab.events import EventJournal, utc_now
+from sdn_ddos.lab.ownership import OwnerLeases
 from sdn_ddos.lab.repository import Repository
 from sdn_ddos.lab.runtime import MininetRuntime
 
@@ -46,6 +47,14 @@ class LabManager:
         self.lock = threading.RLock()
         self.thread: Optional[threading.Thread] = None
         self.probe_index = 0
+        self.runner_instance_id = str(uuid4())
+        self.owners = OwnerLeases()
+        self.owner_id: Optional[str] = None
+        self.started_at: Optional[str] = None
+        self.ended_at: Optional[str] = None
+        self.started_clock = 0.0
+        self.finished_elapsed = 0.0
+        self.unavailable = False
 
     def status(self) -> dict[str, Any]:
         with self.lock:
@@ -54,16 +63,59 @@ class LabManager:
                 "run_id": self.run_id,
                 "persistence_error": self.persistence_error,
                 "cleanup_error": self.cleanup_error,
+                "runner_instance_id": self.runner_instance_id,
+                "started_at": self.started_at,
+                "ended_at": self.ended_at,
+                "elapsed_ms": self._elapsed(),
+                "unavailable": self.unavailable,
             }
 
-    def events(self, after: int) -> dict[str, Any]:
-        return self.journal.since(after)
+    def _elapsed(self) -> float:
+        if self.started_at is None:
+            return 0.0
+        if self.ended_at is not None:
+            return self.finished_elapsed
+        return max(0.0, (time.monotonic() - self.started_clock) * 1000)
+
+    def events(self, after: int, run_id: Optional[str] = None) -> dict[str, Any]:
+        with self.lock:
+            if run_id is not None and run_id != self.run_id:
+                after = 0
+            return {**self.journal.since(after), "status": self.status()}
+
+    def create_owner(self) -> str:
+        with self.lock:
+            if self.unavailable:
+                raise ValueError("runner ownership was lost; restart the service")
+            return self.owners.create()
+
+    def renew_owner(self, owner: str) -> None:
+        with self.lock:
+            self.owners.renew(owner)
+
+    def release_owner(self, owner: str, reason: str = "browser disconnected") -> None:
+        with self.lock:
+            self.owners.release(owner)
+            if self.owner_id == owner:
+                self.stop(reason)
+
+    def expire_owners(self) -> None:
+        with self.lock:
+            for owner in self.owners.expired():
+                self.release_owner(owner, "browser ownership expired")
+
+    def lose_ownership(self) -> None:
+        with self.lock:
+            self.unavailable = True
+            self.stop("runner database ownership lost")
 
     def start(self, request: StartRequest) -> str:
         request.topology.validate_targets()
         if request.experiment:
             validate_experiment(request.topology, request.experiment)
         with self.lock:
+            if self.unavailable:
+                raise ValueError("runner ownership was lost; restart the service")
             if self.cleanup_error:
                 raise ValueError(
                     "cleanup failed; recreate the runner container "
@@ -71,22 +123,29 @@ class LabManager:
                 )
             if self.state in ACTIVE or (self.thread and self.thread.is_alive()):
                 raise ValueError("a lab is already running; stop it first")
+            owner = str(request.owner_id) if request.owner_id is not None else None
+            if owner is not None:
+                self.owners.require(owner)
             self.repository.health()
             detection = request.experiment.detection if request.experiment else None
             if detection is not None:
                 if self.detector is None:
                     raise ValueError(
                         "this lab has no detector service to configure; start it "
-                        "with scripts/lab_detector.sh or run without a detection "
+                        "with docker compose up or run without a detection "
                         "setting"
                     )
                 # Done only after the busy checks above, so a running experiment's
                 # detector is never changed under it.
                 self.detector.apply(detection)
             identifier = str(uuid4())
+            if owner is not None:
+                self.owners.require(owner)
+            started_at = utc_now()
             self.repository.create_run(
                 {
                     "id": identifier,
+                    "started_at": started_at,
                     "topology": request.topology.model_dump(),
                     "settings": request.experiment.model_dump()
                     if request.experiment
@@ -94,6 +153,11 @@ class LabManager:
                 }
             )
             self.run_id = identifier
+            self.owner_id = owner
+            self.started_at = started_at
+            self.ended_at = None
+            self.started_clock = time.monotonic()
+            self.finished_elapsed = 0.0
             self.state = "starting"
             self.persistence_error = False
             self.stop_event = threading.Event()
@@ -181,7 +245,9 @@ class LabManager:
     def _run(self, request: StartRequest) -> None:
         result = "stopped"
         try:
-            self.journal.emit("phase", {"state": "starting"})
+            self.journal.emit(
+                "phase", {"state": "starting", "observed_at": self.started_at}
+            )
             self._announce_detection(request)
             extra: dict[str, Any] = {}
             if request.experiment and request.experiment.detection is not None:
@@ -302,13 +368,18 @@ class LabManager:
                 result = "failed"
                 LOGGER.exception("Could not finalize run history")
             with self.lock:
+                self.finished_elapsed = self._elapsed()
+                self.ended_at = utc_now()
                 self.state = result
 
-    def stop(self) -> None:
+    def stop(self, reason: str = "operator stopped the lab") -> None:
         with self.lock:
-            if self.state in ACTIVE:
+            if self.state in ACTIVE and not self.stop_event.is_set():
                 self.state = "stopping"
                 self.stop_event.set()
+                # Cleanup must still happen when recording the reason fails.
+                with contextlib.suppress(Exception):
+                    self.journal.emit("stop_requested", {"reason": reason})
 
     def close(self) -> None:
         self.stop()

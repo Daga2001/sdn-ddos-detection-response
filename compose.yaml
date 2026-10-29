@@ -1,3 +1,5 @@
+name: sdn-ddos-detection-response
+
 include:
   - path:
       - compose.lab.yaml
@@ -9,17 +11,18 @@ include:
 services:
   postgres:
     image: postgres:16-alpine
+    profiles: [local-db]
     environment:
-      POSTGRES_DB: sdn_monitor
-      POSTGRES_USER: sdn_user
-      POSTGRES_PASSWORD: local-lab-only
+      POSTGRES_DB: ${SDN_PG_DB:-sdn_monitor}
+      POSTGRES_USER: ${SDN_PG_USER:-sdn_user}
+      POSTGRES_PASSWORD: ${SDN_PG_PASSWORD:?Set SDN_PG_PASSWORD in .env}
     ports:
       - "127.0.0.1:${SDN_PG_PORT:-5432}:5432"
     volumes:
       - sdn-postgres-data:/var/lib/postgresql/data
       - ./database/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sdn_user -d sdn_monitor"]
+      test: ["CMD-SHELL", 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
       interval: 5s
       timeout: 3s
       retries: 10
@@ -27,3 +30,8 @@ services:
 
 volumes:
   sdn-postgres-data:
+
+networks:
+  default:
+    name: ${SDN_LAB_DB_NETWORK:-sdn-ddos-detection-response_default}
+    external: ${SDN_LAB_DB_EXTERNAL:-false}

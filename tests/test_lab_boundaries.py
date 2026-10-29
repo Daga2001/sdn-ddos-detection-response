@@ -185,6 +185,7 @@ def test_worker_auth_and_fixed_operations(monkeypatch):
     monkeypatch.setenv("SDN_RUNNER_TOKEN", token)
     manager = LabManager(MemoryRepository(), FakeRuntime)
     monkeypatch.setattr(worker, "LabManager", lambda repository: manager)
+    monkeypatch.setattr(worker, "RunnerLock", lambda settings: MagicMock())
     with TestClient(worker.create_app()) as client:
         assert client.get("/status").status_code == 401
         client.headers["Authorization"] = f"Bearer {token}"

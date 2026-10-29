@@ -142,8 +142,8 @@ export function DetectionPanel({
             <strong>This lab has no detector service to configure.</strong>
             <span>{options.reason}</span>
             <small>
-              Start the lab with <code>scripts/lab_detector.sh up</code> to pick
-              an LLM or entropy from here.
+              Start the lab with <code>docker compose up</code> to pick an LLM
+              or entropy from here.
             </small>
           </p>
         ) : (

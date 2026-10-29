@@ -88,15 +88,19 @@ class PostgreSQLRepository:
     def create_run(self, run: dict[str, Any]) -> None:
         from psycopg2.extras import Json
 
+        from sdn_ddos.lab.events import utc_now
+
         self._query(
-            "INSERT INTO lab_runs (id, topology, settings, status, versions) "
-            "VALUES (%s,%s,%s,%s,%s)",
+            "INSERT INTO lab_runs "
+            "(id, topology, settings, status, versions, started_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s)",
             (
                 run["id"],
                 Json(run["topology"]),
                 Json(run.get("settings")),
                 "starting",
                 Json(run.get("versions", {})),
+                run.get("started_at", utc_now()),
             ),
         )
 

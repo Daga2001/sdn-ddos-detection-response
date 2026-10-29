@@ -37,14 +37,14 @@ to it through the contract it already knows (`/predict`, `/health`); only the
 *active* mode answers, the other detector's route returns 409.
 
 ```bash
-bash scripts/lab_detector.sh up            # lab (web/runner/inference) + detector
+docker compose up -d            # lab (web/runner/inference) + detector
 bash scripts/detector.sh status            # active mode/model and Ollama health
 bash scripts/detector.sh models            # models installed in Ollama
 bash scripts/detector.sh set --mode llm --model qwen2.5:3b
 bash scripts/detector.sh set --mode entropy
 bash scripts/detector.sh set --prompt lab                      # insdn | lab
 bash scripts/detector.sh set --response escalate --dry-run false   # block | rate_limit | escalate
-bash scripts/lab_detector.sh down
+docker compose down
 ```
 
 Experiments can be driven without the browser through the lab's own API:

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Repetition matrix for the response conditions, run on the VM after
-# scripts/lab_detector.sh up. Conditions are interleaved (rep 1 of every condition,
+# docker compose up. Conditions are interleaved (rep 1 of every condition,
 # then rep 2, ...) so drift over time does not favour one of them.
 #
 #   bash scripts/run_matrix.sh [REPS] [CONDITIONS...]

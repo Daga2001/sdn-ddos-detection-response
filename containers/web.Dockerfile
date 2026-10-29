@@ -14,4 +14,4 @@ COPY src/ ./src/
 RUN uv sync --frozen --no-dev && useradd --uid 10001 --create-home lab
 COPY --from=frontend /build/web/dist ./web/dist
 USER 10001:10001
-CMD ["/app/.venv/bin/uvicorn", "sdn_ddos.lab.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080", "--no-access-log"]
+CMD ["/app/.venv/bin/uvicorn", "sdn_ddos.lab.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080", "--no-access-log", "--ws", "websockets", "--ws-ping-interval", "1", "--ws-ping-timeout", "2", "--ws-max-size", "1024"]

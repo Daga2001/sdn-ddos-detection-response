@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 from typing import Literal, Optional
+from uuid import UUID
 
 from pydantic import Field, field_validator, model_validator
 
@@ -157,6 +158,7 @@ class Experiment(StrictModel):
 class StartRequest(StrictModel):
     topology: Topology
     experiment: Optional[Experiment] = None
+    owner_id: Optional[UUID] = None
 
 
 class Diagnostic(StrictModel):

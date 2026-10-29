@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Inspect/choose the detection service's active mode and LLM. Run on the VM after
-# scripts/lab_detector.sh up. Changes apply to the NEXT lab run (Observe/Start):
+# docker compose up. Changes apply to the NEXT lab run (Observe/Start):
 # the controller reads the mode when it starts.
 #
 #   bash scripts/detector.sh status
@@ -11,7 +11,7 @@
 #   bash scripts/detector.sh set --response escalate --dry-run false   # response policy
 set -euo pipefail
 cd "$(dirname "$0")/.."
-compose=(docker compose --env-file .env --env-file .lab/env -f compose.lab.yaml -f compose.detector.yaml)
+compose=(docker compose)
 
 call() { # METHOD PATH [JSON]; the API key never leaves the container
   "${compose[@]}" exec -T detector /app/.venv/bin/python -c '
