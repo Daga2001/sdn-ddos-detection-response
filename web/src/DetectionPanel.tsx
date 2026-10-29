@@ -41,6 +41,14 @@ const modes: { id: DetectionMode; label: string; note: string }[] = [
   },
 ];
 
+const entropyMeasures: Record<EntropyMeasure, string> = {
+  shannon: "Shannon",
+  renyi: "Rényi",
+  tsallis: "Tsallis",
+  norm: "Normalised Shannon",
+  min: "Min-entropy",
+};
+
 function NumberField({
   label,
   hint,
@@ -293,7 +301,7 @@ export function DetectionPanel({
               start while it is still learning and go unnoticed.
             </p>
           )}
-          <div className="preset-row">
+          <div className="preset-row" role="group" aria-label="Entropy presets">
             <span>Presets</span>
             <button
               type="button"
@@ -467,11 +475,11 @@ export function DetectionPanel({
                   setEntropy({ measure: event.target.value as EntropyMeasure })
                 }
               >
-                <option value="shannon">Shannon</option>
-                <option value="renyi">Rényi</option>
-                <option value="tsallis">Tsallis</option>
-                <option value="norm">Normalised Shannon</option>
-                <option value="min">Min-entropy</option>
+                {Object.entries(entropyMeasures).map(([measure, name]) => (
+                  <option key={measure} value={measure}>
+                    {name}
+                  </option>
+                ))}
               </select>
             </Field>
             {(config.entropy.measure === "renyi" ||
@@ -1017,7 +1025,10 @@ export function DetectorSwitch({
             LLM · {name}
           </option>
         ))}
-        <option value="entropy">Entropy</option>
+        <option value="entropy">
+          Entropy ·{" "}
+          {entropyMeasures[config?.entropy.measure ?? defaultEntropy.measure]}
+        </option>
         <option value="off">No detection</option>
       </select>
     </label>

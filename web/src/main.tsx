@@ -954,12 +954,16 @@ function App() {
             tab={tab}
             setTab={setTab}
             detectionView={
-              <DetectionResults
-                events={visible}
-                topology={shownTopology}
-                experiment={roleSettings.attackers.length ? roleSettings : null}
-                active={!replay && active}
-              />
+              roleSettings.detection?.mode === "llm" ? (
+                <DetectionResults
+                  events={visible}
+                  topology={shownTopology}
+                  experiment={
+                    roleSettings.attackers.length ? roleSettings : null
+                  }
+                  active={!replay && active}
+                />
+              ) : null
             }
           />
         </div>

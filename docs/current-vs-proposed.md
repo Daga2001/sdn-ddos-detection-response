@@ -20,6 +20,13 @@ These differences are intentional documentation, not evidence that the proposal 
 The Traffic tab reserves space below the time-axis labels for its traffic and
 service-latency legend, keeping the legend clear of the plotted data.
 
+The top-bar entropy option names its configured measure (for example,
+**Entropy · Shannon**). The Detection results tab appears only for an LLM selection,
+using the saved selection during replay. Changing to entropy or no detection while
+viewing those results returns to Traffic; entropy tuning and Threshold remain available.
+Entropy presets use a two-column grid with equal-sized buttons and a separate label
+so all four choices fit within the Detection settings panel.
+
 GUI ownership uses an authenticated page connection; stopped runs never resume on
 reconnect. Native transport failure detection and a five-second runner lease cover
 silent disconnects. Bounded headless runs remain independent of browser lifetime.

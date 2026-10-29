@@ -85,7 +85,8 @@ With the detector container running (`docker compose up`) the workspace can pick
 the detector and show how it did, with no shell commands:
 
 * **Detector selector** in the top bar: switch between the installed LLMs (listed from
-  Ollama), entropy, or no detection. It edits the same setup as the Detection tab.
+  Ollama), entropy, or no detection. Entropy shows the configured measure, such as
+  **Entropy · Shannon** or **Entropy · Rényi**. It edits the same setup as the Detection tab.
 * **Detection tab** (right panel): the detector type and its tuning. LLM: model, prompt
   profile, samples per poll, probability threshold. Entropy: window length and mode,
   band width `k`, warm-up and consecutive windows, minimum rate, and advanced settings
@@ -102,12 +103,15 @@ the detector and show how it did, with no shell commands:
   Renyi, Tsallis, normalised, min-entropy), the threshold model (EWMA, rolling mean or median,
   the improved EWMA of Yu et al.) and whether the band learns every window or only the normal-
   looking ones ([detection modes](detection-modes.md#entropy-measures-and-threshold-models)).
-* **Detection results tab** (below the topology): a per-host confusion matrix, precision,
+* **Detection results tab** (below the topology, shown only for an LLM selection): a per-host confusion matrix, precision,
   recall, false-positive rate, accuracy and F1, the time to the first and last attacker
   detected, a per-host table, the traffic toward the victim and service probes by phase,
   the responses requested (and any legitimate client they hit), and a live chart that
   puts the flood next to the detections. It reads recorded events only, so it works
-  live, in a replay and on older runs.
+  live and in replays with a recorded LLM selection. Selecting entropy or no detection
+  hides this results tab; if it was open, the workspace returns to Traffic. Replays
+  use their saved detector selection. The right-panel Detection settings and the
+  Threshold tab remain available for entropy.
 
 How the results are scored: the experiment is the ground truth. Each attacker is a
 positive and each legitimate client (a host in the victims' subnet that is neither an
