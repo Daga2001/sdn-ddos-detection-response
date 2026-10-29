@@ -221,6 +221,7 @@ def start_request(**changes):
     return StartRequest(
         topology=presets()[2],
         experiment=experiment(attackers=["h1"], victims=["h2"], **changes),
+        forwarding="per_port",
     )
 
 
@@ -274,7 +275,7 @@ def test_detection_without_a_detector_service_is_refused_clearly():
 def test_a_running_lab_is_never_reconfigured():
     detector = RecordingDetector()
     manager = LabManager(MemoryRepository(), FakeRuntime, detector)
-    manager.start(StartRequest(topology=presets()[2]))
+    manager.start(StartRequest(topology=presets()[2], forwarding="per_port"))
     wait_for(manager, {"running"})
     with pytest.raises(ValueError, match="already"):
         manager.start(start_request(detection=DetectionConfig(mode="entropy")))
@@ -392,11 +393,7 @@ def test_the_published_thresholds_are_part_of_the_detection_config():
             DetectionConfig(entropy=bad)
 
 
-def test_the_forwarding_rule_granularity_is_an_entropy_run_setting():
-    assert DetectionConfig().entropy.match_ports is True
-    assert controller_env(DetectionConfig())["SDN_MATCH_L4_PORTS"] == "true"
-    coarse = DetectionConfig(mode="entropy", entropy={"match_ports": False})
-    assert controller_env(coarse)["SDN_MATCH_L4_PORTS"] == "false"
-    # the LLM keeps the ports its prompt needs, whatever the entropy setting says
-    llm = DetectionConfig(mode="llm", entropy={"match_ports": False})
-    assert controller_env(llm)["SDN_MATCH_L4_PORTS"] == "true"
+def test_forwarding_is_not_an_entropy_setting():
+    with pytest.raises(ValidationError):
+        DetectionConfig(entropy={"match_ports": False})
+    assert "SDN_MATCH_L4_PORTS" not in controller_env(DetectionConfig())

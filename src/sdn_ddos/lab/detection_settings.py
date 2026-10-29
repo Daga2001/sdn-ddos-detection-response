@@ -55,7 +55,6 @@ def controller_env(detection: DetectionConfig) -> dict[str, str]:
         "SDN_ENTROPY_WINDOW_MODE": entropy.window_mode,
         "SDN_ENTROPY_DEDUPE_SWITCHES": _flag(entropy.dedupe_switches),
         "SDN_ENTROPY_FEATURES": ",".join(entropy_features(entropy)),
-        "SDN_MATCH_L4_PORTS": _flag(entropy.match_ports or detection.mode != "entropy"),
         "SDN_RESPONSE_POLICY": response.policy,
         "SDN_RESPONSE_DRY_RUN": _flag(response.dry_run),
         "SDN_RATE_LIMIT_PPS": str(response.rate_limit_pps),

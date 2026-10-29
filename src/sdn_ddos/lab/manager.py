@@ -19,6 +19,7 @@ from sdn_ddos.lab.contracts import (
 )
 from sdn_ddos.lab.detection_settings import DetectorClient
 from sdn_ddos.lab.events import EventJournal, utc_now
+from sdn_ddos.lab.measurements import checks_due
 from sdn_ddos.lab.ownership import OwnerLeases
 from sdn_ddos.lab.repository import Repository
 from sdn_ddos.lab.runtime import MininetRuntime
@@ -46,6 +47,8 @@ class LabManager:
         self.stop_event = threading.Event()
         self.lock = threading.RLock()
         self.thread: Optional[threading.Thread] = None
+        self.probe_thread: Optional[threading.Thread] = None
+        self.probe_stop = threading.Event()
         self.probe_index = 0
         self.runner_instance_id = str(uuid4())
         self.owners = OwnerLeases()
@@ -147,9 +150,7 @@ class LabManager:
                     "id": identifier,
                     "started_at": started_at,
                     "topology": request.topology.model_dump(),
-                    "settings": request.experiment.model_dump()
-                    if request.experiment
-                    else None,
+                    "settings": self._settings(request),
                 }
             )
             self.run_id = identifier
@@ -163,11 +164,21 @@ class LabManager:
             self.stop_event = threading.Event()
             self.journal = EventJournal(identifier, persist=self._persist)
             self.runtime = None
+            self.probe_thread = None
+            self.probe_stop = threading.Event()
             self.thread = threading.Thread(
                 target=self._run, args=(request,), daemon=True
             )
             self.thread.start()
             return identifier
+
+    @staticmethod
+    def _settings(request: StartRequest) -> dict[str, Any]:
+        settings = (
+            request.experiment.model_dump() if request.experiment is not None else {}
+        )
+        settings["forwarding"] = request.forwarding
+        return settings
 
     def detection_options(self) -> dict[str, Any]:
         """What the workspace may offer: the detector's current setup and its LLMs."""
@@ -193,6 +204,10 @@ class LabManager:
 
         experiment = request.experiment
         if experiment is None:
+            self.journal.emit(
+                "detection_config",
+                {"source": "observation", "forwarding": request.forwarding},
+            )
             return
         if experiment.detection is not None:
             data: dict[str, Any] = {"source": "experiment"}
@@ -201,10 +216,11 @@ class LabManager:
             try:
                 data = {"source": "detector-service", **self.detector.config()}
             except ValueError:
-                return
+                data = {"source": "detector-service"}
         else:
-            return
+            data = {"source": "unconfigured"}
         data["mitigation"] = experiment.mitigation
+        data["forwarding"] = request.forwarding
         self.journal.emit("detection_config", data)
 
     def _persist(self, event: dict[str, Any]) -> None:
@@ -221,26 +237,69 @@ class LabManager:
         self.journal.emit("phase", {"state": state})
 
     def _observe(self, seconds: float, request: StartRequest) -> None:
+        """Sample once a second. Website checks run on their own thread."""
+
         deadline = time.monotonic() + seconds
-        next_probe = 0.0
-        pairs = (
-            probe_pairs(request.topology, request.experiment)
-            if request.experiment
-            else []
-        )
         while not self.stop_event.is_set() and time.monotonic() < deadline:
             tick = time.monotonic()
             self.runtime.sample()
-            if pairs and tick >= next_probe:
-                # One probe per interval, cycling client→victim pairs, so probing
-                # cost never grows with the size of the experiment.
-                client, target = pairs[self.probe_index % len(pairs)]
-                self.probe_index += 1
-                self.runtime.probe(client, target)
-                next_probe = tick + 3
             self.stop_event.wait(
                 max(0, min(1 - (time.monotonic() - tick), deadline - time.monotonic()))
             )
+
+    def _service_checks(self, request: StartRequest, deadline: float) -> None:
+        experiment = request.experiment
+        if experiment is None:
+            return
+        pairs = probe_pairs(request.topology, experiment)
+        next_at = time.monotonic()
+        index = 0
+        while not self.stop_event.is_set() and not self.probe_stop.is_set():
+            now = time.monotonic()
+            if now >= deadline:
+                return
+            due, next_at, index = checks_due(
+                now,
+                next_at,
+                index,
+                pairs,
+                deadline,
+                self.stop_event.is_set() or self.probe_stop.is_set(),
+            )
+            for client, target in due:
+                self.runtime.start_probe(client, target, utc_now())
+            remaining = min(deadline, next_at) - time.monotonic()
+            if remaining > 0 and self.stop_event.wait(min(remaining, 0.2)):
+                return
+            if self.probe_stop.is_set():
+                return
+
+    def _start_service_checks(self, request: StartRequest, seconds: float) -> None:
+        if request.experiment is None:
+            return
+        if not probe_pairs(request.topology, request.experiment):
+            return
+        self.probe_stop = threading.Event()
+        deadline = time.monotonic() + seconds
+        self.probe_thread = threading.Thread(
+            target=self._service_checks,
+            args=(request, deadline),
+            name="service-checks",
+            daemon=True,
+        )
+        self.probe_thread.start()
+
+    def _stop_service_checks(self) -> None:
+        self.probe_stop.set()
+        thread = self.probe_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2)
+
+    def _stop_measurements(self) -> None:
+        self._stop_service_checks()
+        runtime = self.runtime
+        if runtime is not None and hasattr(runtime, "stop_pings"):
+            runtime.stop_pings()
 
     def _run(self, request: StartRequest) -> None:
         result = "stopped"
@@ -257,6 +316,7 @@ class LabManager:
                 self.run_id,
                 bool(request.experiment and request.experiment.mitigation),
                 self.journal.emit,
+                forwarding=request.forwarding,
                 **extra,
             )
             self.runtime.start()
@@ -270,6 +330,9 @@ class LabManager:
                 self._observe(3600, request)
             else:
                 self.runtime.serve(experiment.victims)
+                span = experiment.baseline + experiment.duration + experiment.recovery
+                self._start_service_checks(request, span)
+                self.runtime.start_pings(experiment)
                 self._phase("baseline")
                 self._observe(experiment.baseline, request)
                 if self.stop_event.is_set():
@@ -324,6 +387,7 @@ class LabManager:
                     return
                 self._phase("recovery")
                 self._observe(experiment.recovery, request)
+                self._stop_measurements()
                 if not self.stop_event.is_set():
                     result = "completed"
         except Exception as error:
@@ -341,6 +405,7 @@ class LabManager:
                     },
                 )
         finally:
+            self._stop_measurements()
             if self.runtime:
                 try:
                     self.runtime.close()

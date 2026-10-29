@@ -43,7 +43,11 @@ def test_owned_run_stops_on_browser_departure(action):
             owner = socket.receive_json()["owner_id"]
             response = client.post(
                 "/api/runs",
-                json={"topology": presets()[2].model_dump(), "owner_id": owner},
+                json={
+                    "topology": presets()[2].model_dump(),
+                    "owner_id": owner,
+                    "forwarding": "per_port",
+                },
             )
             assert response.status_code == 200
             if action == "release":
@@ -57,7 +61,11 @@ def test_owned_run_stops_on_browser_departure(action):
         assert (
             client.post(
                 "/api/runs",
-                json={"topology": presets()[2].model_dump(), "owner_id": owner},
+                json={
+                    "topology": presets()[2].model_dump(),
+                    "owner_id": owner,
+                    "forwarding": "per_port",
+                },
             ).status_code
             == 409
         )
@@ -73,7 +81,11 @@ def test_viewer_release_and_forged_owner_do_not_stop_another_run():
             owner = owner_socket.receive_json()["owner_id"]
             client.post(
                 "/api/runs",
-                json={"topology": presets()[2].model_dump(), "owner_id": owner},
+                json={
+                    "topology": presets()[2].model_dump(),
+                    "owner_id": owner,
+                    "forwarding": "per_port",
+                },
             )
             with client.websocket_connect(
                 "/api/ownership", headers={"Origin": "http://testserver"}
@@ -92,7 +104,11 @@ def test_another_login_cannot_start_or_release_using_a_foreign_owner():
             "/api/ownership", headers={"Origin": "http://testserver"}
         ) as socket:
             owner = socket.receive_json()["owner_id"]
-            body = {"topology": presets()[2].model_dump(), "owner_id": owner}
+            body = {
+                "topology": presets()[2].model_dump(),
+                "owner_id": owner,
+                "forwarding": "per_port",
+            }
             client.post("/api/session", json={"token": settings.access_token})
             assert client.post("/api/runs", json=body).status_code == 409
             assert client.post(f"/api/owners/{owner}/release").status_code == 200

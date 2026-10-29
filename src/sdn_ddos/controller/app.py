@@ -36,8 +36,16 @@ from sdn_ddos.controller.core import (
     observe_flow_rate,
     probability_is_attack,
 )
+from sdn_ddos.lab.measurements import (
+    handled_rate,
+    log_and_require_match_l4_ports,
+    switch_table_sample,
+)
 from sdn_ddos.lab.telemetry import Telemetry
 from sdn_ddos.storage import MetricsStore, create_metrics_store
+
+# Set when the controller starts. None until then: there is no default.
+MATCH_L4_PORTS: Optional[bool] = None
 
 
 @dataclass
@@ -58,6 +66,12 @@ class EnterpriseDDoSController(app_manager.RyuApp):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
+        global MATCH_L4_PORTS
+        MATCH_L4_PORTS = log_and_require_match_l4_ports(self.logger)
+        self.match_l4_ports = MATCH_L4_PORTS
+        self._packet_ins = 0
+        self._packet_in_sample: Optional[Tuple[int, float]] = None
+        self._table_miss_baselines: Dict[int, Tuple[int, float]] = {}
         self.settings = ControllerSettings.from_env()
         self.datapaths: Dict[int, Any] = {}
         self.mac_to_port: Dict[int, Dict[str, int]] = {}
@@ -138,6 +152,8 @@ class EnterpriseDDoSController(app_manager.RyuApp):
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, event: Any) -> None:
+        # Every Packet-In, including the ones this handler ignores.
+        self._packet_ins = getattr(self, "_packet_ins", 0) + 1
         message = event.msg
         datapath = message.datapath
         parser = datapath.ofproto_parser
@@ -209,10 +225,11 @@ class EnterpriseDDoSController(app_manager.RyuApp):
             "ipv4_dst": ip_packet.dst,
             "ip_proto": int(ip_packet.proto),
         }
-        if tcp_packet is not None:
-            fields["tcp_dst"] = int(tcp_packet.dst_port)
-        else:
-            fields["udp_dst"] = int(udp_packet.dst_port)
+        if MATCH_L4_PORTS:
+            if tcp_packet is not None:
+                fields["tcp_dst"] = int(tcp_packet.dst_port)
+            elif udp_packet is not None:
+                fields["udp_dst"] = int(udp_packet.dst_port)
         return parser.OFPMatch(**fields)
 
     def _monitor_loop(self) -> None:
@@ -227,6 +244,15 @@ class EnterpriseDDoSController(app_manager.RyuApp):
                 "cpu_percent": float(process.cpu_percent(interval=None)),
                 "rss_bytes": int(process.memory_info().rss),
             }
+            count = int(getattr(self, "_packet_ins", 0))
+            rate, baseline = handled_rate(
+                getattr(self, "_packet_in_sample", None),
+                count,
+                time.monotonic(),
+            )
+            self._packet_in_sample = baseline
+            resource_row["packet_in_handled"] = count
+            resource_row["packet_in_handled_per_s"] = rate
             self.telemetry.emit("controller", resource_row)
             self.store.add_controller_row(resource_row)
             hub.sleep(self.settings.poll_interval_seconds)
@@ -335,8 +361,28 @@ class EnterpriseDDoSController(app_manager.RyuApp):
 
     @set_ev_cls(ofp_event.EventOFPFlowStatsReply, MAIN_DISPATCHER)
     def flow_stats_reply_handler(self, event: Any) -> None:
+        if not getattr(self, "_switch_table_already_emitted", False):
+            self._emit_switch_table(event.msg.datapath.id, event.msg.body)
+        self._switch_table_already_emitted = False
         batch = self._flow_batch(event)
         self._finish_flow_batch(batch, self._predict(batch.samples))
+
+    def _emit_switch_table(self, dpid: int, body: List[Any]) -> None:
+        """Rule count and table-miss rate from the full reply, before any trim."""
+
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is None:
+            return
+        baselines = getattr(self, "_table_miss_baselines", None)
+        if baselines is None:
+            baselines = {}
+            self._table_miss_baselines = baselines
+        event, baseline = switch_table_sample(int(dpid), body, baselines.get(int(dpid)))
+        if baseline is None:
+            baselines.pop(int(dpid), None)
+        else:
+            baselines[int(dpid)] = baseline
+        telemetry.emit("switch_table", event)
 
     def _flow_batch(self, event: Any) -> FlowBatch:
         dpid = event.msg.datapath.id

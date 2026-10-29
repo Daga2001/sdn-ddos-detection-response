@@ -118,7 +118,9 @@ class PostgreSQLRepository:
             "jsonb_array_length(settings->'attackers') AS attackers, "
             "settings->>'mitigation' AS mitigation, "
             "settings->'detection'->'response'->>'policy' AS policy, "
-            "settings->'detection'->'response'->>'dry_run' AS dry_run "
+            "settings->'detection'->'response'->>'dry_run' AS dry_run, "
+            "settings->>'forwarding' AS forwarding, "
+            "settings->'detection'->'entropy'->>'match_ports' AS match_ports "
             "FROM lab_runs ORDER BY started_at DESC LIMIT 100",
             fetch=True,
         )

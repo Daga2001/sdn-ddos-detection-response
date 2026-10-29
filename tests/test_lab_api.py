@@ -62,7 +62,12 @@ def test_projects_import_and_validation():
         assert client.post("/api/projects", json=data).status_code == 200
         assert len(client.get("/api/projects").json()) == 1
         data["hosts"][0]["ip"] = "8.8.8.8/24"
-        assert client.post("/api/runs", json={"topology": data}).status_code == 422
+        assert (
+            client.post(
+                "/api/runs", json={"topology": data, "forwarding": "per_port"}
+            ).status_code
+            == 422
+        )
         assert (
             client.post("/api/import", json={"version": "2", "hosts": [{}]}).status_code
             == 422
@@ -78,7 +83,8 @@ def test_run_stop_and_missing_history():
     with client:
         client.post("/api/session", json={"token": settings.access_token})
         response = client.post(
-            "/api/runs", json={"topology": presets()[2].model_dump()}
+            "/api/runs",
+            json={"topology": presets()[2].model_dump(), "forwarding": "per_port"},
         )
         assert response.status_code == 200
         identifier = response.json()["run_id"]
@@ -109,9 +115,16 @@ def test_import_export_history_and_session_lifecycle():
         assert (
             client.post("/api/export/miniedit", json=topology).json()["version"] == "2"
         )
-        run_id = client.post("/api/runs", json={"topology": topology}).json()["run_id"]
+        run_id = client.post(
+            "/api/runs", json={"topology": topology, "forwarding": "per_port"}
+        ).json()["run_id"]
         assert client.get("/api/status").status_code == 200
-        assert client.post("/api/runs", json={"topology": topology}).status_code == 409
+        assert (
+            client.post(
+                "/api/runs", json={"topology": topology, "forwarding": "per_port"}
+            ).status_code
+            == 409
+        )
         # Control callbacks share the manager held by the closure.
         import time
 
@@ -197,7 +210,7 @@ def test_rejections_are_one_readable_sentence_not_a_validation_dump():
             {"name": "h9", "ip": "10.0.0.9/24", "position": {"x": 0, "y": 0}}
         )
         for path, payload in (
-            ("/api/runs", {"topology": data}),
+            ("/api/runs", {"topology": data, "forwarding": "per_port"}),
             ("/api/validate", data),
             ("/api/export/miniedit", data),
             ("/api/projects", data),
@@ -242,6 +255,7 @@ def test_experiment_limits_name_the_field_and_the_bound():
                     "rate": 50000,
                     "confirm_isolated_lab": True,
                 },
+                "forwarding": "per_port",
             },
         )
         assert response.status_code == 422
@@ -338,6 +352,7 @@ def test_an_experiment_with_detection_is_validated_by_the_api():
                     "confirm_isolated_lab": True,
                     "detection": {"entropy": {"k": 0}},
                 },
+                "forwarding": "per_port",
             },
         )
         assert bad.status_code == 422
@@ -352,6 +367,7 @@ def test_an_experiment_with_detection_is_validated_by_the_api():
                     "confirm_isolated_lab": True,
                     "detection": {"mode": "entropy"},
                 },
+                "forwarding": "per_port",
             },
         )
         assert refused.status_code == 409
