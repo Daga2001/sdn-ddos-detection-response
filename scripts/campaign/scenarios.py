@@ -40,6 +40,15 @@ class Scenario:
     expect: dict[str, Any] = field(default_factory=dict)
     refuse: Optional[str] = None
     stop_after: int = 0
+    # Required. Entropy scenarios that used match_ports=False are port_free;
+    # every other scenario is per_port. Empty is rejected, not a mode.
+    forwarding: str = ""
+
+    def __post_init__(self) -> None:
+        if self.forwarding not in {"per_port", "port_free"}:
+            raise ValueError(
+                f"{self.id} must state forwarding as per_port or port_free"
+            )
 
     def duration_text(self) -> str:
         return f"baseline {self.baseline} + attack {self.duration} + recovery {self.recovery} s"
@@ -112,6 +121,7 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=off(),
         refuse="mitigation needs a detector",
+        forwarding="per_port",
     ),
     Scenario(
         "V2",
@@ -119,6 +129,7 @@ SCENARIOS: list[Scenario] = [
         "A model Ollama does not have is refused",
         detection=llm(model="not-a-model:1b"),
         refuse="not-a-model",
+        forwarding="per_port",
     ),
     Scenario(
         "V3",
@@ -128,6 +139,7 @@ SCENARIOS: list[Scenario] = [
         attackers=["h_wifi1", "h_wifi2", "h_wifi3"],
         victims=["h_web", "h_moodle", "h_notas", "h_dns", "h_files", "h_lab6"],
         refuse="traffic flows",
+        forwarding="per_port",
     ),
     Scenario(
         "V4",
@@ -136,14 +148,23 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=llm(response=response(protected=["8.8.8.8"])),
         refuse="private",
+        forwarding="per_port",
     ),
-    Scenario("V5", "V", "Rate above 1000 pkt/s is refused", rate=5000, refuse="1000"),
+    Scenario(
+        "V5",
+        "V",
+        "Rate above 1000 pkt/s is refused",
+        rate=5000,
+        refuse="1000",
+        forwarding="per_port",
+    ),
     Scenario(
         "V6",
         "V",
         "An attacker that is not in the topology is refused",
         attackers=["h_nope"],
         refuse="topology",
+        forwarding="per_port",
     ),
     Scenario(
         "V7",
@@ -151,6 +172,7 @@ SCENARIOS: list[Scenario] = [
         "No legitimate client left is refused",
         attackers=["h1a", "h1b", "h1c", "h2a", "h2b", "h2c", "h3b", "h3c"],
         refuse="legitimate client",
+        forwarding="per_port",
     ),
     Scenario(
         "V8",
@@ -159,9 +181,15 @@ SCENARIOS: list[Scenario] = [
         attackers=["h1a"],
         victims=["h1a"],
         refuse="both an attacker and a victim",
+        forwarding="per_port",
     ),
     Scenario(
-        "V9", "V", "Attack longer than 300 s is refused", duration=301, refuse="300"
+        "V9",
+        "V",
+        "Attack longer than 300 s is refused",
+        duration=301,
+        refuse="300",
+        forwarding="per_port",
     ),
     # ---- B: legitimate-looking traffic ---------------------------------------------
     Scenario(
@@ -171,6 +199,7 @@ SCENARIOS: list[Scenario] = [
         detection=llm(),
         rate=1,
         expect={"recall_max": 0.0, "fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "B2",
@@ -180,6 +209,7 @@ SCENARIOS: list[Scenario] = [
         rate=1,
         baseline=EB,
         expect={"recall_max": 0.0, "fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "B3",
@@ -188,6 +218,7 @@ SCENARIOS: list[Scenario] = [
         detection=llm(model="gemma2:2b"),
         rate=1,
         expect={"recall_max": 0.0, "fp_max": 0},
+        forwarding="per_port",
     ),
     # ---- L: LLM, detection only ------------------------------------------------------
     Scenario(
@@ -196,6 +227,7 @@ SCENARIOS: list[Scenario] = [
         "LLM llama3.2:3b / lab prompt / 1 atk SYN 300",
         detection=llm(),
         expect={"recall_min": 1.0, "fp_max": 0, "responses": "none"},
+        forwarding="per_port",
     ),
     Scenario(
         "L2",
@@ -203,6 +235,7 @@ SCENARIOS: list[Scenario] = [
         "LLM gemma2:2b / lab prompt / 1 atk SYN 300",
         detection=llm(model="gemma2:2b"),
         expect={"recall_min": 1.0, "fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "L3",
@@ -210,6 +243,7 @@ SCENARIOS: list[Scenario] = [
         "LLM phi3.5 / lab prompt / 1 atk SYN 300",
         detection=llm(model="phi3.5:latest"),
         expect={"fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "L4",
@@ -217,6 +251,7 @@ SCENARIOS: list[Scenario] = [
         "LLM llama3.2:3b / insdn prompt (not calibrated for the lab)",
         detection=llm(prompt="insdn"),
         expect={"fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "L5",
@@ -224,6 +259,7 @@ SCENARIOS: list[Scenario] = [
         "LLM llama3.2:3b with 5 samples per poll (the default)",
         detection=llm(samples=5),
         expect={"recall_min": 1.0, "fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "L6",
@@ -234,6 +270,7 @@ SCENARIOS: list[Scenario] = [
         rate=500,
         detection=llm(samples=2),
         expect={"recall_min": 1.0, "fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "L7",
@@ -243,6 +280,7 @@ SCENARIOS: list[Scenario] = [
         traffic=["icmp"],
         detection=llm(samples=2),
         expect={"fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "L8",
@@ -254,6 +292,7 @@ SCENARIOS: list[Scenario] = [
         rate=200,
         detection=llm(samples=2),
         expect={"recall_min": 1.0, "fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "L9",
@@ -262,6 +301,7 @@ SCENARIOS: list[Scenario] = [
         rate=30,
         detection=llm(),
         expect={"fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "L10",
@@ -270,6 +310,7 @@ SCENARIOS: list[Scenario] = [
         rate=10,
         detection=llm(),
         expect={"fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "L11",
@@ -277,6 +318,7 @@ SCENARIOS: list[Scenario] = [
         "LLM llama3.2:3b / threshold 0.5",
         detection=llm(threshold=0.5),
         expect={"recall_min": 1.0},
+        forwarding="per_port",
     ),
     Scenario(
         "L12",
@@ -284,6 +326,7 @@ SCENARIOS: list[Scenario] = [
         "LLM llama3.2:3b / threshold 0.95",
         detection=llm(threshold=0.95),
         expect={"fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "L13",
@@ -293,6 +336,7 @@ SCENARIOS: list[Scenario] = [
         victims=["h3a"],
         detection=llm(samples=1),
         expect={"fp_max": 1},
+        forwarding="per_port",
     ),
     Scenario(
         "L14",
@@ -300,6 +344,7 @@ SCENARIOS: list[Scenario] = [
         "LLM qwen2.5:3b / lab prompt / 1 atk SYN 300",
         detection=llm(model="qwen2.5:3b"),
         expect={"fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "L15",
@@ -307,6 +352,7 @@ SCENARIOS: list[Scenario] = [
         "LLM llama3.2:1b / lab prompt / 1 atk SYN 300",
         detection=llm(model="llama3.2:1b"),
         expect={"fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "L16",
@@ -315,6 +361,7 @@ SCENARIOS: list[Scenario] = [
         rate=1000,
         detection=llm(),
         expect={"recall_min": 1.0, "fp_max": 0},
+        forwarding="per_port",
     ),
     # ---- E: entropy, detection only ----------------------------------------------------
     Scenario(
@@ -324,6 +371,7 @@ SCENARIOS: list[Scenario] = [
         detection=entropy(),
         baseline=EB,
         expect={"recall_min": 1.0, "fp_max": 0, "responses": "none"},
+        forwarding="per_port",
     ),
     Scenario(
         "E2",
@@ -335,6 +383,7 @@ SCENARIOS: list[Scenario] = [
         detection=entropy(),
         baseline=EB,
         expect={"recall_min": 1.0, "fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "E3",
@@ -345,6 +394,7 @@ SCENARIOS: list[Scenario] = [
         detection=entropy(),
         baseline=EB,
         expect={"fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "E4",
@@ -355,6 +405,7 @@ SCENARIOS: list[Scenario] = [
         detection=entropy(),
         baseline=EB,
         expect={"fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "E5",
@@ -364,6 +415,7 @@ SCENARIOS: list[Scenario] = [
         detection=entropy(),
         baseline=EB,
         expect={"fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "E6",
@@ -372,6 +424,7 @@ SCENARIOS: list[Scenario] = [
         detection=entropy(k=1.5),
         baseline=EB,
         expect={"recall_min": 1.0},
+        forwarding="per_port",
     ),
     Scenario(
         "E7",
@@ -380,6 +433,7 @@ SCENARIOS: list[Scenario] = [
         detection=entropy(k=4.0),
         baseline=EB,
         expect={"fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "E8",
@@ -388,6 +442,7 @@ SCENARIOS: list[Scenario] = [
         detection=entropy(window_seconds=10, window_mode="snapshot", warmup_windows=8),
         baseline=EB,
         expect={"fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "E9",
@@ -396,6 +451,7 @@ SCENARIOS: list[Scenario] = [
         detection=entropy(),
         baseline=50,
         expect={"fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "E10",
@@ -405,6 +461,7 @@ SCENARIOS: list[Scenario] = [
         detection=entropy(),
         baseline=EB,
         expect={"fp_max": 1},
+        forwarding="per_port",
     ),
     Scenario(
         "E11",
@@ -414,6 +471,7 @@ SCENARIOS: list[Scenario] = [
         detection=entropy(),
         baseline=EB,
         expect={"recall_min": 1.0, "fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "E12",
@@ -423,6 +481,7 @@ SCENARIOS: list[Scenario] = [
         detection=entropy(update_hold=2, alpha_run=0.05),
         baseline=EB,
         expect={"fp_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "E13",
@@ -431,6 +490,7 @@ SCENARIOS: list[Scenario] = [
         detection=entropy(update_hold=2, alpha_run=0.05),
         baseline=EB,
         expect={"recall_min": 1.0, "fp_max": 0},
+        forwarding="per_port",
     ),
     # ---- R: response ------------------------------------------------------------------------
     Scenario(
@@ -440,6 +500,7 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=llm(response=response("rate_limit")),
         expect={"recall_min": 1.0, "fp_max": 0, "responses": "some", "rules": "meter"},
+        forwarding="per_port",
     ),
     Scenario(
         "R2",
@@ -448,6 +509,7 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=llm(response=response("block")),
         expect={"recall_min": 1.0, "fp_max": 0, "responses": "some", "rules": "drop"},
+        forwarding="per_port",
     ),
     Scenario(
         "R3",
@@ -462,6 +524,7 @@ SCENARIOS: list[Scenario] = [
             samples=2, response=response("escalate", escalate_after_seconds=20)
         ),
         expect={"recall_min": 1.0, "responses": "some", "rules": "drop"},
+        forwarding="per_port",
     ),
     Scenario(
         "R4",
@@ -470,6 +533,7 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=llm(response=response("escalate", dry_run=True)),
         expect={"recall_min": 1.0, "responses": "some", "rules": "none"},
+        forwarding="per_port",
     ),
     Scenario(
         "R5",
@@ -481,6 +545,7 @@ SCENARIOS: list[Scenario] = [
         baseline=EB,
         detection=entropy(response=response("rate_limit")),
         expect={"recall_min": 1.0, "responses": "some", "rules": "meter"},
+        forwarding="per_port",
     ),
     Scenario(
         "R6",
@@ -491,6 +556,7 @@ SCENARIOS: list[Scenario] = [
         baseline=EB,
         detection=entropy(response=response("block")),
         expect={"recall_min": 1.0, "responses": "some", "rules": "drop"},
+        forwarding="per_port",
     ),
     Scenario(
         "R7",
@@ -500,6 +566,7 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=llm(samples=2, response=response("block", protected=["10.0.0.2"])),
         expect={"recall_min": 1.0, "responses": "some", "not_responded": ["h1b"]},
+        forwarding="per_port",
     ),
     Scenario(
         "R8",
@@ -509,6 +576,7 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=llm(samples=2, response=response("block", max_active=2)),
         expect={"responses": "some", "responded_max": 2},
+        forwarding="per_port",
     ),
     Scenario(
         "R9",
@@ -518,6 +586,7 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=llm(response=response("rate_limit", rate_limit_pps=200)),
         expect={"recall_min": 1.0, "responses": "some", "rules": "meter"},
+        forwarding="per_port",
     ),
     Scenario(
         "R10",
@@ -527,6 +596,7 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=llm(response=response("block", block_seconds=30)),
         expect={"recall_min": 1.0, "responses": "some", "rules": "drop"},
+        forwarding="per_port",
     ),
     Scenario(
         "R11",
@@ -538,6 +608,7 @@ SCENARIOS: list[Scenario] = [
         baseline=EB,
         detection=entropy(response=response("escalate", escalate_after_seconds=20)),
         expect={"recall_min": 1.0, "responses": "some", "rules": "drop"},
+        forwarding="per_port",
     ),
     Scenario(
         "R12",
@@ -548,6 +619,7 @@ SCENARIOS: list[Scenario] = [
         baseline=EB,
         detection=entropy(response=response("block", dry_run=True)),
         expect={"recall_min": 1.0, "responses": "some", "rules": "none"},
+        forwarding="per_port",
     ),
     Scenario(
         "R13",
@@ -561,6 +633,7 @@ SCENARIOS: list[Scenario] = [
             "rules": "drop",
             "collateral_max": 0,
         },
+        forwarding="per_port",
     ),
     Scenario(
         "R14",
@@ -575,6 +648,7 @@ SCENARIOS: list[Scenario] = [
             "rules": "drop",
             "collateral_max": 0,
         },
+        forwarding="per_port",
     ),
     Scenario(
         "R15",
@@ -587,6 +661,7 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=entropy(response=response("block", confirm_hits=2)),
         expect={"recall_min": 1.0, "responses": "some", "rules": "drop"},
+        forwarding="per_port",
     ),
     Scenario(
         "R16",
@@ -597,6 +672,7 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=llm(samples=1, response=response("block")),
         expect={"recall_min": 1.0, "responses": "some"},
+        forwarding="per_port",
     ),
     Scenario(
         "R17",
@@ -607,6 +683,7 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=llm(samples=1, poll=2, response=response("block", confirm_hits=2)),
         expect={"recall_min": 1.0, "responses": "some", "collateral_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "R18",
@@ -617,6 +694,7 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=llm(samples=1, poll=1, response=response("block", confirm_hits=2)),
         expect={"recall_min": 1.0, "responses": "some", "collateral_max": 0},
+        forwarding="per_port",
     ),
     # ---- M: bigger networks, no detector, no setup --------------------------------------------
     Scenario(
@@ -632,6 +710,7 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=llm(samples=1, response=response("block")),
         expect={"recall_min": 1.0, "fp_max": 0, "responses": "some"},
+        forwarding="per_port",
     ),
     Scenario(
         "M2",
@@ -646,6 +725,7 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=entropy(response=response("escalate")),
         expect={"recall_min": 1.0, "responses": "some"},
+        forwarding="per_port",
     ),
     Scenario(
         "M3",
@@ -660,6 +740,7 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=llm(samples=1, response=response("rate_limit")),
         expect={"recall_min": 1.0, "responses": "some"},
+        forwarding="per_port",
     ),
     Scenario(
         "M4",
@@ -675,6 +756,7 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=entropy(response=response("block", dry_run=True)),
         expect={"responses": "some", "rules": "none"},
+        forwarding="per_port",
     ),
     Scenario(
         "M5",
@@ -682,6 +764,7 @@ SCENARIOS: list[Scenario] = [
         "No detection setup at all (detector keeps whatever it had)",
         attackers=["h1a", "h1b"],
         expect={},
+        forwarding="per_port",
     ),
     Scenario(
         "M6",
@@ -692,6 +775,7 @@ SCENARIOS: list[Scenario] = [
         baseline=30,
         detection=off(),
         expect={"recall_max": 0.0, "responses": "none"},
+        forwarding="per_port",
     ),
     Scenario(
         "M7",
@@ -700,6 +784,7 @@ SCENARIOS: list[Scenario] = [
         baseline=30,
         detection=off(),
         expect={"recall_max": 0.0, "responses": "none"},
+        forwarding="per_port",
     ),
     Scenario(
         "M8",
@@ -710,6 +795,7 @@ SCENARIOS: list[Scenario] = [
         victims=["h2"],
         detection=llm(),
         expect={"recall_min": 1.0},
+        forwarding="per_port",
     ),
     Scenario(
         "M9",
@@ -721,6 +807,7 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=llm(samples=2, response=response("block")),
         expect={"recall_min": 1.0, "responses": "some"},
+        forwarding="per_port",
     ),
     Scenario(
         "M10",
@@ -731,6 +818,7 @@ SCENARIOS: list[Scenario] = [
         recovery=120,
         detection=off(),
         expect={"recall_max": 0.0},
+        forwarding="per_port",
     ),
     Scenario(
         "M11",
@@ -742,6 +830,7 @@ SCENARIOS: list[Scenario] = [
         recovery=120,
         detection=off(),
         expect={"recall_max": 0.0},
+        forwarding="per_port",
     ),
     Scenario(
         "M12",
@@ -753,6 +842,7 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=llm(response=response("block")),
         expect={"recall_min": 1.0, "responses": "some"},
+        forwarding="per_port",
     ),
     Scenario(
         "M13",
@@ -767,6 +857,7 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=llm(samples=1, response=response("block", confirm_hits=2)),
         expect={"recall_min": 1.0, "responses": "some", "collateral_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "M14",
@@ -777,6 +868,7 @@ SCENARIOS: list[Scenario] = [
         recovery=150,
         detection=off(),
         expect={"recall_max": 0.0},
+        forwarding="per_port",
     ),
     Scenario(
         "M15",
@@ -788,6 +880,7 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=llm(response=response("escalate")),
         expect={"recall_min": 1.0, "responses": "some"},
+        forwarding="per_port",
     ),
     Scenario(
         "M16",
@@ -802,6 +895,7 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=llm(samples=1, poll=1, response=response("block", confirm_hits=2)),
         expect={"recall_min": 1.0, "responses": "some", "collateral_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "M17",
@@ -816,6 +910,7 @@ SCENARIOS: list[Scenario] = [
         mitigation=True,
         detection=entropy(response=response("block")),
         expect={"recall_min": 1.0, "responses": "some", "collateral_max": 0},
+        forwarding="per_port",
     ),
     Scenario(
         "M18",
@@ -832,6 +927,7 @@ SCENARIOS: list[Scenario] = [
             response=response("block"), poll=1, window_seconds=2, warmup_windows=40
         ),
         expect={"recall_min": 1.0, "responses": "some", "collateral_max": 0},
+        forwarding="per_port",
     ),
     # ---- T: threshold research corpus (entropy windows with every distribution) -----------------
     # No response, so every attack lasts its full time; ports and protocols are watched so the
@@ -849,6 +945,7 @@ SCENARIOS: list[Scenario] = [
         recovery=30,
         detection=entropy(watch_ports=True, watch_protocols=True),
         expect={},
+        forwarding="per_port",
     ),
     Scenario(
         "T2",
@@ -862,6 +959,7 @@ SCENARIOS: list[Scenario] = [
         recovery=30,
         detection=entropy(watch_ports=True, watch_protocols=True),
         expect={},
+        forwarding="per_port",
     ),
     Scenario(
         "T3",
@@ -875,6 +973,7 @@ SCENARIOS: list[Scenario] = [
         recovery=30,
         detection=entropy(watch_ports=True, watch_protocols=True),
         expect={},
+        forwarding="per_port",
     ),
     Scenario(
         "T4",
@@ -890,6 +989,7 @@ SCENARIOS: list[Scenario] = [
         recovery=30,
         detection=entropy(watch_ports=True, watch_protocols=True),
         expect={},
+        forwarding="per_port",
     ),
     Scenario(
         "T5",
@@ -904,6 +1004,7 @@ SCENARIOS: list[Scenario] = [
         recovery=30,
         detection=entropy(watch_ports=True, watch_protocols=True),
         expect={},
+        forwarding="per_port",
     ),
     Scenario(
         "T6",
@@ -917,6 +1018,7 @@ SCENARIOS: list[Scenario] = [
         recovery=30,
         detection=entropy(watch_ports=True, watch_protocols=True),
         expect={},
+        forwarding="per_port",
     ),
     Scenario(
         "T7",
@@ -931,6 +1033,7 @@ SCENARIOS: list[Scenario] = [
         recovery=30,
         detection=entropy(watch_ports=True, watch_protocols=True),
         expect={},
+        forwarding="per_port",
     ),
     Scenario(
         "T8",
@@ -945,6 +1048,7 @@ SCENARIOS: list[Scenario] = [
         recovery=30,
         detection=entropy(watch_ports=True, watch_protocols=True),
         expect={},
+        forwarding="per_port",
     ),
     Scenario(
         "T9",
@@ -959,6 +1063,7 @@ SCENARIOS: list[Scenario] = [
         recovery=30,
         detection=entropy(watch_ports=True, watch_protocols=True),
         expect={},
+        forwarding="per_port",
     ),
     Scenario(
         "T10",
@@ -973,6 +1078,7 @@ SCENARIOS: list[Scenario] = [
         recovery=30,
         detection=entropy(watch_ports=True, watch_protocols=True),
         expect={},
+        forwarding="per_port",
     ),
     Scenario(
         "T11",
@@ -986,6 +1092,7 @@ SCENARIOS: list[Scenario] = [
         recovery=30,
         detection=entropy(watch_ports=True, watch_protocols=True),
         expect={},
+        forwarding="per_port",
     ),
     Scenario(
         "T12",
@@ -999,6 +1106,7 @@ SCENARIOS: list[Scenario] = [
         recovery=30,
         detection=entropy(watch_ports=True, watch_protocols=True),
         expect={},
+        forwarding="per_port",
     ),
     # ---- U: does the entropy and threshold model change what the service survives? (fast + block) --
     # The fast setup of M18 (2 s windows, 1 s polls, 40 warm-up windows, block at once) with the
@@ -1019,6 +1127,7 @@ SCENARIOS: list[Scenario] = [
             poll=1, window_seconds=2, warmup_windows=40, response=response("block")
         ),
         expect={"responses": "some"},
+        forwarding="per_port",
     ),
     Scenario(
         "U3b",
@@ -1039,6 +1148,7 @@ SCENARIOS: list[Scenario] = [
             measure="norm",
         ),
         expect={"responses": "some"},
+        forwarding="per_port",
     ),
     Scenario(
         "U3c",
@@ -1064,6 +1174,7 @@ SCENARIOS: list[Scenario] = [
             min_std=0.1,
         ),
         expect={"responses": "some"},
+        forwarding="per_port",
     ),
     Scenario(
         "U3d",
@@ -1087,6 +1198,7 @@ SCENARIOS: list[Scenario] = [
             k=2.0,
         ),
         expect={"responses": "some"},
+        forwarding="per_port",
     ),
     Scenario(
         "U3e",
@@ -1110,6 +1222,7 @@ SCENARIOS: list[Scenario] = [
             min_std=0.2,
         ),
         expect={"responses": "some"},
+        forwarding="per_port",
     ),
     Scenario(
         "U3f",
@@ -1132,6 +1245,7 @@ SCENARIOS: list[Scenario] = [
             k=2.0,
         ),
         expect={"responses": "some"},
+        forwarding="per_port",
     ),
     Scenario(
         "U8a",
@@ -1148,6 +1262,7 @@ SCENARIOS: list[Scenario] = [
             poll=1, window_seconds=2, warmup_windows=40, response=response("block")
         ),
         expect={"responses": "some"},
+        forwarding="per_port",
     ),
     Scenario(
         "U8b",
@@ -1168,6 +1283,7 @@ SCENARIOS: list[Scenario] = [
             measure="norm",
         ),
         expect={"responses": "some"},
+        forwarding="per_port",
     ),
     Scenario(
         "U8c",
@@ -1193,6 +1309,7 @@ SCENARIOS: list[Scenario] = [
             min_std=0.1,
         ),
         expect={"responses": "some"},
+        forwarding="per_port",
     ),
     Scenario(
         "U8d",
@@ -1216,6 +1333,7 @@ SCENARIOS: list[Scenario] = [
             k=2.0,
         ),
         expect={"responses": "some"},
+        forwarding="per_port",
     ),
     Scenario(
         "U8e",
@@ -1239,6 +1357,7 @@ SCENARIOS: list[Scenario] = [
             min_std=0.2,
         ),
         expect={"responses": "some"},
+        forwarding="per_port",
     ),
     Scenario(
         "U8f",
@@ -1261,6 +1380,7 @@ SCENARIOS: list[Scenario] = [
             k=2.0,
         ),
         expect={"responses": "some"},
+        forwarding="per_port",
     ),
     # ---- T13/T14: legitimate changes of the traffic mix (no attack: the detector should stay quiet) -
     Scenario(
@@ -1276,6 +1396,7 @@ SCENARIOS: list[Scenario] = [
         recovery=30,
         detection=entropy(watch_ports=True, watch_protocols=True),
         expect={},
+        forwarding="per_port",
     ),
     Scenario(
         "T14",
@@ -1290,6 +1411,7 @@ SCENARIOS: list[Scenario] = [
         recovery=30,
         detection=entropy(watch_ports=True, watch_protocols=True),
         expect={},
+        forwarding="per_port",
     ),
     # ---- N1: iteration 1: 1 s windows, 0.5 s polls, normalised Shannon, 2 windows ----
     Scenario(
@@ -1318,6 +1440,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="per_port",
     ),
     Scenario(
         "N1b",
@@ -1345,6 +1468,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="per_port",
     ),
     Scenario(
         "N1c",
@@ -1372,6 +1496,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="per_port",
     ),
     Scenario(
         "N1x",
@@ -1399,6 +1524,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="per_port",
     ),
     Scenario(
         "N1q",
@@ -1426,6 +1552,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="per_port",
     ),
     # ---- N2: iteration 2: iteration 1 + victim memory + port-free rules ----
     Scenario(
@@ -1446,7 +1573,6 @@ SCENARIOS: list[Scenario] = [
             warmup_windows=30,
             consecutive_windows=2,
             measure="norm",
-            match_ports=False,
             response=response("block"),
         ),
         expect={
@@ -1455,6 +1581,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="port_free",
     ),
     Scenario(
         "N2b",
@@ -1474,7 +1601,6 @@ SCENARIOS: list[Scenario] = [
             warmup_windows=30,
             consecutive_windows=2,
             measure="norm",
-            match_ports=False,
             response=response("block"),
         ),
         expect={
@@ -1483,6 +1609,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="port_free",
     ),
     Scenario(
         "N2c",
@@ -1502,7 +1629,6 @@ SCENARIOS: list[Scenario] = [
             warmup_windows=30,
             consecutive_windows=2,
             measure="norm",
-            match_ports=False,
             response=response("block"),
         ),
         expect={
@@ -1511,6 +1637,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="port_free",
     ),
     Scenario(
         "N2x",
@@ -1530,7 +1657,6 @@ SCENARIOS: list[Scenario] = [
             warmup_windows=30,
             consecutive_windows=2,
             measure="norm",
-            match_ports=False,
             response=response("block"),
         ),
         expect={
@@ -1539,6 +1665,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="port_free",
     ),
     Scenario(
         "N2q",
@@ -1558,7 +1685,6 @@ SCENARIOS: list[Scenario] = [
             warmup_windows=30,
             consecutive_windows=2,
             measure="norm",
-            match_ports=False,
             response=response("block"),
         ),
         expect={
@@ -1567,6 +1693,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="port_free",
     ),
     # ---- N2w: iteration 2 ablation: victim memory only (ports matched as before) ----
     Scenario(
@@ -1595,6 +1722,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="per_port",
     ),
     Scenario(
         "N2wb",
@@ -1622,6 +1750,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="per_port",
     ),
     Scenario(
         "N2wc",
@@ -1649,6 +1778,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="per_port",
     ),
     Scenario(
         "N2wx",
@@ -1676,6 +1806,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="per_port",
     ),
     Scenario(
         "N2wq",
@@ -1703,6 +1834,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="per_port",
     ),
     # ---- N3: the final fast entropy setup against other floods (coverage) ----
     Scenario(
@@ -1724,7 +1856,6 @@ SCENARIOS: list[Scenario] = [
             warmup_windows=30,
             consecutive_windows=2,
             measure="norm",
-            match_ports=False,
             response=response("block"),
         ),
         expect={
@@ -1733,6 +1864,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="port_free",
     ),
     Scenario(
         "N3i",
@@ -1753,7 +1885,6 @@ SCENARIOS: list[Scenario] = [
             warmup_windows=30,
             consecutive_windows=2,
             measure="norm",
-            match_ports=False,
             response=response("block"),
         ),
         expect={
@@ -1762,6 +1893,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="port_free",
     ),
     Scenario(
         "N3m",
@@ -1782,7 +1914,6 @@ SCENARIOS: list[Scenario] = [
             warmup_windows=30,
             consecutive_windows=2,
             measure="norm",
-            match_ports=False,
             response=response("block"),
         ),
         expect={
@@ -1791,6 +1922,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="port_free",
     ),
     Scenario(
         "N3s",
@@ -1811,7 +1943,6 @@ SCENARIOS: list[Scenario] = [
             warmup_windows=30,
             consecutive_windows=2,
             measure="norm",
-            match_ports=False,
             response=response("block"),
         ),
         expect={
@@ -1820,6 +1951,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="port_free",
     ),
     Scenario(
         "N3d",
@@ -1840,7 +1972,6 @@ SCENARIOS: list[Scenario] = [
             warmup_windows=30,
             consecutive_windows=2,
             measure="norm",
-            match_ports=False,
             response=response("block"),
         ),
         expect={
@@ -1849,6 +1980,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="port_free",
     ),
     # ---- P: entropy detectors as published (see detection/entropy.py: MarginBand, SecondOrderBand) --------
     # Same network, attack and fast reaction as the N group, only the entropy and its threshold
@@ -1879,7 +2011,6 @@ SCENARIOS: list[Scenario] = [
             alpha=0.13,
             margin=0.01,
             decide=["dst"],
-            match_ports=False,
             response=response("block"),
         ),
         expect={
@@ -1888,6 +2019,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="port_free",
     ),
     Scenario(
         "P2",
@@ -1912,7 +2044,6 @@ SCENARIOS: list[Scenario] = [
             k=4,
             watch_pairs=True,
             decide=["pair"],
-            match_ports=False,
             response=response("block"),
         ),
         expect={
@@ -1921,6 +2052,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="port_free",
     ),
     Scenario(
         "P3",
@@ -1944,7 +2076,6 @@ SCENARIOS: list[Scenario] = [
             alpha=0.13,
             margin=0.05,
             decide=["dst"],
-            match_ports=False,
             response=response("block"),
         ),
         expect={
@@ -1953,6 +2084,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="port_free",
     ),
     Scenario(
         "P4",
@@ -1977,7 +2109,6 @@ SCENARIOS: list[Scenario] = [
             k=4,
             watch_pairs=True,
             decide=["pair"],
-            match_ports=False,
             response=response("block"),
         ),
         expect={
@@ -1986,6 +2117,7 @@ SCENARIOS: list[Scenario] = [
             "service_attack_min": 80,
             "service_recovery_min": 100,
         },
+        forwarding="port_free",
     ),
     # ---- S: control flow ------------------------------------------------------------------------
     Scenario(
@@ -1998,6 +2130,7 @@ SCENARIOS: list[Scenario] = [
         stop_after=40,
         detection=llm(samples=2, response=response("block")),
         expect={"final": "stopped"},
+        forwarding="per_port",
     ),
 ]
 

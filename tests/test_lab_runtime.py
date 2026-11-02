@@ -18,7 +18,13 @@ def runtime(monkeypatch):
     channel.recv.side_effect = BlockingIOError
     monkeypatch.setattr(module.socket, "socket", lambda *args: channel)
     events = []
-    lab = MininetRuntime(presets()[2], "run", False, lambda k, d: events.append((k, d)))
+    lab = MininetRuntime(
+        presets()[2],
+        "run",
+        False,
+        lambda k, d: events.append((k, d)),
+        forwarding="per_port",
+    )
     lab.events = events
     yield lab
     lab.close()
@@ -233,7 +239,9 @@ def test_pump_ignores_foreign_runs_and_unknown_kinds(runtime):
 def test_listener_empties_the_socket_without_waiting_for_a_sample(tmp_path):
     import socket as real_socket
 
-    lab = MininetRuntime(presets()[2], "run", False, lambda k, d: None)
+    lab = MininetRuntime(
+        presets()[2], "run", False, lambda k, d: None, forwarding="per_port"
+    )
     try:
         lab.listener = module.threading.Thread(target=lab._listen, daemon=True)
         lab.listener.start()
@@ -279,7 +287,7 @@ def test_queue_is_bounded_and_reports_gaps(runtime):
 def test_probe_success_and_timeout(runtime):
     runtime.network = MagicMock()
     process = runtime.network.get.return_value.popen.return_value
-    process.communicate.return_value = (b"200 0.012", None)
+    process.communicate.return_value = (b"200 0.004 0.012", None)
     process.returncode = 0
     runtime.probe("h3", "h2")
     assert runtime.events[-1][1]["latency_ms"] == 12

@@ -14,11 +14,13 @@ def test_flow_rate_tracker_uses_counter_deltas() -> None:
     assert tracker.observe("flow", 30, 3000, 3.0) == (10.0, 1000.0)
 
 
-def test_flow_rate_tracker_treats_counter_reset_as_zero() -> None:
+def test_flow_rate_tracker_treats_a_replaced_rule_as_a_new_flow() -> None:
     tracker = FlowRateTracker()
     tracker.observe("flow", 100, 1000, 1.0)
-    assert tracker.observe("flow", 1, 10, 2.0) == (0.0, 0.0)
+    # The counter went down, so this is a new rule, not a rate of zero.
+    assert tracker.observe("flow", 1, 10, 2.0) is None
     assert tracker.observe("flow", 2, 20, 2.0) is None
+    assert tracker.observe("flow", 12, 120, 3.0) == (10.0, 100.0)
 
 
 def test_block_registry_restricts_and_deduplicates_sources() -> None:

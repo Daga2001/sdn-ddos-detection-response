@@ -19,10 +19,10 @@ def wait_for(manager, states):
 def test_one_lab_and_repeatable_cleanup():
     repository = MemoryRepository()
     manager = LabManager(repository, FakeRuntime)
-    run_id = manager.start(StartRequest(topology=presets()[2]))
+    run_id = manager.start(StartRequest(topology=presets()[2], forwarding="per_port"))
     wait_for(manager, {"running"})
     with pytest.raises(ValueError, match="already"):
-        manager.start(StartRequest(topology=presets()[2]))
+        manager.start(StartRequest(topology=presets()[2], forwarding="per_port"))
     manager.stop()
     manager.stop()
     wait_for(manager, {"stopped"})
@@ -36,7 +36,7 @@ def test_startup_failure_is_recorded_and_cleaned():
             raise RuntimeError("could not start")
 
     manager = LabManager(MemoryRepository(), BrokenRuntime)
-    manager.start(StartRequest(topology=presets()[2]))
+    manager.start(StartRequest(topology=presets()[2], forwarding="per_port"))
     wait_for(manager, {"failed"})
     assert manager.runtime.closed
     assert any(event["kind"] == "error" for event in manager.events(0)["events"])
@@ -45,7 +45,7 @@ def test_startup_failure_is_recorded_and_cleaned():
 def test_database_failure_stops_runtime_and_marks_failed():
     repository = MemoryRepository()
     manager = LabManager(repository, FakeRuntime)
-    manager.start(StartRequest(topology=presets()[2]))
+    manager.start(StartRequest(topology=presets()[2], forwarding="per_port"))
     wait_for(manager, {"running"})
     repository.failed = True
     wait_for(manager, {"failed"})
@@ -80,6 +80,7 @@ def test_full_experiment_phases_and_read_only_replay(monkeypatch):
         experiment=Experiment(
             attackers=["h1"], victims=["h2"], confirm_isolated_lab=True
         ),
+        forwarding="per_port",
     )
     identifier = manager.start(request)
     wait_for(manager, {"completed"})
@@ -137,6 +138,7 @@ def test_generator_exit_code_decides_pass_or_fail(monkeypatch, code, final):
             experiment=Experiment(
                 attackers=["h1"], victims=["h2"], confirm_isolated_lab=True
             ),
+            forwarding="per_port",
         )
     )
     wait_for(manager, {final})
@@ -154,7 +156,7 @@ def test_cleanup_failure_blocks_new_lab():
             raise OSError("cleanup failed")
 
     manager = LabManager(MemoryRepository(), BrokenCleanup)
-    request = StartRequest(topology=presets()[2])
+    request = StartRequest(topology=presets()[2], forwarding="per_port")
     manager.start(request)
     wait_for(manager, {"running"})
     manager.diagnostic(Diagnostic(action="interfaces", node="h1"))

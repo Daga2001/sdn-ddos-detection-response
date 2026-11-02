@@ -39,8 +39,7 @@ def controller(monkeypatch: pytest.MonkeyPatch) -> Any:
     instance.settings = SimpleNamespace(mitigation_enabled=False)
     instance.logger = logging.getLogger("test")
     instance._stats = StatsReassembler()
-    instance._packet_history = {1: {"x": 1}}
-    instance._last_poll = {1: 1.0}
+    instance._packet_history = {1: {"x": (1, 0, 0.0)}}
     instance._window_flows = {1: (1.0, [], 0)}
     instance._window_polls = {1: [(1.0, 1.0, {})]}
     instance._window_ports = {1: [(1.0, 1.0, {})]}
@@ -81,7 +80,7 @@ def test_a_dead_datapath_without_an_id_is_ignored(controller: Any) -> None:
             state=app_modes.DEAD_DISPATCHER, datapath=SimpleNamespace(id=None)
         )
     )
-    assert controller._packet_history == {1: {"x": 1}}
+    assert controller._packet_history == {1: {"x": (1, 0, 0.0)}}
 
 
 def test_snapshot_window_keeps_the_original_flow_list(controller: Any) -> None:
@@ -119,37 +118,61 @@ def test_mean_window_averages_recent_polls_and_ignores_old_ones(
 
 
 def flow_stat(
-    source: str, destination: str, proto: int, port: int, packets: int
+    source: str,
+    destination: str,
+    proto: int,
+    port: int,
+    packets: int,
+    duration_sec: int = 0,
 ) -> Any:
     key = "tcp_dst" if proto == 6 else "udp_dst"
     match = {"ipv4_src": source, "ipv4_dst": destination, "ip_proto": proto}
     if port:
         match[key] = port
-    return SimpleNamespace(priority=10, packet_count=packets, match=match, cookie=0)
+    return SimpleNamespace(
+        priority=10,
+        packet_count=packets,
+        byte_count=packets * 100,
+        match=match,
+        cookie=0,
+        duration_sec=duration_sec,
+        duration_nsec=0,
+    )
 
 
-def test_ports_and_protocols_are_counted_per_poll_when_they_are_watched(
+def test_ports_are_rates_on_the_switch_clock_when_they_are_watched(
     controller: Any,
 ) -> None:
     controller._packet_history = {}
-    controller._last_poll = {1: app_modes.time.monotonic() - 5.0}
     controller._window_ports = {}
     controller._observe_entropy_window(
         1,
         [
-            flow_stat("a", "v", 6, 8080, 500),
-            flow_stat("v", "a", 6, 40001, 5),
-            flow_stat("v", "a", 6, 40002, 5),
-            flow_stat("b", "v", 17, 53, 20),
+            flow_stat("a", "v", 6, 8080, 0),
+            flow_stat("v", "a", 6, 40001, 0),
+            flow_stat("v", "a", 6, 40002, 0),
+            flow_stat("b", "v", 17, 53, 0),
+        ],
+    )
+    assert controller._window_ports == {}
+    controller._observe_entropy_window(
+        1,
+        [
+            flow_stat("a", "v", 6, 8080, 500, duration_sec=10),
+            flow_stat("v", "a", 6, 40001, 5, duration_sec=10),
+            flow_stat("v", "a", 6, 40002, 5, duration_sec=10),
+            flow_stat("b", "v", 17, 53, 20, duration_sec=10),
         ],
     )
     ((_, elapsed, ports),) = controller._window_ports[1]
-    assert 4.0 < elapsed < 6.0
+    assert elapsed == 10.0
+    # 500 packets in 10 s is 50 pkt/s; the window stores rate * span.
     assert ports == {(6, 8080): 500.0, (6, 40001): 5.0, (6, 40002): 5.0, (17, 53): 20.0}
     controller._tracks_ports = False
     controller._window_ports = {}
-    controller._last_poll = {1: app_modes.time.monotonic() - 5.0}
-    controller._observe_entropy_window(1, [flow_stat("a", "v", 6, 8080, 50)])
+    controller._observe_entropy_window(
+        1, [flow_stat("a", "v", 6, 8080, 550, duration_sec=20)]
+    )
     assert controller._window_ports == {}
 
 

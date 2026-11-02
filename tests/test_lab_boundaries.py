@@ -67,7 +67,10 @@ def test_private_client_never_accepts_a_browser_url(monkeypatch):
     client = RunnerClient("http://runner:9001", secrets.token_urlsafe(32))
     client.status()
     client.events(0)
-    assert client.start(StartRequest(topology=presets()[2])) == "test"
+    assert (
+        client.start(StartRequest(topology=presets()[2], forwarding="per_port"))
+        == "test"
+    )
     client.stop()
     client.diagnostic(Diagnostic(action="interfaces", node="h1"))
     client.capture(Capture(link_id="link-1"))
@@ -78,7 +81,7 @@ def test_private_client_never_accepts_a_browser_url(monkeypatch):
     response.status_code = 409
     response.json.return_value = {"detail": "already running"}
     with pytest.raises(ValueError, match="already"):
-        client.start(StartRequest(topology=presets()[2]))
+        client.start(StartRequest(topology=presets()[2], forwarding="per_port"))
     request.side_effect = requests.ConnectionError()
     with pytest.raises(RuntimeError, match="unavailable"):
         client.stop()
@@ -185,6 +188,7 @@ def test_worker_auth_and_fixed_operations(monkeypatch):
     monkeypatch.setenv("SDN_RUNNER_TOKEN", token)
     manager = LabManager(MemoryRepository(), FakeRuntime)
     monkeypatch.setattr(worker, "LabManager", lambda repository: manager)
+    monkeypatch.setattr(worker, "RunnerLock", lambda settings: MagicMock())
     with TestClient(worker.create_app()) as client:
         assert client.get("/status").status_code == 401
         client.headers["Authorization"] = f"Bearer {token}"
@@ -199,7 +203,11 @@ def test_worker_auth_and_fixed_operations(monkeypatch):
         assert client.post("/capture", json={"link_id": "link-1"}).status_code == 409
         assert (
             client.post(
-                "/runs", json={"topology": presets()[2].model_dump()}
+                "/runs",
+                json={
+                    "topology": presets()[2].model_dump(),
+                    "forwarding": "per_port",
+                },
             ).status_code
             == 200
         )

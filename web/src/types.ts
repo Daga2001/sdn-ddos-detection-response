@@ -85,7 +85,7 @@ export type EntropyParams = {
   /** Packet rate above which the second-order EWMA threshold cannot decrease. */
   rate_threshold: number;
   /** false: forwarding rules ignore the layer-4 port (no rule per reply in a SYN flood). */
-  match_ports: boolean;
+  match_ports?: boolean;
 };
 export type EntropyMeasure = "shannon" | "norm" | "renyi" | "tsallis" | "min";
 export type EntropyFeature = "src" | "dst" | "dport" | "proto" | "pair";
@@ -161,7 +161,6 @@ export const defaultEntropy: EntropyParams = {
   decide: [],
   margin: 0.01,
   rate_threshold: 800,
-  match_ports: true,
 };
 export const defaultResponse: ResponseParams = {
   policy: "block",
@@ -210,6 +209,7 @@ export function normalizeDetection(value: unknown): DetectionConfig | null {
     ...(saved.entropy ?? {}),
   };
   entropy.center = legacy[entropy.center] ?? entropy.center;
+  delete entropy.match_ports;
   if (
     saved.entropy?.epsilon !== undefined &&
     saved.entropy?.margin === undefined
@@ -417,11 +417,18 @@ export type Run = {
   mitigation?: string | null;
   policy?: string | null;
   dry_run?: string | null;
+  forwarding?: string | null;
+  match_ports?: string | null;
 };
 export type Status = {
   state: string;
   run_id: string | null;
   persistence_error?: boolean;
+  runner_instance_id?: string;
+  started_at?: string | null;
+  ended_at?: string | null;
+  elapsed_ms?: number;
+  unavailable?: boolean;
 };
 
 export type Notice = {

@@ -12,7 +12,7 @@ class LabSettings:
     access_token: str
     runner_token: str
     origin: str = "http://localhost:8080"
-    runner_url: str = "http://runner:9001"
+    runner_url: str = "http://lab-runner-control:9001"
     static_dir: str = "web/dist"
 
     def __post_init__(self) -> None:
@@ -28,6 +28,8 @@ class LabSettings:
             access_token=os.environ.get("SDN_LAB_TOKEN", ""),
             runner_token=os.environ.get("SDN_RUNNER_TOKEN", ""),
             origin=os.environ.get("SDN_LAB_ORIGIN", "http://localhost:8080"),
-            runner_url=os.environ.get("SDN_RUNNER_URL", "http://runner:9001"),
+            runner_url=os.environ.get(
+                "SDN_RUNNER_URL", "http://lab-runner-control:9001"
+            ),
             static_dir=os.environ.get("SDN_LAB_STATIC", str(Path("web/dist"))),
         )
