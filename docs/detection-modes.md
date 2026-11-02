@@ -37,14 +37,14 @@ to it through the contract it already knows (`/predict`, `/health`); only the
 *active* mode answers, the other detector's route returns 409.
 
 ```bash
-bash scripts/lab_detector.sh up            # lab (web/runner/inference) + detector
+docker compose up -d            # lab (web/runner/inference) + detector
 bash scripts/detector.sh status            # active mode/model and Ollama health
 bash scripts/detector.sh models            # models installed in Ollama
 bash scripts/detector.sh set --mode llm --model qwen2.5:3b
 bash scripts/detector.sh set --mode entropy
 bash scripts/detector.sh set --prompt lab                      # insdn | lab
 bash scripts/detector.sh set --response escalate --dry-run false   # block | rate_limit | escalate
-bash scripts/lab_detector.sh down
+docker compose down
 ```
 
 Experiments can be driven without the browser through the lab's own API:
@@ -139,8 +139,9 @@ the dataset scripts such as `compare_llms.py`; thresholds and examples from the
 InSDN dataset; the lab container defaults to `lab` instead) and `lab` (thresholds and
 examples from the graphical lab's own traffic). The two `pktrate` are different
 measurements: InSDN's is CICFlowMeter packets/duration of individual (often
-microsecond-long) flows, the lab's is the controller's packets/s of an aggregated
-flow over the last 5 s poll. Labeled lab samples (9 runs, SYN/UDP at 100-1000
+microsecond-long) flows. The lab's is the change in the switch's packet
+counter divided by the change in that flow's OpenFlow age, not the time the
+controller took to process the reply. Labeled lab samples (9 runs, SYN/UDP at 100-1000
 pkt/s, 7792 flows) separate cleanly: legitimate <= 3.6 pkt/s, attack >= 95 pkt/s.
 
 Same 200 flows (100 attack, 100 legitimate, half of them the highest-rate
@@ -411,19 +412,14 @@ attackers was enough to put the frozen band out of range again and a legitimate 
 named and blocked (seen with 8 attackers, 3.8 s and 34.8 s after the flood). A second flood
 bigger than 5 % of the first is still named at once.
 
-### Forwarding rules and the reply flood (`SDN_MATCH_L4_PORTS`)
+### Forwarding rules (`forwarding`, `SDN_MATCH_L4_PORTS`)
 
-By default a forwarding rule matches the layer-4 destination port. Every reply of a SYN
-flood goes to another source port, so each reply is a flow of its own: tens of thousands of
-rules and packet-ins in a minute. The Ryu controller is single-threaded and also reads
-every rule at each statistics poll, so it stays saturated until the rules expire (60 s
-idle): measured on the university network, the controller sits at 95-100 % CPU and the
-victim's service is down until about 70 s after the flood starts, however early the
-attackers are blocked. With `SDN_MATCH_L4_PORTS=false` (the Detection tab's "Match ports in
-forwarding rules", entropy runs only) a rule covers a source, a destination and a protocol
-and a flood adds no rules after its first packet. The detector sees the same IPs either way;
-only the port entropy is lost. It is off by default because the per-reply flows are what the
-original design studies.
+Every run, experiment or observation, chooses one forwarding setting. There is no default. The same choice is passed to the controller for every detector, including a run whose detector the service picks.
+
+* `per_port` (`SDN_MATCH_L4_PORTS=true`, Experiment A): a rule matches the TCP/UDP destination port. A SYN flood can create one rule and one Packet-In per reply and saturate the controller.
+* `port_free` (`SDN_MATCH_L4_PORTS=false`, Experiment B): a rule matches source, destination and protocol. A flood adds no rules after its first packet.
+
+Both controllers refuse to start if `SDN_MATCH_L4_PORTS` is missing or is not `true` or `false`. Entropy presets do not change this choice. Older saved runs have no `forwarding` field; the workspace shows per-port for LLM and off runs, and for entropy runs whose `match_ports` was true or missing, and port-free only for entropy runs that stored `match_ports` false. It does not rewrite those rows.
 
 ## LLM detector
 

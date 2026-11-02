@@ -49,7 +49,7 @@ say "stage 3: entropy sweep"
 : > /tmp/entropy_sweep.log
 for k in 1.0 2.0 3.0; do
   say "entropy k=$k (recreating the detector)"
-  SDN_ENTROPY_K="$k" timeout 600 bash scripts/lab_detector.sh up > /tmp/entropy_up.log 2>&1 \
+  SDN_ENTROPY_K="$k" timeout 600 docker compose up -d --build > /tmp/entropy_up.log 2>&1 \
     || { say "lab up failed for k=$k"; continue; }
   sleep 15
   bash scripts/detector.sh set --mode entropy --response block --dry-run true \
@@ -62,7 +62,7 @@ for k in 1.0 2.0 3.0; do
   done
 done
 say "restoring default detector settings"
-timeout 600 bash scripts/lab_detector.sh up > /tmp/entropy_up.log 2>&1 || say "restore failed"
+timeout 600 docker compose up -d --build > /tmp/entropy_up.log 2>&1 || say "restore failed"
 sleep 15
 bash scripts/detector.sh set --mode llm --model llama3.2:3b --prompt lab --response block \
   --dry-run true </dev/null >/dev/null || say "cannot restore llm"

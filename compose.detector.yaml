@@ -1,7 +1,5 @@
-# Override for compose.lab.yaml: adds our detection service (LLM + entropy, never
-# mixed) and points the lab's runner at it. Use through scripts/lab_detector.sh:
-#   docker compose --env-file .env --env-file .lab/env \
-#     -f compose.lab.yaml -f compose.detector.yaml up --build -d
+# Internal detector definitions, included by the root compose.yaml.
+# Start the complete stack with docker compose up.
 
 services:
   detector:

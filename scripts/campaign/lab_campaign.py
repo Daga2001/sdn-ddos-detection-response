@@ -470,7 +470,11 @@ def request_body(scenario: Scenario, topology: dict[str, Any]) -> dict[str, Any]
     }
     if scenario.detection is not None:
         experiment["detection"] = scenario.detection
-    return {"topology": topology, "experiment": experiment}
+    return {
+        "topology": topology,
+        "experiment": experiment,
+        "forwarding": scenario.forwarding,
+    }
 
 
 def load_topology(api: Api, scenario: Scenario) -> dict[str, Any]:
@@ -503,13 +507,14 @@ def wait_state(api: Api, limit: float, during: Any = None) -> str:
 
 def expected_env(scenario: Scenario) -> dict[str, str]:
     detection = scenario.detection
-    if detection is None:
-        return {}
-    response = detection.get("response", {})
     want = {
-        "SDN_LLM_MAX_SAMPLES": str(detection.get("llm_max_samples", 5)),
-        "SDN_MITIGATION_ENABLED": str(scenario.mitigation).lower(),
+        "SDN_MATCH_L4_PORTS": "true" if scenario.forwarding == "per_port" else "false",
     }
+    if detection is None:
+        return want
+    response = detection.get("response", {})
+    want["SDN_LLM_MAX_SAMPLES"] = str(detection.get("llm_max_samples", 5))
+    want["SDN_MITIGATION_ENABLED"] = str(scenario.mitigation).lower()
     if scenario.mitigation:
         want["SDN_RESPONSE_POLICY"] = response.get("policy", "block")
         want["SDN_RESPONSE_DRY_RUN"] = str(response.get("dry_run", True)).lower()
@@ -579,6 +584,7 @@ def run_scenario(api: Api, scenario: Scenario, out: Path) -> dict[str, Any]:
                         "SDN_ENTROPY_WINDOW_SECONDS",
                         "SDN_ENTROPY_WINDOW_MODE",
                         "SDN_DDOS_THRESHOLD",
+                        "SDN_MATCH_L4_PORTS",
                     }
                 )
             )
@@ -650,6 +656,10 @@ def run_scenario(api: Api, scenario: Scenario, out: Path) -> dict[str, Any]:
             problems.append(
                 f"detector service model {options_seen.get('model')} != {detection.get('model')}"
             )
+    else:
+        for key, value in expected_env(scenario).items():
+            if env_seen and env_seen.get(key) != value:
+                problems.append(f"controller env {key}={env_seen.get(key)} != {value}")
     result["controller_env"] = env_seen
     result["detector_during_run"] = {
         k: options_seen.get(k)

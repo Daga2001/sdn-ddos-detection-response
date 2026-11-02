@@ -89,6 +89,7 @@ export function ExperimentPanel({
   connected,
   task,
   start,
+  forwardingChosen,
 }: {
   topology: Topology | null;
   experiment: Experiment;
@@ -97,10 +98,12 @@ export function ExperimentPanel({
   connected: boolean;
   task: Task;
   start: (withExperiment: boolean) => Promise<void>;
+  forwardingChosen: boolean;
 }) {
   const [picker, setPicker] = useState<null | "attackers" | "victims">(null);
   const clients = legitimateClients(topology, experiment);
   const ready =
+    forwardingChosen &&
     experiment.attackers.length > 0 &&
     experiment.victims.length > 0 &&
     experiment.traffic.length > 0 &&

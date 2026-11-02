@@ -2,6 +2,15 @@ import { test, expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
 // A small network with three attackers' worth of room: h1..h5 on one switch.
+
+async function chooseForwarding(
+  page: Page,
+  which: "per_port" | "port_free" = "per_port",
+) {
+  const name = which === "per_port" ? /Per-port rules/ : /Port-free rules/;
+  await page.getByRole("radio", { name }).check();
+}
+
 const topology = {
   version: 1,
   name: "Detection test network",
@@ -192,6 +201,11 @@ async function mockLab(
     }
     (window as unknown as { EventSource: unknown }).EventSource = OpenStream;
   });
+  await page.routeWebSocket("**/api/ownership", (socket) => {
+    socket.send(
+      JSON.stringify({ owner_id: "12345678-1234-4234-8234-123456789abc" }),
+    );
+  });
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname.slice(4);
@@ -266,6 +280,7 @@ test("the detector can be switched from the top bar and from the Detection tab",
   const quick = page.getByLabel("Detector", { exact: true });
   // It starts from what the detector service is set to.
   await expect(quick).toHaveValue("llm:llama3.2:3b");
+  await observationTab(page, "Detection").click();
   await quick.selectOption("llm:gemma2:2b");
   await inspectorTab(page, "Detection").click();
   await expect(page.getByRole("combobox", { name: /^Model/ })).toHaveValue(
@@ -273,6 +288,22 @@ test("the detector can be switched from the top bar and from the Detection tab",
   );
   await page.getByRole("button", { name: /^Entropy/ }).click();
   await expect(quick).toHaveValue("entropy");
+  await expect(quick.locator("option:checked")).toHaveText("Entropy · Shannon");
+  await expect(observationTab(page, "Detection")).toHaveCount(0);
+  await expect(observationTab(page, "Traffic")).toHaveClass("active");
+  for (const [measure, name] of [
+    ["renyi", "Rényi"],
+    ["tsallis", "Tsallis"],
+    ["norm", "Normalised Shannon"],
+    ["min", "Min-entropy"],
+  ]) {
+    await page
+      .getByRole("combobox", { name: /^Entropy measure/ })
+      .selectOption(measure);
+    await expect(quick.locator("option:checked")).toHaveText(
+      `Entropy · ${name}`,
+    );
+  }
   await expect(
     page.getByRole("spinbutton", { name: /^Band width/ }),
   ).toBeVisible();
@@ -280,9 +311,17 @@ test("the detector can be switched from the top bar and from the Detection tab",
   await expect(page.getByText(/needs about 40 s of baseline/)).toBeVisible();
   await page.getByRole("button", { name: /^No detection/ }).click();
   await expect(quick).toHaveValue("off");
+  await expect(observationTab(page, "Detection")).toHaveCount(0);
   await expect(
     page.getByRole("spinbutton", { name: /^Band width/ }),
   ).toHaveCount(0);
+  await quick.selectOption("llm:gemma2:2b");
+  await expect(observationTab(page, "Detection")).toBeVisible();
+  await expect(observationTab(page, "Traffic")).toHaveClass("active");
+  await observationTab(page, "Detection").click();
+  await quick.selectOption("off");
+  await expect(observationTab(page, "Detection")).toHaveCount(0);
+  await expect(observationTab(page, "Traffic")).toHaveClass("active");
 });
 
 test("the detection setup is sent with the experiment so it is saved with the run", async ({
@@ -305,6 +344,7 @@ test("the detection setup is sent with the experiment so it is saved with the ru
   await expect(page.getByRole("spinbutton", { name: /^Within/ })).toBeVisible();
   await inspectorTab(page, "Experiment").click();
   await page.getByLabel(/I confirm these hosts/).check();
+  await chooseForwarding(page);
   await page.getByRole("button", { name: "Start experiment" }).click();
   await expect.poll(() => lab.started.length).toBe(1);
   const sent = lab.started[0] as {
@@ -373,6 +413,7 @@ test("a replay scores the detector against the experiment's ground truth", async
   page,
 }) => {
   await mockLab(page);
+  await page.getByLabel("Detector", { exact: true }).selectOption("off");
   await inspectorTab(page, "History").click();
   await expect(
     page.getByText("LLM gemma2:2b · 2 attackers · escalate (real rules)"),
@@ -403,6 +444,35 @@ test("a replay scores the detector against the experiment's ground truth", async
     page.getByRole("checkbox", { name: /Apply a response/ }),
   ).toBeDisabled();
 });
+
+for (const mode of ["entropy", "off", null]) {
+  test(`a non-LLM replay hides detection results (${mode ?? "unset"})`, async ({
+    page,
+  }) => {
+    await mockLab(page);
+    await page.route("**/api/runs/record", (route) =>
+      route.fulfill({
+        json: {
+          id: "record",
+          topology,
+          status: "completed",
+          settings: {
+            ...settings,
+            detection: mode ? { ...settings.detection, mode } : null,
+          },
+        },
+      }),
+    );
+    await observationTab(page, "Detection").click();
+    await inspectorTab(page, "History").click();
+    await page.getByRole("button", { name: "Replay" }).click();
+    await expect(observationTab(page, "Detection")).toHaveCount(0);
+    await expect(observationTab(page, "Traffic")).toHaveClass("active");
+    await page.getByRole("button", { name: "Exit", exact: true }).click();
+    await expect(observationTab(page, "Detection")).toBeVisible();
+    await expect(observationTab(page, "Traffic")).toHaveClass("active");
+  });
+}
 
 test("results are not invented before anything has run", async ({ page }) => {
   await mockLab(page);
@@ -436,6 +506,7 @@ test("the entropy measure and the threshold model are sent with the experiment",
     .check();
   await inspectorTab(page, "Experiment").click();
   await page.getByLabel(/I confirm these hosts/).check();
+  await chooseForwarding(page);
   await page.getByRole("button", { name: "Start experiment" }).click();
   await expect.poll(() => lab.started.length).toBe(1);
   const sent = lab.started[0] as {
@@ -533,19 +604,17 @@ test("forwarding rules can stop matching ports, and the choice is sent with the 
   const lab = await mockLab(page);
   await inspectorTab(page, "Detection").click();
   await page.getByRole("button", { name: /^Entropy/ }).click();
-  const match = page.getByRole("checkbox", {
-    name: /Match ports in forwarding rules/,
-  });
-  await expect(match).toBeChecked();
-  await match.uncheck();
+  await expect(
+    page.getByRole("checkbox", { name: /Match ports in forwarding rules/ }),
+  ).toHaveCount(0);
+  await chooseForwarding(page, "port_free");
   await inspectorTab(page, "Experiment").click();
   await page.getByLabel(/I confirm these hosts/).check();
   await page.getByRole("button", { name: "Start experiment" }).click();
   await expect.poll(() => lab.started.length).toBe(1);
-  const sent = lab.started[0] as {
-    experiment: { detection: { entropy: { match_ports: boolean } } };
-  };
-  expect(sent.experiment.detection.entropy.match_ports).toBe(false);
+  const sent = lab.started[0] as { forwarding: string };
+  expect(sent.forwarding).toBe("port_free");
+  expect(JSON.stringify(sent)).not.toContain("match_ports");
 });
 
 test("the fast-reaction preset sets the whole setup in one click, and Original undoes it", async ({
@@ -564,16 +633,10 @@ test("the fast-reaction preset sets the whole setup in one click, and Original u
   await expect(
     page.getByRole("combobox", { name: /^Entropy measure/ }),
   ).toHaveValue("norm");
-  await expect(
-    page.getByRole("checkbox", { name: /Match ports in forwarding rules/ }),
-  ).not.toBeChecked();
   await page.getByRole("button", { name: "Original", exact: true }).click();
   await expect(field(/^Window · seconds/)).toHaveValue("5");
   await expect(field(/^Poll every/)).toHaveValue("5");
   await expect(field(/^Warm-up windows/)).toHaveValue("16");
-  await expect(
-    page.getByRole("checkbox", { name: /Match ports in forwarding rules/ }),
-  ).toBeChecked();
 });
 
 test("the destination-entropy and pair-entropy presets are one click away and their settings are sent with the run", async ({
@@ -626,6 +689,7 @@ test("the destination-entropy and pair-entropy presets are one click away and th
   await decided.selectOption("pair");
   await inspectorTab(page, "Experiment").click();
   await page.getByLabel(/I confirm these hosts/).check();
+  await chooseForwarding(page);
   await page.getByRole("button", { name: "Start experiment" }).click();
   await expect.poll(() => lab.started.length).toBe(1);
   const sent = lab.started[0] as {
@@ -639,6 +703,5 @@ test("the destination-entropy and pair-entropy presets are one click away and th
     watch_pairs: true,
     decide: ["pair"],
     rate_threshold: 800,
-    match_ports: false,
   });
 });

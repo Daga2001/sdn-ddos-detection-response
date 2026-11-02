@@ -10,6 +10,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { TopologyCanvas } from "./TopologyCanvas";
 import { Observations } from "./Observations";
+import { useRunClock, useRunOwnership } from "./useRunOwnership";
+import { FORWARDING_OPTIONS } from "./traffic";
+import type { Forwarding } from "./traffic";
 import {
   api,
   download,
@@ -70,6 +73,8 @@ function App() {
   const [status, setStatus] = useState<Status>({ state: "idle", run_id: null });
   const [connected, setConnected] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const ownerId = useRunOwnership(authenticated, setNotice);
+  const liveElapsed = useRunClock(status, connected);
   const [busy, setBusy] = useState(false);
   const [selection, setSelection] = useState<string[]>([]);
   const [mode, setMode] = useState<"select" | "pan">("select");
@@ -77,6 +82,8 @@ function App() {
   const [panel, setPanel] = useState("Experiment");
   const [events, setEvents] = useState<Observation[]>([]);
   const [experiment, setExperiment] = useState<Experiment>(defaultExperiment);
+  const [forwarding, setForwarding] = useState<Forwarding | null>(null);
+  const [liveExperiment, setLiveExperiment] = useState(false);
   const [detectorOptions, setDetectorOptions] = useState<DetectionOptions>({});
   const [replay, setReplay] = useState<{
     run: Run;
@@ -88,7 +95,6 @@ function App() {
   const eventCursor = useRef({ run: "", seq: 0 });
   const seenRun = useRef("");
   const importInput = useRef<HTMLInputElement>(null);
-  const [now, setNow] = useState(() => Date.now());
   const active = activeStates.includes(status.state);
   const locked = active || !!replay || busy;
   const visible = replay ? replay.events.slice(0, cursor) : events;
@@ -118,19 +124,15 @@ function App() {
       sum + (row.rates ? row.rates.rx_bps + row.rates.tx_bps : 0),
     0,
   );
-  // Elapsed run time, measured from the first phase event. Live runs tick
-  // against the wall clock; a replay is frozen at the last visible event.
-  const runStart = visible.find((e) => e.kind === "phase")?.ts;
+  // Old replays retain their recorded phase clock. Live time belongs to the runner.
+  const runStart =
+    replay?.run.started_at ?? visible.find((e) => e.kind === "phase")?.ts;
   const lastTs = visible.length ? visible[visible.length - 1].ts : undefined;
-  const runEnd = replay
-    ? lastTs
-    : active
-      ? new Date(now).toISOString()
-      : lastTs;
-  const elapsedMs =
-    runStart && runEnd
-      ? Math.max(0, Date.parse(runEnd) - Date.parse(runStart))
-      : null;
+  const elapsedMs = replay
+    ? runStart && lastTs
+      ? Math.max(0, Date.parse(lastTs) - Date.parse(runStart))
+      : null
+    : liveElapsed;
 
   const task = useCallback(
     async (action: () => Promise<void>, failureTitle?: string) => {
@@ -196,7 +198,7 @@ function App() {
           tone: "error",
           title: "The workspace cannot reach the local lab service.",
           detail: error instanceof Error ? error.message : undefined,
-          hint: "Start the lab with `make lab-up`, then reload this page.",
+          hint: "Start the lab with `docker compose up`, then reload this page.",
         }),
       );
   }, []);
@@ -211,35 +213,62 @@ function App() {
       setRuns(await api("/runs"));
     }, "The workspace could not load its saved topologies and runs.");
     const source = new EventSource("/api/events");
+    let disposed = false;
+    let runnerInstance: string | undefined;
+    let currentRun: string | null = null;
+    const inconsistent = () => {
+      source.close();
+      disposed = true;
+      setConnected(false);
+      setNotice({
+        tone: "error",
+        title: "The lab connection changed identity.",
+        hint: "Reload to reconnect. Measurements from different runs were not combined.",
+      });
+    };
     source.addEventListener("status", (event) => {
       const next: Status = JSON.parse(event.data);
+      if (disposed) return;
+      if (runnerInstance && next.runner_instance_id !== runnerInstance) {
+        inconsistent();
+        return;
+      }
+      runnerInstance = next.runner_instance_id;
+      currentRun = next.run_id;
+      if (eventCursor.current.run !== (currentRun ?? "")) {
+        eventCursor.current = { run: currentRun ?? "", seq: 0 };
+        setEvents([]);
+      }
       setStatus(next);
-      setConnected(true);
+      setConnected(!next.unavailable);
       if (next.run_id && seenRun.current !== next.run_id) {
         seenRun.current = next.run_id;
         // A reloaded browser must display the actual running topology, not a preset.
         api<Run>(`/runs/${next.run_id}`)
           .then((run) => {
+            if (disposed || currentRun !== next.run_id) return;
             if (run.topology) {
               setTopology(run.topology);
             }
             if (run.settings) setExperiment(normalizeExperiment(run.settings));
           })
-          .catch((error) =>
+          .catch((error) => {
+            if (disposed || currentRun !== next.run_id) return;
             setNotice({
               tone: "warning",
               title: "Could not load the topology of the run in progress.",
               detail: error instanceof Error ? error.message : undefined,
               hint: "The run keeps going. Reload the page to try again.",
-            }),
-          );
+            });
+          });
       }
     });
     source.addEventListener("observation", (event) => {
       const value: Observation = JSON.parse(event.data);
-      if (eventCursor.current.run !== value.run_id) {
-        eventCursor.current = { run: value.run_id, seq: 0 };
-        setEvents([]);
+      if (disposed) return;
+      if (currentRun !== value.run_id) {
+        inconsistent();
+        return;
       }
       if (value.seq <= eventCursor.current.seq) return;
       eventCursor.current.seq = value.seq;
@@ -261,7 +290,7 @@ function App() {
         title: "The connection to the lab runner was lost.",
         detail:
           "The numbers on screen are the last ones measured and are no longer updating.",
-        hint: "Any run already started keeps its own time limits and will still stop on its own.",
+        hint: "The run stops if this tab's ownership connection is lost. Its independent time limits still apply.",
       });
     });
     source.addEventListener("expired", () => {
@@ -269,7 +298,11 @@ function App() {
       setAuthenticated(false);
     });
     source.onerror = () => setConnected(false);
-    return () => source.close();
+    return () => {
+      disposed = true;
+      source.close();
+      setConnected(false);
+    };
   }, [authenticated, loadDetectorOptions]);
   useEffect(() => {
     // A detector that was unreachable once (the lab restarting, a dropped tunnel) comes
@@ -304,22 +337,21 @@ function App() {
     const timer = setTimeout(() => setCursor((value) => value + 1), delay);
     return () => clearTimeout(timer);
   }, [playing, replay, cursor, speed]);
-  useEffect(() => {
-    // Keep the run clock moving while a live run is in progress.
-    if (replay || !active) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [replay, active]);
 
   async function refreshHistory() {
     setProjects(await api("/projects"));
     setRuns(await api("/runs"));
   }
   async function start(withExperiment: boolean) {
-    if (!topology) return;
+    if (!topology || !forwarding) return;
+    if (!ownerId)
+      throw new Error("Reload to establish ownership before starting a run.");
+    setLiveExperiment(withExperiment);
     await api("/runs", {
       topology,
+      owner_id: ownerId,
       experiment: withExperiment ? experiment : null,
+      forwarding,
     });
     setReplay(null);
     setStatus(await api("/status"));
@@ -613,6 +645,20 @@ function App() {
             options={detectorOptions}
             disabled={locked}
           />
+          <fieldset className="forwarding-choice" disabled={locked}>
+            <legend>Forwarding</legend>
+            {FORWARDING_OPTIONS.map((option) => (
+              <label key={option.id}>
+                <input
+                  type="radio"
+                  name="forwarding"
+                  checked={forwarding === option.id}
+                  onChange={() => setForwarding(option.id)}
+                />
+                {option.text}
+              </label>
+            ))}
+          </fieldset>
           <span className={`phase ${phase}`}>{phase}</span>
           {elapsedMs !== null && (
             <span
@@ -627,7 +673,9 @@ function App() {
             </span>
           )}
           <button
-            disabled={!topology || locked || !connected}
+            disabled={
+              !topology || locked || !connected || !ownerId || !forwarding
+            }
             onClick={() =>
               void task(
                 () => start(false),
@@ -709,7 +757,7 @@ function App() {
                 : "· last measurement"}
           </small>
         </div>
-        <div title="Whether the machine-learning detector service is reachable and ready to classify traffic. It is separate from the lab itself: observation and experiments work with no detector, but a detector that is 'not ready' means no detection or mitigation claim can be made. The detector container is started with scripts/lab_detector.sh; without it this stays 'not observed'.">
+        <div title="Whether the machine-learning detector service is reachable and ready to classify traffic. It is separate from the lab itself: observation and experiments work with no detector, but a detector that is 'not ready' means no detection or mitigation claim can be made. The detector container is started with docker compose up; without it this stays 'not observed'.">
           <span>Detector</span>
           <strong>{String(detector).replaceAll("_", " ")}</strong>
           <small>Model availability is separate from observation</small>
@@ -927,13 +975,27 @@ function App() {
             events={visible}
             tab={tab}
             setTab={setTab}
+            topology={shownTopology}
+            experiment={
+              (
+                replay
+                  ? (replay.run.settings?.attackers?.length ?? 0) > 0
+                  : liveExperiment
+              )
+                ? roleSettings
+                : null
+            }
             detectionView={
-              <DetectionResults
-                events={visible}
-                topology={shownTopology}
-                experiment={roleSettings.attackers.length ? roleSettings : null}
-                active={!replay && active}
-              />
+              roleSettings.detection?.mode === "llm" ? (
+                <DetectionResults
+                  events={visible}
+                  topology={shownTopology}
+                  experiment={
+                    roleSettings.attackers.length ? roleSettings : null
+                  }
+                  active={!replay && active}
+                />
+              ) : null
             }
           />
         </div>
@@ -964,9 +1026,10 @@ function App() {
               experiment={experiment}
               setExperiment={setExperiment}
               locked={locked}
-              connected={connected}
+              connected={connected && !!ownerId}
               task={task}
               start={start}
+              forwardingChosen={forwarding !== null}
             />
           )}
           {panel === "Detection" && (

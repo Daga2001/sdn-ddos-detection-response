@@ -1,33 +1,17 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import * as echarts from "echarts/core";
-import { LineChart } from "echarts/charts";
-import {
-  GridComponent,
-  TooltipComponent,
-  LegendComponent,
-} from "echarts/components";
-import { CanvasRenderer } from "echarts/renderers";
-import type { Observation, PhaseSpan } from "./types";
+import type { Observation, Topology, Experiment } from "./types";
 import { packets, phaseSpans } from "./types";
 import { EntropyView } from "./EntropyView";
-echarts.use([
-  LineChart,
-  GridComponent,
-  TooltipComponent,
-  LegendComponent,
-  CanvasRenderer,
-]);
+import { TrafficView } from "./TrafficView";
 
-// Plain-language reasons each observation view exists, shown on hover. Each
-// answers: what you see here, how to read it, and why it is useful.
 const tabHints: Record<string, string> = {
   Detection:
     "WHAT: how the detector did on this run — a confusion matrix (true/false positives and negatives per host), precision and recall, how fast it reacted, the measured network and service data around it, and a live chart of the attack against the detections. HOW TO READ: attackers named are true positives, legitimate clients named are false positives; the chart shows the flood reaching the victim and the detections stacking up. WHY: it answers “did the detector work, and at what cost?” without reading event logs.",
   Threshold:
     "WHAT: a window-by-window log of the entropy detector — the entropy it computes for source IPs, destination IPs (and ports or protocols if you turned them on), the band of normal values it learned, where the centre of that band sits, and the network it measured (packet rate, flow rules, busiest talkers). HOW TO READ: dots inside the shaded band are normal, outside it they are suspicious; the dashed line is the learned centre (the mean or the median, as chosen in the Detection tab). WHY: it shows in real time why the detector alarmed or stayed quiet, and how its threshold moves as the traffic changes.",
   Traffic:
-    "WHAT: a live time chart — the teal line is how much data is crossing the links each second, the orange line is how long the web service takes to answer a normal request, and the shaded bands mark the baseline, attack and recovery phases. HOW TO READ: during an attack the traffic line climbs and the latency line rises or its points drop out when a probe fails. WHY: it is the headline picture of an attack's impact building up and fading away.",
+    "WHAT: five stacked panels — packets by who sent them, website checks, ping, Packet-Ins and flow rules, and CPU. They share one clock and the phase bands. HOW TO READ: a red ✗ is a failed check or a lost ping; the table under the panels compares baseline, attack and recovery. WHY: the old chart added every link in both directions and hid a SYN flood behind kilobits, and a failed check disappeared.",
   Packets:
     "WHAT: a sample of individual packets — source, destination and protocol — captured from one link you pick. HOW TO READ: each row is one packet; click it for its header fields. WHY: it confirms what kind of traffic is really flowing (SYN vs UDP vs ICMP). It is empty until you start a capture: the experiment does not record packets on its own. Pick a link in the Inspect tab and start a bounded capture; payloads are never kept.",
   Commands:
@@ -38,122 +22,27 @@ const tabHints: Record<string, string> = {
     "WHAT: the switches' OpenFlow forwarding tables as the controller last polled them (every few seconds), one row per flow with its packet and byte counters. HOW TO READ: high packet/byte counts on a flow toward the victim are the flood; a drop rule would appear here too. WHY: it shows how the network is actually forwarding — or dropping — traffic underneath the chart. It is not a packet capture.",
 };
 
-const bandColor: Record<string, string> = {
-  baseline: "rgba(8, 126, 131, 0.06)",
-  attack: "rgba(193, 107, 65, 0.12)",
-  recovery: "rgba(90, 120, 150, 0.08)",
-};
-
-function Chart({
-  events,
-  spans,
-}: {
-  events: Observation[];
-  spans: PhaseSpan[];
-}) {
-  const element = useRef<HTMLDivElement>(null);
-  const chart = useRef<echarts.EChartsType | null>(null);
-  useEffect(() => {
-    if (!element.current) return;
-    chart.current = echarts.init(element.current);
-    const observer = new ResizeObserver(() => chart.current?.resize());
-    observer.observe(element.current);
-    return () => {
-      observer.disconnect();
-      chart.current?.dispose();
-    };
-  }, []);
-  useEffect(() => {
-    const traffic = events.filter((e) => e.kind === "links").slice(-300);
-    const service = events.filter((e) => e.kind === "service").slice(-300);
-    chart.current?.setOption({
-      animation: false,
-      color: ["#087e83", "#c16b41"],
-      grid: { left: 60, right: 62, top: 40, bottom: 30 },
-      legend: {
-        data: ["Summed link traffic (kb/s)", "Service latency (ms)"],
-        textStyle: { fontSize: 11 },
-      },
-      tooltip: { trigger: "axis", renderMode: "richText" },
-      xAxis: { type: "time" },
-      yAxis: [
-        {
-          type: "value",
-          name: "kb/s",
-          splitLine: { lineStyle: { color: "#e4e7df" } },
-        },
-        { type: "value", name: "ms", splitLine: { show: false } },
-      ],
-      series: [
-        {
-          name: "Summed link traffic (kb/s)",
-          type: "line",
-          showSymbol: false,
-          areaStyle: { opacity: 0.09 },
-          markArea: {
-            silent: true,
-            data: spans.map((span) => [
-              {
-                xAxis: span.start,
-                itemStyle: { color: bandColor[span.state] ?? "transparent" },
-                label: {
-                  show: true,
-                  position: "insideTop",
-                  distance: 4,
-                  fontSize: 10,
-                  color: "#5b6b60",
-                  formatter: `${span.state} · ${Math.round(
-                    (span.end - span.start) / 1000,
-                  )}s`,
-                },
-              },
-              { xAxis: span.end },
-            ]),
-          },
-          data: traffic.map((e) => [
-            Date.parse(e.ts),
-            e.data.links.reduce(
-              (sum: number, row: any) =>
-                sum + (row.rates ? row.rates.rx_bps + row.rates.tx_bps : 0),
-              0,
-            ) / 1000,
-          ]),
-        },
-        {
-          name: "Service latency (ms)",
-          type: "line",
-          yAxisIndex: 1,
-          showSymbol: true,
-          connectNulls: false,
-          data: service.map((e) => [
-            Date.parse(e.ts),
-            e.data.success ? e.data.latency_ms : null,
-          ]),
-        },
-      ],
-    });
-  }, [events, spans]);
-  return (
-    <div
-      className="traffic-chart"
-      ref={element}
-      aria-label="Measured traffic and service latency chart"
-    />
-  );
-}
-
 export function Observations({
   events,
-  tab,
+  tab: requestedTab,
   setTab,
   detectionView,
+  topology,
+  experiment,
 }: {
   events: Observation[];
   tab: string;
   setTab: (value: string) => void;
   detectionView?: ReactNode;
+  topology: Topology | null;
+  experiment: Experiment | null;
 }) {
   const [expanded, setExpanded] = useState(-1);
+  const tab =
+    requestedTab === "Detection" && !detectionView ? "Traffic" : requestedTab;
+  useEffect(() => {
+    if (tab !== requestedTab) setTab(tab);
+  }, [tab, requestedTab, setTab]);
   const packetRows = packets(events);
   const endMs = events.length
     ? Date.parse(events[events.length - 1].ts)
@@ -201,7 +90,7 @@ export function Observations({
       <nav className="tabs" aria-label="Observations">
         {[
           "Traffic",
-          "Detection",
+          ...(detectionView ? ["Detection"] : []),
           "Threshold",
           "Packets",
           "Commands",
@@ -223,32 +112,16 @@ export function Observations({
         <span>Measured evidence · UTC</span>
       </nav>
       <div
-        className={`observation-body${["Detection", "Threshold"].includes(tab) ? " tall" : ""}`}
+        className={`observation-body${["Detection", "Threshold", "Traffic"].includes(tab) ? " tall" : ""}`}
       >
         {tab === "Traffic" &&
-          (events.some((e) => e.kind === "links") ? (
-            <>
-              <Chart events={events} spans={spans} />
-              {spans.length > 0 && (
-                <div
-                  className="phase-legend"
-                  aria-label="Measured phase durations"
-                >
-                  {spans.map((span, i) => (
-                    <span key={i} className={`phase-band ${span.state}`}>
-                      {span.state} ·{" "}
-                      {Math.round((span.end - span.start) / 1000)}s
-                    </span>
-                  ))}
-                </div>
-              )}
-              <p className="footnote">
-                Shaded bands mark the measured baseline, attack, and recovery
-                phases against the clock. Traffic is summed across measured
-                links, not unique end-to-end throughput. A missing latency point
-                means the service probe failed.
-              </p>
-            </>
+          (events.length ? (
+            <TrafficView
+              events={events}
+              spans={spans}
+              topology={topology}
+              experiment={experiment}
+            />
           ) : (
             <div className="empty">
               <span>↗</span>

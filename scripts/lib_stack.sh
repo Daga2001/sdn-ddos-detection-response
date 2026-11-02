@@ -10,6 +10,13 @@ start_stack() {
     *) echo "invalid detection mode: $mode (use llm|entropy|off)" >&2; return 1 ;;
   esac
   export SDN_DETECTION_MODE="$mode"
+  case "${SDN_MATCH_L4_PORTS:-}" in
+    true|false) ;;
+    *)
+      echo "Choose the forwarding rules: set SDN_MATCH_L4_PORTS to true (per-port, Experiment A) or false (port-free, Experiment B)." >&2
+      return 1
+      ;;
+  esac
   export PGSERVICEFILE="$REPO_ROOT/config/pg_service.conf" PGSERVICE=sdn
   LLM_API_PID=""
   CONTROLLER_PID=""

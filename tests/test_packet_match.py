@@ -37,7 +37,8 @@ def rule(transport):
     )
 
 
-def test_forwarding_rules_match_the_port_by_default():
+def test_forwarding_rules_match_the_port_when_asked(monkeypatch):
+    monkeypatch.setattr(app_modes, "MATCH_L4_PORTS", True)
     assert rule("tcp")["tcp_dst"] == 8080
     assert rule("udp")["udp_dst"] == 53
     assert rule("tcp")["ipv4_src"] == "10.0.0.1"

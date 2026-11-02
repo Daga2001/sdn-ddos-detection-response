@@ -22,8 +22,8 @@ Robustness changes over the baseline (all opt-out through env vars):
   still computed over ALL flows.
 * Only SDN_LLM_MAX_SAMPLES samples per poll (highest packet rate) are sent to
   the LLM, which costs ~0.5 s each; the rest keep prob_ddos NULL.
-* SDN_MATCH_L4_PORTS (default true): set to false so that rules do not match the layer-4
-  port; see the comment on MATCH_L4_PORTS.
+* SDN_MATCH_L4_PORTS is required and is true or false. Missing or any other
+  value refuses to start. False omits the layer-4 port; see MATCH_L4_PORTS.
 * SDN_FINE_GRAINED_MATCH (default true): forwarding rules always include
   eth_type and, for IPv4, the addresses and protocol. The baseline installs an
   Ethernet-only rule after the first ARP/ICMP packet of a host pair, which then
@@ -50,7 +50,12 @@ from ryu.lib.packet import ethernet, ipv4, tcp, udp
 from sdn_ddos.async_io import AsyncMetricsStore
 from sdn_ddos.config import DatabaseSettings
 from sdn_ddos.controller.app import EnterpriseDDoSController, FlowBatch
-from sdn_ddos.controller.core import probability_is_attack
+from sdn_ddos.controller.core import (
+    CountedFlow,
+    entropy_poll_from_switch_clock,
+    flow_age_seconds,
+    probability_is_attack,
+)
 from sdn_ddos.controller.enforcer import LIMIT_PRIORITY, OpenFlowEnforcer
 from sdn_ddos.controller.judging import PollQueue, judging_order, next_window_due
 from sdn_ddos.controller.response import (
@@ -100,12 +105,9 @@ def _truthy(value: str) -> bool:
 
 
 FINE_GRAINED_MATCH = _truthy(os.environ.get("SDN_FINE_GRAINED_MATCH", "true"))
-# With the layer-4 port in the rule (the default) every reply of a SYN flood goes to
-# another source port, so each reply is a flow of its own: tens of thousands of rules
-# and packet-ins a minute, enough to saturate this single-threaded controller. Without
-# the port a rule covers a source, a destination and a protocol, and a flood adds no
-# rules after its first packet.
-MATCH_L4_PORTS = _truthy(os.environ.get("SDN_MATCH_L4_PORTS", "true"))
+# No default. EnterpriseDDoSController.__init__ refuses to start unless the variable
+# is true or false, then copies the choice here for _packet_match.
+MATCH_L4_PORTS: Optional[bool] = None
 
 
 class ModeSwitchController(EnterpriseDDoSController):
@@ -113,6 +115,8 @@ class ModeSwitchController(EnterpriseDDoSController):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
+        global MATCH_L4_PORTS
+        MATCH_L4_PORTS = self.match_l4_ports
         # With the detector service the mode is chosen there (PUT /config) and
         # fixed for this run; without it (standalone scripts) the env decides.
         detector_base = self.settings.inference_url.rsplit("/", 1)[0]
@@ -164,8 +168,7 @@ class ModeSwitchController(EnterpriseDDoSController):
         )
         self.entropy_window = float(os.environ.get("SDN_ENTROPY_WINDOW_SECONDS", "10"))
         self._stats = StatsReassembler()
-        self._packet_history: Dict[int, Dict[Any, int]] = {}
-        self._last_poll: Dict[int, float] = {}
+        self._packet_history: Dict[int, Dict[Any, Tuple[int, int, float]]] = {}
         self._window_flows: Dict[int, Tuple[float, List[FlowObservation], int]] = {}
         # How a window is built (see _window_observations); the defaults keep the
         # original behaviour.
@@ -280,6 +283,9 @@ class ModeSwitchController(EnterpriseDDoSController):
         body = self._stats.add(dpid, int(message.xid), message.body, more)
         if body is None:
             return
+        # Full reply, before the row cap, in every detection mode.
+        self._emit_switch_table(dpid, body)
+        self._switch_table_already_emitted = True
         total_flows = len(body)
         if self.settings.mitigation_enabled:
             self._review_limits(dpid, body)
@@ -314,7 +320,6 @@ class ModeSwitchController(EnterpriseDDoSController):
         dpid = int(datapath.id)
         self._stats.clear(dpid)
         self._packet_history.pop(dpid, None)
-        self._last_poll.pop(dpid, None)
         self._window_flows.pop(dpid, None)
         self._window_polls.pop(dpid, None)
         self._window_ports.pop(dpid, None)
@@ -462,54 +467,66 @@ class ModeSwitchController(EnterpriseDDoSController):
     # -- entropy mode -----------------------------------------------------
 
     def _observe_entropy_window(self, dpid: int, body: List[Any]) -> None:
-        """Turn one switch's full flow list into packet-rate weighted flows."""
+        """Turn one switch's full flow list into packet-rate weighted flows.
 
-        now = time.monotonic()
+        Each flow's rate is the change in its packet count divided by the
+        change in its own OpenFlow age, the same clock `_flow_batch` uses.
+        The window still needs one time span per poll so later averaging
+        (`mean_rates`) can combine several polls. That span is the largest
+        age increase among flows that kept the same rule: the switch's view
+        of how long this statistics interval lasted. That span is not taken
+        from `time.monotonic()`. Packet totals stored for the window are
+        rate times that span, so dividing by the span returns the same rates.
+        A rule whose age or counters went down is a new flow and adds nothing
+        this poll. The timestamp stored with the poll only says when the
+        controller received it, so an old poll can be dropped; it is not the
+        divisor.
+        """
+
         previous = self._packet_history.get(dpid, {})
-        last_poll = self._last_poll.get(dpid)
-        elapsed = None if last_poll is None else now - last_poll
-        current: Dict[Any, int] = {}
-        flows: List[FlowObservation] = []
-        pairs: Dict[Tuple[str, str], float] = {}
-        ports: Dict[Tuple[int, int], float] = {}
+        counted: List[CountedFlow] = []
         for stat in body:
             if stat.priority == 0:
                 continue
-            key = self._flow_key(dpid, stat)
-            count = int(stat.packet_count)
-            current[key] = count
-            source = stat.match.get("ipv4_src")
-            destination = stat.match.get("ipv4_dst")
-            if source is None or destination is None or not elapsed:
-                continue
-            before = previous.get(key, 0)
-            delta = count - before if count >= before else count
-            if delta > 0:
-                flows.append(
-                    FlowObservation(str(source), str(destination), delta / elapsed)
+            match = stat.match
+            destination_port = stat.match.get("tcp_dst", stat.match.get("udp_dst"))
+            counted.append(
+                CountedFlow(
+                    self._flow_key(dpid, stat),
+                    None
+                    if match.get("ipv4_src") is None
+                    else str(match.get("ipv4_src")),
+                    None
+                    if match.get("ipv4_dst") is None
+                    else str(match.get("ipv4_dst")),
+                    int(stat.packet_count),
+                    int(getattr(stat, "byte_count", 0)),
+                    flow_age_seconds(
+                        int(getattr(stat, "duration_sec", 0)),
+                        int(getattr(stat, "duration_nsec", 0)),
+                    ),
+                    int(match.get("ip_proto") or 0),
+                    int(destination_port or 0),
                 )
-                pair = (str(source), str(destination))
-                pairs[pair] = pairs.get(pair, 0.0) + delta
-                if self._tracks_ports:
-                    port_key = (
-                        int(stat.match.get("ip_proto") or 0),
-                        int(
-                            stat.match.get("tcp_dst") or stat.match.get("udp_dst") or 0
-                        ),
-                    )
-                    ports[port_key] = ports.get(port_key, 0.0) + delta
-        self._packet_history[dpid] = current
-        self._last_poll[dpid] = now
-        if elapsed:
-            self._window_flows[dpid] = (now, flows, len(body))
-            polls = self._window_polls.setdefault(dpid, [])
-            polls.append((now, elapsed, pairs))
-            horizon = 2 * self.entropy_window
-            polls[:] = [poll for poll in polls if now - poll[0] <= horizon]
-            if self._tracks_ports:
-                port_polls = self._window_ports.setdefault(dpid, [])
-                port_polls.append((now, elapsed, ports))
-                port_polls[:] = [p for p in port_polls if now - p[0] <= horizon]
+            )
+        baselines, poll = entropy_poll_from_switch_clock(previous, counted)
+        self._packet_history[dpid] = baselines
+        if not poll.span_seconds:
+            return
+        now = time.monotonic()
+        flows = [
+            FlowObservation(source, destination, rate)
+            for source, destination, rate in poll.flows
+        ]
+        self._window_flows[dpid] = (now, flows, len(body))
+        polls = self._window_polls.setdefault(dpid, [])
+        polls.append((now, poll.span_seconds, dict(poll.pair_packets)))
+        horizon = 2 * self.entropy_window
+        polls[:] = [item for item in polls if now - item[0] <= horizon]
+        if self._tracks_ports:
+            port_polls = self._window_ports.setdefault(dpid, [])
+            port_polls.append((now, poll.span_seconds, dict(poll.port_packets)))
+            port_polls[:] = [item for item in port_polls if now - item[0] <= horizon]
 
     def _window_histograms(
         self, now: float
