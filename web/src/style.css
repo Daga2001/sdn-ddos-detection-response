@@ -1863,3 +1863,32 @@ h4.subsection {
   font-size: 12px;
   color: var(--ink);
 }
+
+.proposal-metrics {
+  margin-top: 12px;
+}
+.proposal-metrics-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.proposal-metrics-head h3 {
+  margin: 0;
+}
+.proposal-metrics .detection-table td:first-child {
+  white-space: nowrap;
+  font-weight: 600;
+}
+.proposal-metrics .detection-table tr.metric-group th {
+  background: #f3f6ef;
+  color: #3d5246;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10.5px;
+}
+@media (max-width: 900px) {
+  .proposal-metrics .detection-table td:first-child {
+    white-space: normal;
+  }
+}
