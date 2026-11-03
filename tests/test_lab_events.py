@@ -25,7 +25,13 @@ def test_failed_persistence_is_visible_and_event_remains_in_memory():
 
 def test_link_rates_use_actual_elapsed_time_and_reset_baselines():
     rates = RateCounters()
-    assert rates.observe("link", 100, 200, 1.0) is None
-    assert rates.observe("link", 300, 600, 3.0) == {"rx_bps": 800.0, "tx_bps": 1600.0}
-    assert rates.observe("link", 0, 0, 4.0) is None
-    assert rates.observe("link", 100, 200, 5.0)["rx_bps"] == 800
+    assert rates.observe("link", 100, 200, 1.0, 10, 4) is None
+    assert rates.observe("link", 300, 600, 3.0, 30, 8) == {
+        "rx_bps": 800.0,
+        "tx_bps": 1600.0,
+        "rx_pps": 10.0,
+        "tx_pps": 2.0,
+    }
+    assert rates.observe("link", 0, 0, 4.0, 0, 0) is None
+    assert rates.observe("link", 100, 200, 5.0, 10, 4)["rx_bps"] == 800
+    assert rates.observe("link", 100, 200, 6.0, 0, 4) is None

@@ -41,6 +41,21 @@ def test_stop_reaps_a_running_process():
     assert time.monotonic() - started < 5
 
 
+def test_close_tolerates_a_group_that_ended_while_the_reader_was_reaping_it(
+    monkeypatch,
+):
+    process = ManagedProcess([sys.executable, "-c", "pass"], "test", lambda *args: None)
+    process.wait(5)  # really finished
+
+    # poll() reports None while another thread is inside wait(); the group is gone.
+    monkeypatch.setattr(process.process, "poll", lambda: None)
+    monkeypatch.setattr(
+        "sdn_ddos.lab.processes.os.killpg",
+        lambda *args: (_ for _ in ()).throw(ProcessLookupError()),
+    )
+    process.close()  # must not raise
+
+
 def test_independent_deadline_ends_a_stalled_command_without_observation():
     # Harmless sleep, not traffic. No manager/sample loop is involved.
     process = ManagedProcess(

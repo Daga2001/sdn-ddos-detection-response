@@ -20,8 +20,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
 from sdn_ddos.config import DatabaseSettings
+from sdn_ddos.lab.browser_ownership import BrowserOwnership
 from sdn_ddos.lab.client import RunnerClient
-from sdn_ddos.lab.contracts import Capture, Diagnostic, StartRequest
+from sdn_ddos.lab.contracts import (
+    FORWARDING_MESSAGE,
+    Capture,
+    Diagnostic,
+    StartRequest,
+)
 from sdn_ddos.lab.explain import describe, describe_exception
 from sdn_ddos.lab.manager import LabManager
 from sdn_ddos.lab.repository import PostgreSQLRepository, Repository
@@ -30,6 +36,12 @@ from sdn_ddos.lab.settings import LabSettings
 from sdn_ddos.lab.topology import Topology, export_miniedit, import_miniedit, presets
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _rejection(errors: list[dict[str, Any]]) -> str:
+    if any("forwarding" in (error.get("loc") or ()) for error in errors):
+        return FORWARDING_MESSAGE
+    return describe(errors)
 
 
 class Login(BaseModel):
@@ -46,6 +58,7 @@ def create_app(
     runner = runner or RunnerClient(settings.runner_url, settings.runner_token)
     store, control = repository, runner
     sessions = Sessions(settings.access_token, settings.origin)
+    ownership = BrowserOwnership(control, sessions)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -54,6 +67,7 @@ def create_app(
             control.close()
 
     app = FastAPI(title="SDN Lab Workspace", lifespan=lifespan)
+    ownership.install(app)
     app.add_middleware(BodyLimit)
 
     @app.middleware("http")
@@ -86,7 +100,7 @@ def create_app(
     async def malformed(
         request: Request, error: RequestValidationError
     ) -> JSONResponse:
-        return JSONResponse({"detail": describe(error.errors())}, status_code=422)
+        return JSONResponse({"detail": _rejection(error.errors())}, status_code=422)
 
     @app.exception_handler(ValueError)
     async def invalid(request: Request, error: ValueError) -> JSONResponse:
@@ -133,6 +147,7 @@ def create_app(
 
     @app.delete("/api/session")
     def logout(request: Request, response: Response) -> dict[str, bool]:
+        ownership.logout(request.cookies.get("sdn_session", ""))
         sessions.tokens.pop(request.cookies.get("sdn_session", ""), None)
         response.delete_cookie("sdn_session")
         return {"authenticated": False}
@@ -192,8 +207,16 @@ def create_app(
     def status() -> dict[str, Any]:
         return control.status()
 
+    @app.get("/api/detection/options")
+    def detection_options() -> dict[str, Any]:
+        return control.detection_options()
+
     @app.post("/api/runs")
-    def start(payload: StartRequest) -> dict[str, str]:
+    def start(payload: StartRequest, request: Request) -> dict[str, str]:
+        if payload.owner_id is not None:
+            ownership.require(
+                str(payload.owner_id), request.cookies.get("sdn_session", "")
+            )
         return {"run_id": control.start(payload)}
 
     @app.post("/api/stop")
@@ -215,17 +238,17 @@ def create_app(
     async def stream(request: Request) -> StreamingResponse:
         async def generate() -> AsyncIterator[str]:
             after = 0
-            run_id = None
+            run_id = ""
             while not await request.is_disconnected():
                 if not sessions.authenticated(request.cookies.get("sdn_session")):
                     yield "event: expired\ndata: {}\n\n"
                     return
                 try:
-                    state = await asyncio.to_thread(control.status)
+                    page = await asyncio.to_thread(control.events, after, run_id)
+                    state = page["status"]
                     if state.get("run_id") != run_id:
-                        after, run_id = 0, state.get("run_id")
+                        after, run_id = 0, state.get("run_id") or ""
                     yield "event: status\ndata: " + json.dumps(state) + "\n\n"
-                    page = await asyncio.to_thread(control.events, after)
                     if page["gap"]:
                         yield (
                             'event: gap\ndata: {"message":"Live observations were '

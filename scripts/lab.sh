@@ -2,7 +2,6 @@
 # Native Linux only. This helper never changes the existing database container.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-lab_compose=(docker compose --env-file .env --env-file .lab/env -f compose.lab.yaml)
 case "${1:-help}" in
   setup)
     umask 077
@@ -37,17 +36,9 @@ case "${1:-help}" in
     fi
     echo 'Kernel OVS is loaded. Check .env, the external DB network, and apply database/migrations/002_lab.sql before starting.'
     ;;
-  up)
-    [[ -f .env && -f .lab/env ]] || { echo 'Provide .env and run make lab-setup first.'; exit 1; }
-    bash scripts/lab.sh doctor
-    "${lab_compose[@]}" up --build -d
-    echo 'Workspace: http://localhost:8080 — sign in with SDN_LAB_TOKEN in .lab/env.'
+  up|down|logs)
+    echo 'This lifecycle command is retired. Use docker compose up, down, or logs from the repository root.' >&2
+    exit 2
     ;;
-  down)
-    "${lab_compose[@]}" down --timeout 45
-    ;;
-  logs)
-    "${lab_compose[@]}" logs --tail 100
-    ;;
-  *) echo 'Usage: bash scripts/lab.sh {setup|doctor|up|down|logs}'; exit 2 ;;
+  *) echo 'Usage: bash scripts/lab.sh {setup|doctor}'; exit 2 ;;
 esac
