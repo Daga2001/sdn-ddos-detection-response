@@ -6,9 +6,10 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
-    "test": "playwright test",
+    "test": "npm run test:unit && playwright test",
     "format": "prettier --write src tests *.ts *.json index.html",
-    "format-check": "prettier --check src tests *.ts *.json index.html"
+    "format-check": "prettier --check src tests *.ts *.json index.html",
+    "test:unit": "node --experimental-strip-types --test tests/detection.unit.ts tests/traffic.unit.ts"
   },
   "dependencies": {
     "@xyflow/react": "12.12.0",

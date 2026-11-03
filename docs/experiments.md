@@ -21,3 +21,9 @@ The command must be run from a Mininet host namespace, not from a workstation co
 ## Planned scenarios
 
 The proposal describes controller saturation, switch/host flooding, multi-attacker/multi-target traffic, and subtle low-rate attacks. These remain roadmap scenarios. Implement each as a separately reviewed, bounded protocol with a ground-truth attack window and a no-defense comparison.
+
+GUI experiments stop when their owning tab refreshes, closes, logs out, or loses
+its ownership connection. Record this as an interrupted observation window using
+the `stop_requested` reason; do not count it as a completed experiment. Use the
+bounded headless API scripts for campaigns that must run independently of a
+browser. Other viewing/replay tabs do not own the run.

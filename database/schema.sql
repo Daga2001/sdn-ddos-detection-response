@@ -119,3 +119,19 @@ ALTER TABLE controller_stats ADD COLUMN IF NOT EXISTS run_id UUID;
 ALTER TABLE attack_windows ADD COLUMN IF NOT EXISTS run_id UUID;
 ALTER TABLE detection_events ADD COLUMN IF NOT EXISTS run_id UUID;
 ALTER TABLE mitigation_events ADD COLUMN IF NOT EXISTS run_id UUID;
+
+-- One row per detector decision (LLM or entropy). Also available as
+-- database/migrations/001_detection_decisions.sql for existing databases.
+CREATE TABLE IF NOT EXISTS detection_decisions (
+    id BIGSERIAL PRIMARY KEY,
+    ts TIMESTAMPTZ NOT NULL,
+    detector TEXT NOT NULL CHECK (detector IN ('llm', 'entropy')),
+    dpid BIGINT,
+    verdict BOOLEAN NOT NULL,
+    score DOUBLE PRECISION,
+    latency_ms DOUBLE PRECISION,
+    details JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_detection_decisions_detector_ts
+    ON detection_decisions (detector, ts);

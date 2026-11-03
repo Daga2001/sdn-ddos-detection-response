@@ -62,7 +62,12 @@ def test_projects_import_and_validation():
         assert client.post("/api/projects", json=data).status_code == 200
         assert len(client.get("/api/projects").json()) == 1
         data["hosts"][0]["ip"] = "8.8.8.8/24"
-        assert client.post("/api/runs", json={"topology": data}).status_code == 422
+        assert (
+            client.post(
+                "/api/runs", json={"topology": data, "forwarding": "per_port"}
+            ).status_code
+            == 422
+        )
         assert (
             client.post("/api/import", json={"version": "2", "hosts": [{}]}).status_code
             == 422
@@ -78,7 +83,8 @@ def test_run_stop_and_missing_history():
     with client:
         client.post("/api/session", json={"token": settings.access_token})
         response = client.post(
-            "/api/runs", json={"topology": presets()[2].model_dump()}
+            "/api/runs",
+            json={"topology": presets()[2].model_dump(), "forwarding": "per_port"},
         )
         assert response.status_code == 200
         identifier = response.json()["run_id"]
@@ -109,9 +115,16 @@ def test_import_export_history_and_session_lifecycle():
         assert (
             client.post("/api/export/miniedit", json=topology).json()["version"] == "2"
         )
-        run_id = client.post("/api/runs", json={"topology": topology}).json()["run_id"]
+        run_id = client.post(
+            "/api/runs", json={"topology": topology, "forwarding": "per_port"}
+        ).json()["run_id"]
         assert client.get("/api/status").status_code == 200
-        assert client.post("/api/runs", json={"topology": topology}).status_code == 409
+        assert (
+            client.post(
+                "/api/runs", json={"topology": topology, "forwarding": "per_port"}
+            ).status_code
+            == 409
+        )
         # Control callbacks share the manager held by the closure.
         import time
 
@@ -153,7 +166,11 @@ def test_sse_observations_gaps_unavailable_and_expiry(monkeypatch):
     )
     control = MagicMock()
     control.status.return_value = {"run_id": "record", "state": "completed"}
-    control.events.return_value = {"gap": True, "events": [{"seq": 4, "kind": "test"}]}
+    control.events.return_value = {
+        "status": control.status.return_value,
+        "gap": True,
+        "events": [{"seq": 4, "kind": "test"}],
+    }
     app = create_app(settings, MemoryRepository(), control)
     stream = next(route.endpoint for route in app.routes if route.path == "/api/events")
 
@@ -174,7 +191,7 @@ def test_sse_observations_gaps_unavailable_and_expiry(monkeypatch):
         content = asyncio.run(read(dict(client.cookies)))
         assert "event: status" in content and "event: gap" in content
         assert "event: observation" in content
-        control.status.side_effect = RuntimeError("private internal failure")
+        control.events.side_effect = RuntimeError("private internal failure")
         content = asyncio.run(read(dict(client.cookies)))
         assert "event: unavailable" in content
         assert "private internal" not in content
@@ -193,7 +210,7 @@ def test_rejections_are_one_readable_sentence_not_a_validation_dump():
             {"name": "h9", "ip": "10.0.0.9/24", "position": {"x": 0, "y": 0}}
         )
         for path, payload in (
-            ("/api/runs", {"topology": data}),
+            ("/api/runs", {"topology": data, "forwarding": "per_port"}),
             ("/api/validate", data),
             ("/api/export/miniedit", data),
             ("/api/projects", data),
@@ -238,6 +255,7 @@ def test_experiment_limits_name_the_field_and_the_bound():
                     "rate": 50000,
                     "confirm_isolated_lab": True,
                 },
+                "forwarding": "per_port",
             },
         )
         assert response.status_code == 422
@@ -287,3 +305,70 @@ def test_api_paths_never_fall_through_to_the_static_bundle(tmp_path):
             assert "Reload the workspace" in detail
         # The built web bundle is still served from the same mount.
         assert client.get("/").status_code == 200
+
+
+def test_detection_options_need_a_session_and_describe_the_detector():
+    class Detector:
+        def config(self):
+            return {"mode": "llm", "model": "llama3.2:3b", "prompts": ["lab"]}
+
+        def models(self):
+            return ["llama3.2:3b"]
+
+        def apply(self, detection):
+            return {}
+
+    repository = MemoryRepository()
+    settings = LabSettings(
+        access_token=secrets.token_urlsafe(32),
+        runner_token=secrets.token_urlsafe(32),
+        origin="http://testserver",
+    )
+    manager = LabManager(repository, FakeRuntime, Detector())
+    client = TestClient(create_app(settings, repository, manager))
+    with client:
+        assert client.get("/api/detection/options").status_code == 401
+        client.post("/api/session", json={"token": settings.access_token})
+        body = client.get("/api/detection/options").json()
+        assert body["available"] is True and body["models"] == ["llama3.2:3b"]
+    bare, creds = client_for_lab()
+    with bare:
+        bare.post("/api/session", json={"token": creds.access_token})
+        assert bare.get("/api/detection/options").json()["available"] is False
+
+
+def test_an_experiment_with_detection_is_validated_by_the_api():
+    client, settings = client_for_lab()
+    topology = presets()[2].model_dump()
+    with client:
+        client.post("/api/session", json={"token": settings.access_token})
+        bad = client.post(
+            "/api/runs",
+            json={
+                "topology": topology,
+                "experiment": {
+                    "attackers": ["h1"],
+                    "victims": ["h2"],
+                    "confirm_isolated_lab": True,
+                    "detection": {"entropy": {"k": 0}},
+                },
+                "forwarding": "per_port",
+            },
+        )
+        assert bad.status_code == 422
+        # A lab without a detector service refuses to pick one, and says so.
+        refused = client.post(
+            "/api/runs",
+            json={
+                "topology": topology,
+                "experiment": {
+                    "attackers": ["h1"],
+                    "victims": ["h2"],
+                    "confirm_isolated_lab": True,
+                    "detection": {"mode": "entropy"},
+                },
+                "forwarding": "per_port",
+            },
+        )
+        assert refused.status_code == 409
+        assert "no detector service" in refused.json()["detail"]

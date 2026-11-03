@@ -19,3 +19,11 @@ Complete this document before supplying a model to the inference service.
 | Approved by |  |
 
 The artifact is loaded only after an exact checksum match. A successful load does not prove that the model is accurate, unbiased, or safe for production traffic.
+
+## Run termination and evidence quality
+
+Record whether each evaluation run completed all declared phases. GUI owner-tab
+refresh/logout/disconnect requests stopping immediately; distinguish these stops
+(and runner/database failures) from completed measurements using run status and
+`stop_requested` events. Bounded headless campaigns retain independent deadlines.
+The six-feature inference contract is unchanged.

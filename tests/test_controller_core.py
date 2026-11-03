@@ -14,11 +14,13 @@ def test_flow_rate_tracker_uses_counter_deltas() -> None:
     assert tracker.observe("flow", 30, 3000, 3.0) == (10.0, 1000.0)
 
 
-def test_flow_rate_tracker_treats_counter_reset_as_zero() -> None:
+def test_flow_rate_tracker_treats_a_replaced_rule_as_a_new_flow() -> None:
     tracker = FlowRateTracker()
     tracker.observe("flow", 100, 1000, 1.0)
-    assert tracker.observe("flow", 1, 10, 2.0) == (0.0, 0.0)
+    # The counter went down, so this is a new rule, not a rate of zero.
+    assert tracker.observe("flow", 1, 10, 2.0) is None
     assert tracker.observe("flow", 2, 20, 2.0) is None
+    assert tracker.observe("flow", 12, 120, 3.0) == (10.0, 100.0)
 
 
 def test_block_registry_restricts_and_deduplicates_sources() -> None:
@@ -42,6 +44,22 @@ def test_model_sample_requires_every_feature() -> None:
     assert build_model_sample(row) == row
     row["pktrate"] = None
     assert build_model_sample(row) is None
+
+
+def test_icmp_flows_reach_the_model_with_port_zero() -> None:
+    icmp = {
+        "packet_count": 600,
+        "byte_count": 58800,
+        "pktrate": 300.0,
+        "byterate": 29400.0,
+        "ip_proto": 1,
+        "l4_dst_port": None,
+    }
+    assert build_model_sample(icmp) == {**icmp, "l4_dst_port": 0}
+    # Only ICMP gets this: a TCP flow without a port is still incomplete.
+    assert build_model_sample({**icmp, "ip_proto": 6}) is None
+    # The stored row is not rewritten.
+    assert icmp["l4_dst_port"] is None
 
 
 def test_probability_validation() -> None:

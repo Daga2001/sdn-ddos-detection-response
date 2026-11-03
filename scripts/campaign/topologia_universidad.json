@@ -1,0 +1,547 @@
+{
+ "version": 1,
+ "name": "Edificio universitario",
+ "description": "9 switches / 25 hosts, tree: core -> 3 distribution (servers, academic wing, student wing) -> 5 access (servers, professors, administration, labs, Wi-Fi classrooms). One /24 subnet (the lab has no router): .1-.9 servers, .11-.15 professors, .21-.23 administration, .31-.36 labs, .41-.46 Wi-Fi students.",
+ "hosts": [
+  {
+   "name": "h_web",
+   "ip": "10.0.0.1/24",
+   "position": {
+    "x": 76.0,
+    "y": 480.0
+   }
+  },
+  {
+   "name": "h_moodle",
+   "ip": "10.0.0.2/24",
+   "position": {
+    "x": 138.0,
+    "y": 540.0
+   }
+  },
+  {
+   "name": "h_notas",
+   "ip": "10.0.0.3/24",
+   "position": {
+    "x": 200.0,
+    "y": 480.0
+   }
+  },
+  {
+   "name": "h_dns",
+   "ip": "10.0.0.4/24",
+   "position": {
+    "x": 262.0,
+    "y": 540.0
+   }
+  },
+  {
+   "name": "h_files",
+   "ip": "10.0.0.5/24",
+   "position": {
+    "x": 324.0,
+    "y": 480.0
+   }
+  },
+  {
+   "name": "h_prof1",
+   "ip": "10.0.0.11/24",
+   "position": {
+    "x": 396.0,
+    "y": 480.0
+   }
+  },
+  {
+   "name": "h_prof2",
+   "ip": "10.0.0.12/24",
+   "position": {
+    "x": 458.0,
+    "y": 540.0
+   }
+  },
+  {
+   "name": "h_prof3",
+   "ip": "10.0.0.13/24",
+   "position": {
+    "x": 520.0,
+    "y": 480.0
+   }
+  },
+  {
+   "name": "h_prof4",
+   "ip": "10.0.0.14/24",
+   "position": {
+    "x": 582.0,
+    "y": 540.0
+   }
+  },
+  {
+   "name": "h_prof5",
+   "ip": "10.0.0.15/24",
+   "position": {
+    "x": 644.0,
+    "y": 480.0
+   }
+  },
+  {
+   "name": "h_admin1",
+   "ip": "10.0.0.21/24",
+   "position": {
+    "x": 698.0,
+    "y": 480.0
+   }
+  },
+  {
+   "name": "h_admin2",
+   "ip": "10.0.0.22/24",
+   "position": {
+    "x": 760.0,
+    "y": 540.0
+   }
+  },
+  {
+   "name": "h_admin3",
+   "ip": "10.0.0.23/24",
+   "position": {
+    "x": 822.0,
+    "y": 480.0
+   }
+  },
+  {
+   "name": "h_lab1",
+   "ip": "10.0.0.31/24",
+   "position": {
+    "x": 785.0,
+    "y": 480.0
+   }
+  },
+  {
+   "name": "h_lab2",
+   "ip": "10.0.0.32/24",
+   "position": {
+    "x": 847.0,
+    "y": 540.0
+   }
+  },
+  {
+   "name": "h_lab3",
+   "ip": "10.0.0.33/24",
+   "position": {
+    "x": 909.0,
+    "y": 480.0
+   }
+  },
+  {
+   "name": "h_lab4",
+   "ip": "10.0.0.34/24",
+   "position": {
+    "x": 971.0,
+    "y": 540.0
+   }
+  },
+  {
+   "name": "h_lab5",
+   "ip": "10.0.0.35/24",
+   "position": {
+    "x": 1033.0,
+    "y": 480.0
+   }
+  },
+  {
+   "name": "h_lab6",
+   "ip": "10.0.0.36/24",
+   "position": {
+    "x": 1095.0,
+    "y": 540.0
+   }
+  },
+  {
+   "name": "h_wifi1",
+   "ip": "10.0.0.41/24",
+   "position": {
+    "x": 965.0,
+    "y": 480.0
+   }
+  },
+  {
+   "name": "h_wifi2",
+   "ip": "10.0.0.42/24",
+   "position": {
+    "x": 1027.0,
+    "y": 540.0
+   }
+  },
+  {
+   "name": "h_wifi3",
+   "ip": "10.0.0.43/24",
+   "position": {
+    "x": 1089.0,
+    "y": 480.0
+   }
+  },
+  {
+   "name": "h_wifi4",
+   "ip": "10.0.0.44/24",
+   "position": {
+    "x": 1151.0,
+    "y": 540.0
+   }
+  },
+  {
+   "name": "h_wifi5",
+   "ip": "10.0.0.45/24",
+   "position": {
+    "x": 1213.0,
+    "y": 480.0
+   }
+  },
+  {
+   "name": "h_wifi6",
+   "ip": "10.0.0.46/24",
+   "position": {
+    "x": 1275.0,
+    "y": 540.0
+   }
+  }
+ ],
+ "switches": [
+  {
+   "name": "s_nucleo",
+   "dpid": 1,
+   "position": {
+    "x": 640.0,
+    "y": 60.0
+   }
+  },
+  {
+   "name": "s_datos",
+   "dpid": 2,
+   "position": {
+    "x": 200.0,
+    "y": 190.0
+   }
+  },
+  {
+   "name": "s_docente",
+   "dpid": 3,
+   "position": {
+    "x": 640.0,
+    "y": 190.0
+   }
+  },
+  {
+   "name": "s_alumnos",
+   "dpid": 4,
+   "position": {
+    "x": 1080.0,
+    "y": 190.0
+   }
+  },
+  {
+   "name": "s_server",
+   "dpid": 5,
+   "position": {
+    "x": 200.0,
+    "y": 330.0
+   }
+  },
+  {
+   "name": "s_profes",
+   "dpid": 6,
+   "position": {
+    "x": 520.0,
+    "y": 330.0
+   }
+  },
+  {
+   "name": "s_admin",
+   "dpid": 7,
+   "position": {
+    "x": 760.0,
+    "y": 330.0
+   }
+  },
+  {
+   "name": "s_labs",
+   "dpid": 8,
+   "position": {
+    "x": 940.0,
+    "y": 330.0
+   }
+  },
+  {
+   "name": "s_aulas",
+   "dpid": 9,
+   "position": {
+    "x": 1120.0,
+    "y": 330.0
+   }
+  }
+ ],
+ "links": [
+  {
+   "id": "up-s_nucleo-s_datos",
+   "source": "s_nucleo",
+   "target": "s_datos",
+   "bandwidth_mbps": 1000.0,
+   "delay_ms": 0,
+   "loss_percent": 0
+  },
+  {
+   "id": "up-s_nucleo-s_docente",
+   "source": "s_nucleo",
+   "target": "s_docente",
+   "bandwidth_mbps": 1000.0,
+   "delay_ms": 0,
+   "loss_percent": 0
+  },
+  {
+   "id": "up-s_nucleo-s_alumnos",
+   "source": "s_nucleo",
+   "target": "s_alumnos",
+   "bandwidth_mbps": 1000.0,
+   "delay_ms": 0,
+   "loss_percent": 0
+  },
+  {
+   "id": "up-s_datos-s_server",
+   "source": "s_datos",
+   "target": "s_server",
+   "bandwidth_mbps": 1000.0,
+   "delay_ms": 0,
+   "loss_percent": 0
+  },
+  {
+   "id": "up-s_docente-s_profes",
+   "source": "s_docente",
+   "target": "s_profes",
+   "bandwidth_mbps": 1000.0,
+   "delay_ms": 0,
+   "loss_percent": 0
+  },
+  {
+   "id": "up-s_docente-s_admin",
+   "source": "s_docente",
+   "target": "s_admin",
+   "bandwidth_mbps": 1000.0,
+   "delay_ms": 0,
+   "loss_percent": 0
+  },
+  {
+   "id": "up-s_alumnos-s_labs",
+   "source": "s_alumnos",
+   "target": "s_labs",
+   "bandwidth_mbps": 1000.0,
+   "delay_ms": 0,
+   "loss_percent": 0
+  },
+  {
+   "id": "up-s_alumnos-s_aulas",
+   "source": "s_alumnos",
+   "target": "s_aulas",
+   "bandwidth_mbps": 1000.0,
+   "delay_ms": 0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_web",
+   "source": "s_server",
+   "target": "h_web",
+   "bandwidth_mbps": 1000.0,
+   "delay_ms": 0.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_moodle",
+   "source": "s_server",
+   "target": "h_moodle",
+   "bandwidth_mbps": 1000.0,
+   "delay_ms": 0.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_notas",
+   "source": "s_server",
+   "target": "h_notas",
+   "bandwidth_mbps": 1000.0,
+   "delay_ms": 0.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_dns",
+   "source": "s_server",
+   "target": "h_dns",
+   "bandwidth_mbps": 1000.0,
+   "delay_ms": 0.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_files",
+   "source": "s_server",
+   "target": "h_files",
+   "bandwidth_mbps": 1000.0,
+   "delay_ms": 0.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_prof1",
+   "source": "s_profes",
+   "target": "h_prof1",
+   "bandwidth_mbps": 100.0,
+   "delay_ms": 0.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_prof2",
+   "source": "s_profes",
+   "target": "h_prof2",
+   "bandwidth_mbps": 100.0,
+   "delay_ms": 0.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_prof3",
+   "source": "s_profes",
+   "target": "h_prof3",
+   "bandwidth_mbps": 100.0,
+   "delay_ms": 0.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_prof4",
+   "source": "s_profes",
+   "target": "h_prof4",
+   "bandwidth_mbps": 100.0,
+   "delay_ms": 0.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_prof5",
+   "source": "s_profes",
+   "target": "h_prof5",
+   "bandwidth_mbps": 100.0,
+   "delay_ms": 0.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_admin1",
+   "source": "s_admin",
+   "target": "h_admin1",
+   "bandwidth_mbps": 100.0,
+   "delay_ms": 0.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_admin2",
+   "source": "s_admin",
+   "target": "h_admin2",
+   "bandwidth_mbps": 100.0,
+   "delay_ms": 0.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_admin3",
+   "source": "s_admin",
+   "target": "h_admin3",
+   "bandwidth_mbps": 100.0,
+   "delay_ms": 0.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_lab1",
+   "source": "s_labs",
+   "target": "h_lab1",
+   "bandwidth_mbps": 100.0,
+   "delay_ms": 0.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_lab2",
+   "source": "s_labs",
+   "target": "h_lab2",
+   "bandwidth_mbps": 100.0,
+   "delay_ms": 0.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_lab3",
+   "source": "s_labs",
+   "target": "h_lab3",
+   "bandwidth_mbps": 100.0,
+   "delay_ms": 0.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_lab4",
+   "source": "s_labs",
+   "target": "h_lab4",
+   "bandwidth_mbps": 100.0,
+   "delay_ms": 0.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_lab5",
+   "source": "s_labs",
+   "target": "h_lab5",
+   "bandwidth_mbps": 100.0,
+   "delay_ms": 0.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_lab6",
+   "source": "s_labs",
+   "target": "h_lab6",
+   "bandwidth_mbps": 100.0,
+   "delay_ms": 0.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_wifi1",
+   "source": "s_aulas",
+   "target": "h_wifi1",
+   "bandwidth_mbps": 54.0,
+   "delay_ms": 2.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_wifi2",
+   "source": "s_aulas",
+   "target": "h_wifi2",
+   "bandwidth_mbps": 54.0,
+   "delay_ms": 2.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_wifi3",
+   "source": "s_aulas",
+   "target": "h_wifi3",
+   "bandwidth_mbps": 54.0,
+   "delay_ms": 2.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_wifi4",
+   "source": "s_aulas",
+   "target": "h_wifi4",
+   "bandwidth_mbps": 54.0,
+   "delay_ms": 2.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_wifi5",
+   "source": "s_aulas",
+   "target": "h_wifi5",
+   "bandwidth_mbps": 54.0,
+   "delay_ms": 2.0,
+   "loss_percent": 0
+  },
+  {
+   "id": "link-h_wifi6",
+   "source": "s_aulas",
+   "target": "h_wifi6",
+   "bandwidth_mbps": 54.0,
+   "delay_ms": 2.0,
+   "loss_percent": 0
+  }
+ ]
+}

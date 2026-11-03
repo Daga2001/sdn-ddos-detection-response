@@ -51,6 +51,75 @@ export const trafficKinds: { id: TrafficKind; label: string; hint: string }[] =
       hint: "A ping flood of ICMP echo requests. It carries no port, only raw echo traffic toward the victim.",
     },
   ];
+export type DetectionMode = "llm" | "entropy" | "off";
+export type ResponsePolicy = "block" | "rate_limit" | "escalate";
+export type EntropyParams = {
+  k: number;
+  alpha: number;
+  warmup_windows: number;
+  consecutive_windows: number;
+  min_rate: number;
+  min_std: number;
+  candidate_share: number;
+  candidate_min_rate: number;
+  update_hold: number;
+  alpha_run: number | null;
+  window_seconds: number;
+  window_mode: "snapshot" | "mean";
+  dedupe_switches: boolean;
+  /** Which entropy is computed and how its normal band is learned. */
+  measure: EntropyMeasure;
+  order: number;
+  center: ThresholdCenter;
+  spread: "std" | "mad";
+  history: number;
+  context: "normal" | "all";
+  watch_ports: boolean;
+  watch_protocols: boolean;
+  /** Also compute the entropy of the (source, destination) pairs. */
+  watch_pairs: boolean;
+  /** The distributions allowed to raise an alarm; empty means every watched one. */
+  decide: EntropyFeature[];
+  /** Margin of the margin threshold: EWMA minus a fixed margin. */
+  margin: number;
+  /** Packet rate above which the second-order EWMA threshold cannot decrease. */
+  rate_threshold: number;
+  /** false: forwarding rules ignore the layer-4 port (no rule per reply in a SYN flood). */
+  match_ports?: boolean;
+};
+export type EntropyMeasure = "shannon" | "norm" | "renyi" | "tsallis" | "min";
+export type EntropyFeature = "src" | "dst" | "dport" | "proto" | "pair";
+export type ThresholdCenter =
+  | "ewma"
+  | "mean"
+  | "median"
+  | "yu"
+  | "ewma_margin"
+  | "ewma2";
+export type ResponseParams = {
+  policy: ResponsePolicy;
+  dry_run: boolean;
+  rate_limit_pps: number;
+  rate_limit_burst: number | null;
+  rate_limit_seconds: number;
+  escalate_after_seconds: number;
+  block_seconds: number;
+  max_active: number;
+  confirm_hits: number;
+  confirm_seconds: number;
+  protected: string[];
+};
+/** Which detector judges a run and how it is tuned; saved with the experiment. */
+export type DetectionConfig = {
+  mode: DetectionMode;
+  model: string;
+  prompt: "insdn" | "lab";
+  llm_max_samples: number;
+  poll_seconds: number;
+  threshold: number;
+  entropy: EntropyParams;
+  response: ResponseParams;
+};
 export type Experiment = {
   attackers: string[];
   victims: string[];
@@ -61,6 +130,152 @@ export type Experiment = {
   recovery: number;
   mitigation: boolean;
   confirm_isolated_lab: boolean;
+  /** null: leave the detector as the lab was started (older runs, no detector). */
+  detection: DetectionConfig | null;
+};
+
+/** The values measured and calibrated in the lab (docs/detection-modes.md). */
+export const defaultEntropy: EntropyParams = {
+  k: 2.5,
+  alpha: 0.2,
+  warmup_windows: 16,
+  consecutive_windows: 2,
+  min_rate: 2,
+  min_std: 0.05,
+  candidate_share: 0.3,
+  candidate_min_rate: 20,
+  update_hold: 0,
+  alpha_run: null,
+  window_seconds: 5,
+  window_mode: "mean",
+  dedupe_switches: false,
+  measure: "shannon",
+  order: 2,
+  center: "ewma",
+  spread: "std",
+  history: 0,
+  context: "normal",
+  watch_ports: false,
+  watch_protocols: false,
+  watch_pairs: false,
+  decide: [],
+  margin: 0.01,
+  rate_threshold: 800,
+};
+export const defaultResponse: ResponseParams = {
+  policy: "block",
+  dry_run: true,
+  rate_limit_pps: 50,
+  rate_limit_burst: null,
+  rate_limit_seconds: 120,
+  escalate_after_seconds: 20,
+  block_seconds: 300,
+  max_active: 16,
+  confirm_hits: 1,
+  confirm_seconds: 30,
+  protected: [],
+};
+export const defaultDetection: DetectionConfig = {
+  mode: "llm",
+  model: "llama3.2:3b",
+  prompt: "lab",
+  llm_max_samples: 5,
+  poll_seconds: 5,
+  threshold: 0.8,
+  entropy: defaultEntropy,
+  response: defaultResponse,
+};
+
+/** LLMs measured in the lab, offered when the detector cannot list what is installed. */
+export const knownModels: { name: string; note: string }[] = [
+  { name: "llama3.2:3b", note: "most sensitive; flags more legitimate hosts" },
+  { name: "gemma2:2b", note: "fewest false alarms, slower per verdict" },
+  { name: "qwen2.5:3b", note: "most accurate offline, slowest" },
+  { name: "phi3.5", note: "mixed results" },
+  { name: "llama3.2:1b", note: "not recommended: too many false alarms" },
+];
+
+/** Fill whatever an older record lacks with defaults; null when it had no detection. */
+export function normalizeDetection(value: unknown): DetectionConfig | null {
+  if (!value || typeof value !== "object") return null;
+  const saved = value as Record<string, any>;
+  // Runs recorded while the two thresholds were named after the papers they follow.
+  const legacy: Record<string, ThresholdCenter> = {
+    ding: "ewma_margin",
+    z26: "ewma2",
+  };
+  const entropy: Record<string, any> = {
+    ...defaultEntropy,
+    ...(saved.entropy ?? {}),
+  };
+  entropy.center = legacy[entropy.center] ?? entropy.center;
+  delete entropy.match_ports;
+  if (
+    saved.entropy?.epsilon !== undefined &&
+    saved.entropy?.margin === undefined
+  )
+    entropy.margin = saved.entropy.epsilon;
+  return {
+    ...defaultDetection,
+    ...saved,
+    entropy: entropy as EntropyParams,
+    response: { ...defaultResponse, ...(saved.response ?? {}) },
+  };
+}
+
+/** What the detector service answers to GET /config, as the workspace's config. */
+export function detectionFromService(
+  current: Record<string, any> | undefined,
+): DetectionConfig {
+  if (!current) return defaultDetection;
+  const entropy = current.entropy ?? {};
+  return {
+    ...defaultDetection,
+    mode: current.mode ?? defaultDetection.mode,
+    model: current.model ?? defaultDetection.model,
+    prompt: current.prompt ?? defaultDetection.prompt,
+    entropy: {
+      ...defaultEntropy,
+      k: entropy.k ?? defaultEntropy.k,
+      alpha: entropy.alpha ?? defaultEntropy.alpha,
+      warmup_windows: entropy.warmup_windows ?? defaultEntropy.warmup_windows,
+      consecutive_windows:
+        entropy.consecutive_windows ?? defaultEntropy.consecutive_windows,
+      min_rate: entropy.min_total_rate ?? defaultEntropy.min_rate,
+      min_std: entropy.min_std ?? defaultEntropy.min_std,
+      candidate_share:
+        entropy.candidate_share ?? defaultEntropy.candidate_share,
+      candidate_min_rate:
+        entropy.candidate_min_rate ?? defaultEntropy.candidate_min_rate,
+      update_hold: entropy.update_hold ?? defaultEntropy.update_hold,
+      alpha_run: entropy.alpha_run ?? null,
+      measure: entropy.measure ?? defaultEntropy.measure,
+      order: entropy.order ?? defaultEntropy.order,
+      center: entropy.center ?? defaultEntropy.center,
+      spread: entropy.spread ?? defaultEntropy.spread,
+      history: entropy.history ?? defaultEntropy.history,
+      context: entropy.context ?? defaultEntropy.context,
+      watch_ports: (entropy.features ?? []).includes("dport"),
+      watch_protocols: (entropy.features ?? []).includes("proto"),
+      watch_pairs: (entropy.features ?? []).includes("pair"),
+      decide: entropy.decide ?? defaultEntropy.decide,
+      margin: entropy.margin ?? defaultEntropy.margin,
+      rate_threshold: entropy.rate_threshold ?? defaultEntropy.rate_threshold,
+    },
+    response: {
+      ...defaultResponse,
+      policy: current.response ?? defaultResponse.policy,
+      dry_run: current.dry_run ?? defaultResponse.dry_run,
+    },
+  };
+}
+
+export type DetectionOptions = {
+  available?: boolean;
+  reason?: string;
+  current?: Record<string, any>;
+  models?: string[];
+  models_error?: string;
 };
 
 export const emptyExperiment: Experiment = {
@@ -73,6 +288,7 @@ export const emptyExperiment: Experiment = {
   recovery: 30,
   mitigation: false,
   confirm_isolated_lab: false,
+  detection: null,
 };
 
 /**
@@ -89,6 +305,7 @@ export function normalizeExperiment(settings: unknown): Experiment {
       attackers: value.attackers ?? [],
       victims: value.victims ?? [],
       traffic: value.traffic?.length ? value.traffic : ["syn"],
+      detection: normalizeDetection(value.detection),
     };
   }
   return {
@@ -192,11 +409,26 @@ export type Run = {
   status: string;
   started_at?: string;
   settings?: Experiment;
+  // A summary of what the run did, as listed in History (all optional: older runs
+  // had no detection setup).
+  detector_mode?: string | null;
+  detector_model?: string | null;
+  attackers?: number | null;
+  mitigation?: string | null;
+  policy?: string | null;
+  dry_run?: string | null;
+  forwarding?: string | null;
+  match_ports?: string | null;
 };
 export type Status = {
   state: string;
   run_id: string | null;
   persistence_error?: boolean;
+  runner_instance_id?: string;
+  started_at?: string | null;
+  ended_at?: string | null;
+  elapsed_ms?: number;
+  unavailable?: boolean;
 };
 
 export type Notice = {

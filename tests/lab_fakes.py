@@ -57,8 +57,12 @@ class MemoryRepository:
 
 
 class FakeRuntime:
-    def __init__(self, topology, run_id, mitigation, emit):
+    def __init__(
+        self, topology, run_id, mitigation, emit, detection=None, forwarding="per_port"
+    ):
         self.emit = emit
+        self.detection = detection
+        self.forwarding = forwarding
         self.closed = False
 
     def start(self):
@@ -66,6 +70,18 @@ class FakeRuntime:
 
     def sample(self):
         self.emit("links", {"links": []})
+
+    def start_probe(self, client, target, started_at):
+        self.probe(client, target)
+
+    def probe(self, client, target):
+        return None
+
+    def start_pings(self, experiment):
+        return None
+
+    def stop_pings(self):
+        return None
 
     def close(self):
         self.closed = True

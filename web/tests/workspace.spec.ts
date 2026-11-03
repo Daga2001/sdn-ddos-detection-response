@@ -87,6 +87,9 @@ async function mockApi(page: Page, running = false) {
   calls.length = 0;
   const writes: string[] = [];
   let authenticated = false;
+  await page.routeWebSocket("**/api/ownership", (socket) => {
+    socket.send(JSON.stringify({ owner_id: crypto.randomUUID() }));
+  });
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname.slice(4);
@@ -426,4 +429,154 @@ test("Stop lab reaches the runner instead of the static bundle", async ({
   expect(calls).toContain("POST /stop");
   expect(calls).not.toContain("GET /stop");
   await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+// Keep the status channel open for ownership tests. A fulfilled SSE route ends
+// immediately, which correctly makes the production UI mark it disconnected.
+async function stableIdleStatus(page: Page) {
+  await page.addInitScript(() => {
+    class Source extends EventTarget {
+      timer: number;
+      constructor() {
+        super();
+        this.timer = window.setTimeout(
+          () =>
+            this.dispatchEvent(
+              new MessageEvent("status", {
+                data: JSON.stringify({ state: "idle", run_id: null }),
+              }),
+            ),
+          0,
+        );
+      }
+      close() {
+        window.clearTimeout(this.timer);
+      }
+    }
+    (window as any).EventSource = Source;
+  });
+}
+
+test("refresh releases page ownership and a new page gets a different owner", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const send = navigator.sendBeacon.bind(navigator);
+    navigator.sendBeacon = (url, data) => {
+      localStorage.setItem("last-release-attempt", String(url));
+      return send(url, data);
+    };
+  });
+  await stableIdleStatus(page);
+  await mockApi(page);
+  const startRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" && request.url().endsWith("/api/runs"),
+  );
+  await page.getByRole("button", { name: "▷ Observe", exact: true }).click();
+  const firstOwner = (await startRequest).postDataJSON().owner_id;
+  expect(firstOwner).toBeTruthy();
+  await page.reload();
+  // Navigation may discard a beacon. The ownership socket is the independent
+  // stop path, tested with the real API in test_browser_ownership.py.
+  expect(
+    await page.evaluate(() => localStorage.getItem("last-release-attempt")),
+  ).toBe(`/api/owners/${firstOwner}/release`);
+  const nextRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" && request.url().endsWith("/api/runs"),
+  );
+  await page.getByRole("button", { name: "▷ Observe", exact: true }).click();
+  expect((await nextRequest).postDataJSON().owner_id).not.toBe(firstOwner);
+});
+
+test("locking releases ownership while hiding a tab does not", async ({
+  page,
+}) => {
+  await stableIdleStatus(page);
+  await mockApi(page);
+  await expect(
+    page.getByRole("button", { name: "▷ Observe", exact: true }),
+  ).toBeEnabled();
+  await page.evaluate(() =>
+    document.dispatchEvent(new Event("visibilitychange")),
+  );
+  expect(calls.some((call) => call.includes("/release"))).toBe(false);
+  await page.getByRole("button", { name: "Lock", exact: true }).click();
+  await expect(page.getByLabel("Local access token")).toBeVisible();
+  await expect
+    .poll(() => calls.some((call) => call.includes("/release")))
+    .toBe(true);
+  expect(calls).toContain("DELETE /session");
+});
+
+test("live clock uses runner time and rejects observations from another run", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    class Source extends EventTarget {
+      constructor() {
+        super();
+        (window as any).labSource = this;
+      }
+      close() {}
+    }
+    (window as any).EventSource = Source;
+  });
+  await mockApi(page);
+  await page.evaluate(() => {
+    (window as any).labSource.dispatchEvent(
+      new MessageEvent("status", {
+        data: JSON.stringify({
+          state: "running",
+          run_id: "record",
+          runner_instance_id: "runner-one",
+          elapsed_ms: 361000,
+          started_at: "2026-10-29T10:00:00Z",
+        }),
+      }),
+    );
+    (window as any).labSource.dispatchEvent(
+      new MessageEvent("observation", {
+        data: JSON.stringify({
+          run_id: "record",
+          seq: 1,
+          kind: "phase",
+          ts: "2020-01-01T00:00:00Z",
+          data: { state: "running" },
+        }),
+      }),
+    );
+  });
+  await expect(page.locator(".run-clock")).toHaveText(/06:0[12]/);
+  await page.evaluate(() => {
+    (window as any).labSource.dispatchEvent(
+      new MessageEvent("status", {
+        data: JSON.stringify({
+          state: "stopped",
+          run_id: "record",
+          runner_instance_id: "runner-one",
+          elapsed_ms: 362000,
+        }),
+      }),
+    );
+  });
+  await expect(page.locator(".run-clock")).toHaveText("⏱ 06:02");
+  await page.evaluate(() => {
+    (window as any).labSource.dispatchEvent(
+      new MessageEvent("observation", {
+        data: JSON.stringify({
+          run_id: "foreign-run",
+          seq: 1,
+          kind: "phase",
+          ts: "2026-10-29T10:05:23Z",
+          data: { state: "running" },
+        }),
+      }),
+    );
+  });
+  await expect(
+    page.getByText("The lab connection changed identity."),
+  ).toBeVisible();
+  await expect(page.locator(".run-clock")).toHaveText("⏱ 06:02");
 });
