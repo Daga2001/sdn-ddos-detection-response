@@ -221,6 +221,8 @@ export type CheckPoint = {
   connect: number | null;
   answered: boolean;
   httpCode: number | null;
+  /** The victim the check was sent to, when the run recorded it. */
+  target: string | null;
 };
 
 function answeredCheck(data: Record<string, any>): boolean {
@@ -237,6 +239,7 @@ export function checkSeries(events: Observation[]): CheckPoint[] {
       connect: finite(event.data.connect_ms),
       answered: answeredCheck(event.data),
       httpCode: finite(event.data.http_code),
+      target: typeof event.data.target === "string" ? event.data.target : null,
     }));
 }
 

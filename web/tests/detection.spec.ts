@@ -445,6 +445,60 @@ test("a replay scores the detector against the experiment's ground truth", async
   ).toBeDisabled();
 });
 
+for (const mode of ["llm", "entropy"]) {
+  test(`the Traffic tab lists the proposal's metrics for a replay judged by ${mode}`, async ({
+    page,
+  }) => {
+    await mockLab(page);
+    await page.route("**/api/runs/record", (route) =>
+      route.fulfill({
+        json: {
+          id: "record",
+          topology,
+          status: "completed",
+          settings: {
+            ...settings,
+            detection: { ...settings.detection, mode },
+          },
+        },
+      }),
+    );
+    await inspectorTab(page, "History").click();
+    await page.getByRole("button", { name: "Replay" }).click();
+    await page.getByLabel("Replay position", { exact: true }).fill("9");
+    await observationTab(page, "Traffic").click();
+    const metrics = page.locator(".proposal-metrics");
+    await expect(
+      metrics.getByRole("heading", { name: "Proposal evaluation metrics" }),
+    ).toBeVisible();
+    // h1 named 8 s into the attack, h2 never; h4 (legitimate) named once.
+    await expect(
+      metrics.getByRole("row", { name: /^Detection Rate \(DR\) 50%/ }),
+    ).toBeVisible();
+    await expect(
+      metrics.getByRole("row", { name: /^False Alarm Rate \(FAR\) 50%/ }),
+    ).toBeVisible();
+    await expect(
+      metrics.getByRole("row", {
+        name: /^Average attack detection time 8 s \(1 of 2 attackers/,
+      }),
+    ).toBeVisible();
+    await expect(
+      metrics.getByRole("row", { name: /^Response time 10 s after/ }),
+    ).toBeVisible();
+    await expect(
+      metrics.getByRole("row", { name: /^Confidence calibration/ }),
+    ).toContainText(
+      mode === "entropy"
+        ? "the entropy detector reports no probability"
+        : "no judged flow rows",
+    );
+    await expect(
+      metrics.getByRole("button", { name: "Download CSV" }),
+    ).toBeVisible();
+  });
+}
+
 for (const mode of ["entropy", "off", null]) {
   test(`a non-LLM replay hides detection results (${mode ?? "unset"})`, async ({
     page,
