@@ -1,16 +1,12 @@
-// Unit tests for the proposal evaluation metrics. Run with `npm run test:unit`.
+// Unit tests for the building blocks of the evaluation metrics. Run with `npm run test:unit`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Experiment, Observation, Topology } from "../src/types.ts";
 import { emptyExperiment, phaseSpans } from "../src/types.ts";
 import {
-  EVALUATION,
   attackerDetectionOffsets,
   calibration,
   flowDecisions,
-  metricsCsv,
-  pointsDelta,
-  proposalMetrics,
   victimRecovery,
 } from "../src/evaluation.ts";
 import { checkSeries } from "../src/traffic.ts";
@@ -175,97 +171,4 @@ test("several victims recover when the last one does (equation 9)", () => {
     Date.parse(at(120)),
   );
   assert.match(stuck.overall, /not recovered within 60 s/);
-});
-
-test("loss and availability change in percentage points", () => {
-  assert.equal(pointsDelta(5, 0), "+5 pp");
-  assert.equal(pointsDelta(90, 100), "-10 pp");
-  assert.equal(pointsDelta(null, 0), "—");
-});
-
-test("the proposal table scores a run and names its sources", () => {
-  const events = [
-    ...phases(),
-    ev(1, "detection_config", { mode: "llm", mitigation: true }),
-    ev(35, "detection", { ipv4_src: ip("a1"), probability: 0.9 }),
-    ev(36, "detection", { ipv4_src: ip("c1"), probability: 0.85 }),
-    ev(39, "mitigation_requested", { ipv4_src: ip("a1"), action: "block" }),
-    flows(40, [{ ipv4_src: ip("a1"), prob_ddos: 0.9, label: 1 }]),
-    // victim link: 100 packets/s before the response, 10 after it settled
-    ...[32, 34, 36, 38].map((second) =>
-      ev(second, "links", {
-        links: [{ link_id: "link-v1", rates: { tx_pps: 100, tx_bps: 0 } }],
-      }),
-    ),
-    ...[50, 52, 54].map((second) =>
-      ev(second, "links", {
-        links: [{ link_id: "link-v1", rates: { tx_pps: 10, tx_bps: 0 } }],
-      }),
-    ),
-  ];
-  const rows = proposalMetrics(
-    events,
-    topology,
-    experiment,
-    Date.parse(at(120)),
-  );
-  assert.ok(rows);
-  const value = (label: string) =>
-    rows!.find((row) => row.label.startsWith(label))?.value ?? "";
-  assert.equal(value("Detection Rate"), "50%");
-  // c1, c2 and the idle v2 are the legitimate clients; only c1 was named.
-  assert.equal(value("False Alarm Rate"), "33.3%");
-  assert.match(value("Average attack detection time"), /^5 s \(1 of 2/);
-  assert.match(value("Early Detection Rate"), /^50% \(1 of 2\)/);
-  assert.match(value("Response time"), /^9 s after/);
-  assert.equal(value("Detection-to-response delay"), "4 s");
-  assert.match(value("Mitigation effectiveness"), /^90% less/);
-  assert.match(value("Confidence calibration"), /Brier 0\.01/);
-  assert.match(value("Output consistency"), /compare_llms\.py/);
-  assert.match(value("Bandwidth"), /not recorded/);
-  assert.ok(rows!.every((row) => row.source.length > 0));
-  assert.equal(EVALUATION.earlyDetectionS, 10);
-  const csv = metricsCsv(rows!);
-  assert.match(csv.split("\n")[0], /^group,metric,value,definition,source$/);
-  assert.equal(csv.split("\n").length, rows!.length + 1);
-});
-
-test("an entropy run says calibration does not apply; an off run scores nothing", () => {
-  const entropy = proposalMetrics(
-    [...phases(), ev(1, "detection_config", { mode: "entropy" })],
-    topology,
-    experiment,
-    Date.parse(at(120)),
-  )!;
-  assert.match(
-    entropy.find((row) => row.label === "Confidence calibration")!.value,
-    /entropy detector reports no probability/,
-  );
-  const off = proposalMetrics(
-    [...phases(), ev(1, "detection_config", { mode: "off" })],
-    topology,
-    experiment,
-    Date.parse(at(120)),
-  )!;
-  assert.equal(
-    off.find((row) => row.label === "Detection Rate (DR)")!.value,
-    "no detector ran in this run",
-  );
-  assert.equal(
-    proposalMetrics(phases(), topology, { ...experiment, attackers: [] }, 0),
-    null,
-  );
-});
-
-test("CSV quotes embedded quotes", () => {
-  const csv = metricsCsv([
-    {
-      group: "Model",
-      label: 'a "b"',
-      value: "1, 2",
-      definition: "d",
-      source: "s",
-    },
-  ]);
-  assert.equal(csv.split("\n")[1], '"Model","a ""b""","1, 2","d","s"');
 });

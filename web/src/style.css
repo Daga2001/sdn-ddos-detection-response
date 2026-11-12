@@ -1864,31 +1864,106 @@ h4.subsection {
   color: var(--ink);
 }
 
-.proposal-metrics {
-  margin-top: 12px;
+/* Results tab: every number of one run in one place */
+.results-view {
+  padding: 10px 20px 18px;
 }
-.proposal-metrics-head {
+.results-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+.results-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: none;
+}
+.results-actions button {
+  font-size: 12px;
+}
+.results-validity {
+  margin: 10px 0 2px;
+  padding: 8px 10px;
+  border-radius: 5px;
+  font-size: 12px;
+}
+.results-validity.ok {
+  background: #eef6ee;
+  color: #2e6b45;
+  border: 1px solid #cfe3d2;
+}
+.results-validity.warn {
+  background: #fbf0ea;
+  color: #8a3420;
+  border: 1px solid #efd2c4;
+}
+.results-validity ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+.results-section {
+  margin-top: 6px;
+  padding-top: 2px;
+  border-top: 1px solid #e8ece3;
+}
+.results-section .confusion {
+  max-width: 340px;
+  margin-bottom: 8px;
+}
+.results-section .metric-list {
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  column-gap: 24px;
+}
+.results-section .metric-list dt {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 4px;
 }
-.proposal-metrics-head h3 {
-  margin: 0;
+.results-section .phase-results {
+  margin-top: 8px;
 }
-.proposal-metrics .detection-table td:first-child {
+.phase-results th:not(:first-child),
+.phase-results td:not(:first-child) {
+  text-align: right;
   white-space: nowrap;
+}
+.phase-results th {
+  color: #5b6b60;
   font-weight: 600;
 }
-.proposal-metrics .detection-table tr.metric-group th {
-  background: #f3f6ef;
-  color: #3d5246;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  font-size: 10.5px;
+.phase-results th.phase-name {
+  text-transform: capitalize;
+}
+.results-view table {
+  font: inherit;
+  font-size: 11.5px;
+  table-layout: auto;
+}
+.results-missing {
+  margin-top: 8px;
+}
+.phase-results td:first-child {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.not-applicable {
+  color: #7a8a80;
+  font-weight: 400;
+  font-style: italic;
+}
+td.not-applicable {
+  text-align: left !important;
+}
+.results-not-measured ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
 }
 @media (max-width: 900px) {
-  .proposal-metrics .detection-table td:first-child {
-    white-space: normal;
+  .results-head {
+    flex-direction: column;
   }
 }
