@@ -19,8 +19,6 @@ import {
   trafficMarkers,
   trafficSeries,
 } from "./traffic.ts";
-import { EVALUATION_HINT, metricsCsv, proposalMetrics } from "./evaluation.ts";
-import type { MetricRow } from "./evaluation.ts";
 import type { Experiment, Observation, PhaseSpan, Topology } from "./types.ts";
 
 echarts.use([
@@ -104,62 +102,6 @@ function Panel({
   );
 }
 
-function downloadCsv(rows: MetricRow[]) {
-  const blob = new Blob([metricsCsv(rows)], { type: "text/csv" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = "proposal-metrics.csv";
-  link.click();
-  URL.revokeObjectURL(url);
-}
-
-/** Section 3.4.1 of the proposal, one table grouped as in its Table 3.1. */
-function ProposalMetrics({ rows }: { rows: MetricRow[] }) {
-  const groups = [...new Set(rows.map((row) => row.group))];
-  return (
-    <section className="proposal-metrics" title={EVALUATION_HINT}>
-      <div className="proposal-metrics-head">
-        <h3>Proposal evaluation metrics</h3>
-        <button type="button" onClick={() => downloadCsv(rows)}>
-          Download CSV
-        </button>
-      </div>
-      <table className="detection-table">
-        <thead>
-          <tr>
-            <th>Metric</th>
-            <th>This run</th>
-            <th>Definition</th>
-            <th>Proposal</th>
-          </tr>
-        </thead>
-        {groups.map((group) => (
-          <tbody key={group}>
-            <tr className="metric-group">
-              <th colSpan={4}>{group} evaluation</th>
-            </tr>
-            {rows
-              .filter((row) => row.group === group)
-              .map((row) => (
-                <tr key={row.label}>
-                  <td>{row.label}</td>
-                  <td>{row.value}</td>
-                  <td>
-                    <small>{row.definition}</small>
-                  </td>
-                  <td>
-                    <small>{row.source}</small>
-                  </td>
-                </tr>
-              ))}
-          </tbody>
-        ))}
-      </table>
-    </section>
-  );
-}
-
 export function TrafficView({
   events,
   spans,
@@ -182,7 +124,6 @@ export function TrafficView({
   const cpu = cpuSeries(events);
   const markers = trafficMarkers(events, topology, experiment, runEnd);
   const table = phaseTable(events, topology, experiment, runEnd);
-  const metrics = proposalMetrics(events, topology, experiment, runEnd);
   const start = events.length ? Date.parse(events[0].ts) : runEnd;
   const axis = { type: "time" as const, min: start, max: runEnd };
   const failed = checks.filter((check) => !check.answered);
@@ -493,7 +434,6 @@ export function TrafficView({
           ))}
         </ul>
       )}
-      {metrics && <ProposalMetrics rows={metrics} />}
     </div>
   );
 }

@@ -6,8 +6,8 @@ import { EntropyView } from "./EntropyView";
 import { TrafficView } from "./TrafficView";
 
 const tabHints: Record<string, string> = {
-  Detection:
-    "WHAT: how the detector did on this run — a confusion matrix (true/false positives and negatives per host), precision and recall, how fast it reacted, the measured network and service data around it, and a live chart of the attack against the detections. HOW TO READ: attackers named are true positives, legitimate clients named are false positives; the chart shows the flood reaching the victim and the detections stacking up. WHY: it answers “did the detector work, and at what cost?” without reading event logs.",
+  Results:
+    "WHAT: every number the final report needs from one run, for any detector (LLM, entropy, or none): detection quality per host, what each decision cost, the effect on legitimate users, the network and control plane, the response, the recovery, and the setup. HOW TO READ: once the run is over the numbers come from its full record and do not change; a warning says when a run should not be counted. WHY: one place to read and download the results, instead of collecting them from every tab.",
   Threshold:
     "WHAT: a window-by-window log of the entropy detector — the entropy it computes for source IPs, destination IPs (and ports or protocols if you turned them on), the band of normal values it learned, where the centre of that band sits, and the network it measured (packet rate, flow rules, busiest talkers). HOW TO READ: dots inside the shaded band are normal, outside it they are suspicious; the dashed line is the learned centre (the mean or the median, as chosen in the Detection tab). WHY: it shows in real time why the detector alarmed or stayed quiet, and how its threshold moves as the traffic changes.",
   Traffic:
@@ -26,20 +26,20 @@ export function Observations({
   events,
   tab: requestedTab,
   setTab,
-  detectionView,
+  resultsView,
   topology,
   experiment,
 }: {
   events: Observation[];
   tab: string;
   setTab: (value: string) => void;
-  detectionView?: ReactNode;
+  resultsView: ReactNode;
   topology: Topology | null;
   experiment: Experiment | null;
 }) {
   const [expanded, setExpanded] = useState(-1);
-  const tab =
-    requestedTab === "Detection" && !detectionView ? "Traffic" : requestedTab;
+  // The LLM-only Detection tab became Results, shown for every detector.
+  const tab = requestedTab === "Detection" ? "Results" : requestedTab;
   useEffect(() => {
     if (tab !== requestedTab) setTab(tab);
   }, [tab, requestedTab, setTab]);
@@ -89,8 +89,8 @@ export function Observations({
       </div>
       <nav className="tabs" aria-label="Observations">
         {[
+          "Results",
           "Traffic",
-          ...(detectionView ? ["Detection"] : []),
           "Threshold",
           "Packets",
           "Commands",
@@ -112,7 +112,7 @@ export function Observations({
         <span>Measured evidence · UTC</span>
       </nav>
       <div
-        className={`observation-body${["Detection", "Threshold", "Traffic"].includes(tab) ? " tall" : ""}`}
+        className={`observation-body${["Results", "Threshold", "Traffic"].includes(tab) ? " tall" : ""}`}
       >
         {tab === "Traffic" &&
           (events.length ? (
@@ -132,7 +132,7 @@ export function Observations({
               </p>
             </div>
           ))}
-        {tab === "Detection" && detectionView}
+        {tab === "Results" && resultsView}
         {tab === "Threshold" && <EntropyView events={events} spans={spans} />}
         {tab === "Packets" &&
           (packetRows.length ? (
