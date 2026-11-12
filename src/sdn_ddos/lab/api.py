@@ -100,7 +100,9 @@ def create_app(
     async def malformed(
         request: Request, error: RequestValidationError
     ) -> JSONResponse:
-        return JSONResponse({"detail": _rejection(error.errors())}, status_code=422)
+        return JSONResponse(
+            {"detail": _rejection(list(error.errors()))}, status_code=422
+        )
 
     @app.exception_handler(ValueError)
     async def invalid(request: Request, error: ValueError) -> JSONResponse:
