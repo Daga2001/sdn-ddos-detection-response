@@ -11,7 +11,9 @@ permissions:
 jobs:
   quality:
     name: Python ${{ matrix.python-version }} quality
-    runs-on: ubuntu-latest
+    # ubuntu-latest moved to 26.04, which has no Python 3.9 build for setup-python;
+    # 3.9 is the version Ryu (and the type check) needs.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
