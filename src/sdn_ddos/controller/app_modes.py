@@ -143,6 +143,7 @@ class ModeSwitchController(EnterpriseDDoSController):
         self.cost = DecisionCost()
         self._detector_base = detector_base if remote else ""
         self._usage_sample: Optional[Tuple[float, float]] = None
+        self._usage_row: Dict[str, Any] = {}
         database = DatabaseSettings.from_env()
         self.decisions = create_decision_log(database)
         if database.enabled:
@@ -238,6 +239,10 @@ class ModeSwitchController(EnterpriseDDoSController):
             self.llm_thread: Any = hub.spawn(self._llm_loop)
         if self.mode == "entropy":
             self.entropy_thread = hub.spawn(self._entropy_loop)
+        if self.mode != "off" and self._detector_base:
+            # Its own greenthread: a slow /usage answer must never delay the
+            # statistics polls that the detectors depend on.
+            self.usage_thread = hub.spawn(self._usage_loop)
         self.logger.info(
             "Detection mode=%s source=%s fine_grained_match=%s max_rows=%s",
             self.mode,
@@ -356,26 +361,42 @@ class ModeSwitchController(EnterpriseDDoSController):
             telemetry.emit("decision_cost", event)
 
     def _extra_resources(self) -> Dict[str, Any]:
-        """Decision totals, and the detector service's CPU and memory when it runs."""
+        """Decision totals, and the detector's latest CPU and memory sample."""
 
         row: Dict[str, Any] = {"detector": self.mode}
         row.update(getattr(self, "cost", DecisionCost()).totals())
         row["polls_skipped_total"] = int(getattr(self, "llm_skipped", 0))
+        if self.mode != "off":
+            row.update(getattr(self, "_usage_row", {}))
+        return row
+
+    def _sample_usage(self) -> None:
+        """Read the detector service's CPU time and memory once."""
+
         base = getattr(self, "_detector_base", "")
-        if self.mode == "off" or not base:
-            return row
-        usage = fetch_usage(base, self.settings.inference_api_key)
+        usage = fetch_usage(base, self.settings.inference_api_key) if base else None
         if usage is None:
-            return row
+            self._usage_row = {}  # a gap, never a stale value
+            return
         percent, self._usage_sample = cpu_percent_since(
             getattr(self, "_usage_sample", None),
             usage["cpu_seconds"],
             time.monotonic(),
         )
-        row["detector_cpu_seconds"] = usage["cpu_seconds"]
-        row["detector_rss_bytes"] = int(usage["rss_bytes"])
-        row["detector_cpu_percent"] = percent
-        return row
+        self._usage_row = {
+            "detector_cpu_seconds": usage["cpu_seconds"],
+            "detector_rss_bytes": int(usage["rss_bytes"]),
+            "detector_cpu_percent": percent,
+        }
+
+    def _usage_loop(self) -> None:
+        interval = max(1.0, float(self.settings.poll_interval_seconds))
+        while True:
+            try:
+                self._sample_usage()
+            except Exception:  # the sampler must outlive one bad answer
+                self.logger.exception("detector usage sample failed")
+            hub.sleep(interval)
 
     # -- LLM judging off the event loop -------------------------------------
 

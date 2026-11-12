@@ -195,23 +195,27 @@ def test_controller_samples_carry_the_totals_and_the_detector_usage(
     )
     controller._detector_base = "http://detector:8000"
     controller.llm_skipped = 2
-    readings = iter([(1.0, 100.0), (1.5, 102.0)])
+    readings = iter([1.0, 1.5])
 
     def fake_usage(base: str, key: str) -> Dict[str, float]:
-        cpu, _ = next(readings)
-        return {"cpu_seconds": cpu, "rss_bytes": 52428800.0}
+        return {"cpu_seconds": next(readings), "rss_bytes": 52428800.0}
 
     clock = iter([100.0, 102.0])
     monkeypatch.setattr(app_modes, "fetch_usage", fake_usage)
     monkeypatch.setattr(app_modes.time, "monotonic", lambda: next(clock))
-    first = controller._extra_resources()
+    first = controller._extra_resources()  # nothing sampled yet
     assert first["detector"] == "llm" and first["polls_skipped_total"] == 2
-    assert first["decisions_total"] == 0
-    assert first["detector_rss_bytes"] == 52428800
-    assert first["detector_cpu_percent"] is None  # needs two samples
-    second = controller._extra_resources()
-    assert second["detector_cpu_percent"] == 25.0
+    assert first["decisions_total"] == 0 and "detector_cpu_seconds" not in first
+    controller._sample_usage()
+    sampled = controller._extra_resources()
+    assert sampled["detector_rss_bytes"] == 52428800
+    assert sampled["detector_cpu_percent"] is None  # needs two samples
+    controller._sample_usage()
+    assert controller._extra_resources()["detector_cpu_percent"] == 25.0
+    # a failed sample leaves a gap instead of repeating the last value
     monkeypatch.setattr(app_modes, "fetch_usage", lambda base, key: None)
+    controller._sample_usage()
     assert "detector_cpu_seconds" not in controller._extra_resources()
+    controller._usage_row = {"detector_cpu_seconds": 1.0}
     controller.mode = "off"
     assert "detector_cpu_seconds" not in controller._extra_resources()

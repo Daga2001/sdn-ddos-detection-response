@@ -269,9 +269,12 @@ export function runResults(input: {
       (event.kind === "phase" && event.data.state === "attack"),
   );
   if (!attacked) return null;
-  const runEnd = events.length
-    ? Math.max(...events.map((event) => Date.parse(event.ts)))
-    : Date.now();
+  // A loop, not Math.max(...list): a long record can exceed the argument limit.
+  let runEnd = events.length ? -Infinity : Date.now();
+  for (const event of events) {
+    const ms = Date.parse(event.ts);
+    if (ms > runEnd) runEnd = ms;
+  }
   const spans = phaseSpans(events, runEnd);
   const analysis = analyzeDetection(events, topology, experiment, active);
   const config = analysis.config ?? {};
