@@ -504,10 +504,10 @@ for (const mode of ["llm", "entropy", "off"]) {
     }
     await expect(metricValue(page, "response_time")).toHaveText("10 s");
     await expect(metricValue(page, "detector")).toHaveText(mode);
-    // This record predates the cost measurement: it says so instead of a zero.
+    // This record has no cost data: it says so instead of a zero.
     if (mode !== "off")
       await expect(metricValue(page, "decisions")).toContainText(
-        "older than the cost measurement",
+        "no cost data reached the lab",
       );
     const download = page.waitForEvent("download");
     await results

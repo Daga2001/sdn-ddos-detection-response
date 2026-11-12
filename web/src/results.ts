@@ -96,6 +96,9 @@ export type RunResults = {
   detector: string;
 };
 
+/** Recovery needs this many answered website checks in a row, one a second. */
+const RECOVERY_CHECKS_NEEDED = 10;
+
 /** Why a detector metric is empty in a run that had no detector. */
 export const NO_DETECTOR = "no detector ran (no-defense run)";
 
@@ -577,7 +580,7 @@ export function runResults(input: {
       : "none";
   const costWhy = off
     ? noDetector
-    : "not recorded: this run is older than the cost measurement";
+    : "not recorded: no cost data reached the lab from the controller in this run";
   const costMetric = (
     key: string,
     label: string,
@@ -1100,6 +1103,23 @@ export function runResults(input: {
   }
   if (!byPhase(checks, spans, "attack").length && !active)
     problems.push("No website checks were recorded during the attack.");
+  if (!events.some((event) => event.kind === "controller") && !active)
+    problems.push(
+      "The controller sent no samples during the run (no CPU, Packet-In, flow-rule or judged-flow data), so the detection, cost and control-plane numbers are missing.",
+    );
+  if (!active && service.overall === "baseline too short to judge")
+    problems.push(
+      "The baseline was too short to learn the website's normal response time, so recovery cannot be measured (the protocol uses 300 s).",
+    );
+  const recoverySeconds = spanSeconds(spans, "recovery");
+  if (
+    !active &&
+    recoverySeconds !== null &&
+    recoverySeconds < RECOVERY_CHECKS_NEEDED
+  )
+    problems.push(
+      `The recovery phase (${Math.round(recoverySeconds)} s) was shorter than the ${RECOVERY_CHECKS_NEEDED} website checks in a row that recovery needs (the protocol uses 300 s).`,
+    );
   const notReady = events.some(
     (event) =>
       event.kind === "detector" &&
