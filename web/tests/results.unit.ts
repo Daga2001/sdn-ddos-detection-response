@@ -409,3 +409,33 @@ test("values are shown with their unit and quoted safely in CSV", () => {
   assert.equal(resultRowCsv(results).split("\n")[1].split(",")[0], '"1');
   assert.match(metricsTableCsv(results), /"a ""b""",quoted,,"1, 2"/);
 });
+
+test("a controller crash is flagged with its error", () => {
+  const crashed = scored([
+    ...llmRun(),
+    ev(1, "command", { id: "c-1", node: "controller", argv: ["ryu-modes"] }),
+    ev(2, "command_output", {
+      id: "c-1",
+      text: "hub: uncaught exception: Traceback (most recent call last):\n  File app.py\nAttributeError: 'ModeSwitchController' object has no attribute 'mode'\n",
+    }),
+  ]);
+  assert.match(
+    crashed.problems.join(" "),
+    /controller hit an internal error during the run \(AttributeError: 'ModeSwitchController' object has no attribute 'mode'\)/,
+  );
+  const reported = scored([
+    ...llmRun(),
+    ev(40, "controller_error", {
+      where: "monitor",
+      error: "RuntimeError('boom')",
+    }),
+  ]);
+  assert.match(reported.problems.join(" "), /\(RuntimeError\('boom'\)\)/);
+  // another host's output with an error is not the controller's
+  const other = scored([
+    ...llmRun(),
+    ev(1, "command", { id: "h-1", node: "h1", argv: ["curl"] }),
+    ev(2, "command_output", { id: "h-1", text: "ValueError: x\nTraceback" }),
+  ]);
+  assert.doesNotMatch(other.problems.join(" "), /controller hit/);
+});

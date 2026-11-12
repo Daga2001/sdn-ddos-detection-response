@@ -1103,6 +1103,29 @@ export function runResults(input: {
   }
   if (!byPhase(checks, spans, "attack").length && !active)
     problems.push("No website checks were recorded during the attack.");
+  // A controller that crashed, even partly, is visible in its own output (the
+  // Commands tab) or in the controller_error events it sends.
+  const controllerIds = new Set(
+    events
+      .filter((e) => e.kind === "command" && e.data.node === "controller")
+      .map((e) => e.data.id),
+  );
+  const controllerOutput = events
+    .filter((e) => e.kind === "command_output" && controllerIds.has(e.data.id))
+    .map((e) => String(e.data.text ?? ""))
+    .join("\n");
+  const reported = events.filter((e) => e.kind === "controller_error");
+  if (
+    reported.length ||
+    /Traceback|uncaught exception/.test(controllerOutput)
+  ) {
+    const line =
+      controllerOutput.match(/^\s*(\w+(?:Error|Exception)\b[^\n]*)$/m)?.[1] ??
+      (reported[0] ? String(reported[0].data.error ?? "") : "");
+    problems.push(
+      `The controller hit an internal error during the run${line ? ` (${line.slice(0, 160)})` : ""}, so its statistics and detections may be incomplete. Its output is in the Commands tab.`,
+    );
+  }
   if (!events.some((event) => event.kind === "controller") && !active)
     problems.push(
       "The controller sent no samples during the run (no CPU, Packet-In, flow-rule or judged-flow data), so the detection, cost and control-plane numbers are missing.",

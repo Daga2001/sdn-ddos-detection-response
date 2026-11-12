@@ -53,6 +53,7 @@ CONTROLLER_KINDS = frozenset(
         "entropy_window",
         "switch_table",
         "decision_cost",
+        "controller_error",
     }
 )
 INBOX_LIMIT = 20000
