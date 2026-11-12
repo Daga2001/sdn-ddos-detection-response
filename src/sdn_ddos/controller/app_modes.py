@@ -56,6 +56,7 @@ from sdn_ddos.controller.core import (
     flow_age_seconds,
     probability_is_attack,
 )
+from sdn_ddos.controller.cost import DecisionCost, cpu_percent_since
 from sdn_ddos.controller.enforcer import LIMIT_PRIORITY, OpenFlowEnforcer
 from sdn_ddos.controller.judging import PollQueue, judging_order, next_window_due
 from sdn_ddos.controller.response import (
@@ -77,7 +78,11 @@ from sdn_ddos.detection.entropy import (
     merge_switch_rates,
     window_state,
 )
-from sdn_ddos.detection.entropy_client import RemoteEntropy, fetch_remote_config
+from sdn_ddos.detection.entropy_client import (
+    RemoteEntropy,
+    fetch_remote_config,
+    fetch_usage,
+)
 from sdn_ddos.storage import create_metrics_store
 
 
@@ -133,6 +138,12 @@ class ModeSwitchController(EnterpriseDDoSController):
         if mode not in MODES:
             raise ValueError(f"detection mode must be one of {MODES}, got {mode!r}")
         self.mode = mode
+        # What each decision costs (see controller/cost.py): running totals sent with
+        # every controller sample, and the detector service's own CPU time and memory.
+        self.cost = DecisionCost()
+        self._detector_base = detector_base if remote else ""
+        self._usage_sample: Optional[Tuple[float, float]] = None
+        self._usage_row: Dict[str, Any] = {}
         database = DatabaseSettings.from_env()
         self.decisions = create_decision_log(database)
         if database.enabled:
@@ -228,6 +239,10 @@ class ModeSwitchController(EnterpriseDDoSController):
             self.llm_thread: Any = hub.spawn(self._llm_loop)
         if self.mode == "entropy":
             self.entropy_thread = hub.spawn(self._entropy_loop)
+        if self.mode != "off" and self._detector_base:
+            # Its own greenthread: a slow /usage answer must never delay the
+            # statistics polls that the detectors depend on.
+            self.usage_thread = hub.spawn(self._usage_loop)
         self.logger.info(
             "Detection mode=%s source=%s fine_grained_match=%s max_rows=%s",
             self.mode,
@@ -324,6 +339,65 @@ class ModeSwitchController(EnterpriseDDoSController):
         self._window_polls.pop(dpid, None)
         self._window_ports.pop(dpid, None)
 
+    # -- decision cost ------------------------------------------------------
+
+    def _record_cost(
+        self,
+        detector: str,
+        decisions: int,
+        elapsed_ms: float,
+        *,
+        reused: int = 0,
+        failed: bool = False,
+    ) -> None:
+        """Add one detector call to the totals and publish it as `decision_cost`."""
+
+        cost = getattr(self, "cost", None)
+        if cost is None:
+            cost = self.cost = DecisionCost()
+        event = cost.add(detector, decisions, elapsed_ms, reused=reused, failed=failed)
+        telemetry = getattr(self, "telemetry", None)
+        if event is not None and telemetry is not None:
+            telemetry.emit("decision_cost", event)
+
+    def _extra_resources(self) -> Dict[str, Any]:
+        """Decision totals, and the detector's latest CPU and memory sample."""
+
+        row: Dict[str, Any] = {"detector": self.mode}
+        row.update(getattr(self, "cost", DecisionCost()).totals())
+        row["polls_skipped_total"] = int(getattr(self, "llm_skipped", 0))
+        if self.mode != "off":
+            row.update(getattr(self, "_usage_row", {}))
+        return row
+
+    def _sample_usage(self) -> None:
+        """Read the detector service's CPU time and memory once."""
+
+        base = getattr(self, "_detector_base", "")
+        usage = fetch_usage(base, self.settings.inference_api_key) if base else None
+        if usage is None:
+            self._usage_row = {}  # a gap, never a stale value
+            return
+        percent, self._usage_sample = cpu_percent_since(
+            getattr(self, "_usage_sample", None),
+            usage["cpu_seconds"],
+            time.monotonic(),
+        )
+        self._usage_row = {
+            "detector_cpu_seconds": usage["cpu_seconds"],
+            "detector_rss_bytes": int(usage["rss_bytes"]),
+            "detector_cpu_percent": percent,
+        }
+
+    def _usage_loop(self) -> None:
+        interval = max(1.0, float(self.settings.poll_interval_seconds))
+        while True:
+            try:
+                self._sample_usage()
+            except Exception:  # the sampler must outlive one bad answer
+                self.logger.exception("detector usage sample failed")
+            hub.sleep(interval)
+
     # -- LLM judging off the event loop -------------------------------------
 
     def _submit_llm(self, batch: FlowBatch) -> None:
@@ -406,10 +480,19 @@ class ModeSwitchController(EnterpriseDDoSController):
                 verdict_of[keys[i]] = self._verdicts[keys[i]]
                 self._verdicts.move_to_end(keys[i])
         fresh_ms = 0.0
+        reused = len(selected) - len(fresh)
         if fresh:
             started = time.monotonic()
             answered = super()._predict([samples[i] for i in fresh.values()])
-            fresh_ms = (time.monotonic() - started) * 1000.0 / len(fresh)
+            elapsed_ms = (time.monotonic() - started) * 1000.0
+            fresh_ms = elapsed_ms / len(fresh)
+            self._record_cost(
+                "llm",
+                len(fresh),
+                elapsed_ms,
+                reused=reused,
+                failed=answered is None,
+            )
             if answered is None:
                 selected = [i for i in selected if keys[i] in verdict_of]
                 fresh = {}
@@ -419,6 +502,8 @@ class ModeSwitchController(EnterpriseDDoSController):
                     self._verdicts[key] = prediction
                 while len(self._verdicts) > self.llm_cache_size:
                     self._verdicts.popitem(last=False)
+        elif reused:
+            self._record_cost("llm", 0, 0.0, reused=reused)  # all served from cache
         if not selected:
             return None
         neutral: Dict[str, Any] = {"pred_label": 0, "prob_ddos": None}
@@ -637,11 +722,16 @@ class ModeSwitchController(EnterpriseDDoSController):
             top_ports: List[Tuple[str, float]] = []
             if self._tracks_ports:
                 extra, top_ports = self._window_histograms(now)
+            started = time.monotonic()
             try:
                 result = self.entropy.observe(NETWORK_SCOPE, flows, extra)
             except (requests.RequestException, KeyError, ValueError) as exc:
+                self._record_cost(
+                    "entropy", 1, (time.monotonic() - started) * 1000.0, failed=True
+                )
                 self.logger.error("entropy window skipped, detector failed: %s", exc)
                 continue
+            self._record_cost("entropy", 1, (time.monotonic() - started) * 1000.0)
             self._publish_entropy_window(result, fresh, flows, extra, top_ports)
             if result.reason == "idle":
                 continue

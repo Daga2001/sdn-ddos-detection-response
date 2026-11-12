@@ -18,6 +18,14 @@ class Recorder:
         self.rows.append({"detector": detector, "verdict": verdict, **kwargs})
 
 
+class Events:
+    def __init__(self) -> None:
+        self.items: List[Any] = []
+
+    def emit(self, kind: str, data: Dict[str, Any]) -> None:
+        self.items.append((kind, data))
+
+
 def sample(rate: float, pkts: int = 10) -> Dict[str, Any]:
     return {
         "packet_count": pkts,
@@ -51,6 +59,7 @@ def controller(monkeypatch: pytest.MonkeyPatch) -> Any:
     instance._verdicts = OrderedDict()
     instance.settings = SimpleNamespace(detection_threshold=0.8)
     instance.decisions = Recorder()
+    instance.telemetry = Events()
     instance.calls = calls
     return instance
 
@@ -143,3 +152,70 @@ def test_quiet_flows_are_judged_last_and_without_sources_the_order_is_unchanged(
     # b is flagged and busy, a and c are quiet: b still comes before the quiet ones.
     assert controller._priority(flows, ["a", "b", "c"]) == [1, 0, 2]
     assert controller._priority(flows, None) == [1, 0, 2]
+
+
+def test_every_model_call_is_timed_and_cached_verdicts_are_counted_apart(
+    controller: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = iter([10.0, 10.8, 20.0, 20.3])
+    monkeypatch.setattr(app_modes.time, "monotonic", lambda: next(clock))
+    flows = [sample(300.0, 500), sample(2.0, 20)]
+    controller._predict(flows)  # two new samples, one call of 0.8 s
+    controller._predict(flows)  # both cached: no call, no event
+    controller._predict([*flows, sample(9.0)])  # one new sample, two reused
+    costs = [
+        data for kind, data in controller.telemetry.items if kind == "decision_cost"
+    ]
+    assert [c["decisions"] for c in costs] == [2, 1]
+    assert [c["reused"] for c in costs] == [0, 2]
+    assert costs[0]["ms_per_decision"] == pytest.approx(400.0)
+    assert costs[1]["elapsed_ms"] == pytest.approx(300.0)
+    totals = controller.cost.totals()
+    assert totals["decisions_total"] == 3 and totals["decisions_reused_total"] == 4
+    assert totals["decision_ms_total"] == pytest.approx(1100.0)
+    # the per-decision latency in the database log matches the event
+    assert controller.decisions.rows[0]["latency_ms"] == pytest.approx(400.0)
+
+
+def test_a_failed_model_call_still_costs_its_time(
+    controller: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(EnterpriseDDoSController, "_predict", lambda self, s: None)
+    assert controller._predict([sample(300.0, 500)]) is None
+    kind, data = controller.telemetry.items[-1]
+    assert kind == "decision_cost" and data["failed"] is True
+    assert controller.cost.totals()["decisions_failed_total"] == 1
+
+
+def test_controller_samples_carry_the_totals_and_the_detector_usage(
+    controller: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller.settings = SimpleNamespace(
+        detection_threshold=0.8, inference_api_key="secret"
+    )
+    controller._detector_base = "http://detector:8000"
+    controller.llm_skipped = 2
+    readings = iter([1.0, 1.5])
+
+    def fake_usage(base: str, key: str) -> Dict[str, float]:
+        return {"cpu_seconds": next(readings), "rss_bytes": 52428800.0}
+
+    clock = iter([100.0, 102.0])
+    monkeypatch.setattr(app_modes, "fetch_usage", fake_usage)
+    monkeypatch.setattr(app_modes.time, "monotonic", lambda: next(clock))
+    first = controller._extra_resources()  # nothing sampled yet
+    assert first["detector"] == "llm" and first["polls_skipped_total"] == 2
+    assert first["decisions_total"] == 0 and "detector_cpu_seconds" not in first
+    controller._sample_usage()
+    sampled = controller._extra_resources()
+    assert sampled["detector_rss_bytes"] == 52428800
+    assert sampled["detector_cpu_percent"] is None  # needs two samples
+    controller._sample_usage()
+    assert controller._extra_resources()["detector_cpu_percent"] == 25.0
+    # a failed sample leaves a gap instead of repeating the last value
+    monkeypatch.setattr(app_modes, "fetch_usage", lambda base, key: None)
+    controller._sample_usage()
+    assert "detector_cpu_seconds" not in controller._extra_resources()
+    controller._usage_row = {"detector_cpu_seconds": 1.0}
+    controller.mode = "off"
+    assert "detector_cpu_seconds" not in controller._extra_resources()

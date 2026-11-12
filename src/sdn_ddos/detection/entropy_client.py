@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 
 import requests
 
+from sdn_ddos.controller.cost import usage_from
 from sdn_ddos.detection.entropy import EntropyResult, FlowObservation, Histogram
 
 
@@ -37,6 +38,30 @@ def fetch_remote_config(
     ):
         return None
     return config
+
+
+def fetch_usage(
+    base_url: str,
+    api_key: str,
+    timeout: float = 0.5,
+    session: Optional[requests.Session] = None,
+) -> Optional[Dict[str, float]]:
+    """The detector service's CPU seconds and memory, or None if it cannot tell.
+
+    Sampled by the controller on every statistics poll; a short timeout keeps a busy
+    detector from delaying the poll, and a failure only leaves a gap in the series.
+    """
+
+    if not api_key:
+        return None
+    try:
+        response = (session or requests).get(
+            f"{base_url}/usage", headers={"X-Api-Key": api_key}, timeout=timeout
+        )
+        response.raise_for_status()
+        return usage_from(response.json())
+    except (requests.RequestException, ValueError):
+        return None
 
 
 class RemoteEntropy:

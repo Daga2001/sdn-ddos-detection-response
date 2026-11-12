@@ -3,7 +3,7 @@ import { InspectorPanel } from "./InspectorPanel";
 import { HistoryPanel } from "./HistoryPanel";
 import { DownloadMenu } from "./DownloadMenu";
 import { DetectionPanel, DetectorSwitch } from "./DetectionPanel";
-import { DetectionResults } from "./DetectionResults";
+import { ResultsView } from "./ResultsView";
 import { retainEvents } from "./detection";
 import { HandIcon, PointerIcon } from "./Icons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -16,6 +16,7 @@ import type { Forwarding } from "./traffic";
 import {
   api,
   download,
+  fetchRunEvents,
   formatRate,
   formatElapsed,
   activeStates,
@@ -362,21 +363,7 @@ function App() {
       throw new Error(
         "This run is still going. Stop it first, then replay its completed record.",
       );
-    let all: Observation[] = [];
-    let after = 0;
-    for (;;) {
-      const page = await api<Observation[]>(
-        `/runs/${id}/events?after=${after}`,
-      );
-      if (!page.length) break;
-      all = all.concat(page);
-      after = page[page.length - 1].seq;
-      if (all.length > 100000)
-        throw new Error(
-          "This record holds more than 100,000 events, which is too much for the browser to replay. Download its JSON or CSV from the history list instead.",
-        );
-    }
-    all.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts) || a.seq - b.seq);
+    const all = await fetchRunEvents(id);
     setReplay({ run, events: all });
     setCursor(0);
     setPlaying(false);
@@ -985,17 +972,15 @@ function App() {
                 ? roleSettings
                 : null
             }
-            detectionView={
-              roleSettings.detection?.mode === "llm" ? (
-                <DetectionResults
-                  events={visible}
-                  topology={shownTopology}
-                  experiment={
-                    roleSettings.attackers.length ? roleSettings : null
-                  }
-                  active={!replay && active}
-                />
-              ) : null
+            resultsView={
+              <ResultsView
+                events={visible}
+                topology={shownTopology}
+                experiment={roleSettings.attackers.length ? roleSettings : null}
+                active={!replay && active}
+                runId={replay ? null : status.run_id}
+                replay={replay}
+              />
             }
           />
         </div>
