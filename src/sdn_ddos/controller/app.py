@@ -239,10 +239,12 @@ class EnterpriseDDoSController(app_manager.RyuApp):
             observed_at = datetime.now(timezone.utc)
             for datapath in list(self.datapaths.values()):
                 self._request_stats(datapath)
+            times = process.cpu_times()
             resource_row = {
                 "ts": observed_at,
                 "cpu_percent": float(process.cpu_percent(interval=None)),
                 "rss_bytes": int(process.memory_info().rss),
+                "cpu_seconds": round(times.user + times.system, 6),
             }
             count = int(getattr(self, "_packet_ins", 0))
             rate, baseline = handled_rate(
@@ -253,9 +255,15 @@ class EnterpriseDDoSController(app_manager.RyuApp):
             self._packet_in_sample = baseline
             resource_row["packet_in_handled"] = count
             resource_row["packet_in_handled_per_s"] = rate
+            resource_row.update(self._extra_resources())
             self.telemetry.emit("controller", resource_row)
             self.store.add_controller_row(resource_row)
             hub.sleep(self.settings.poll_interval_seconds)
+
+    def _extra_resources(self) -> Dict[str, Any]:
+        """More fields for the controller sample; the detection modes add their cost."""
+
+        return {}
 
     @staticmethod
     def _request_stats(datapath: Any) -> None:
