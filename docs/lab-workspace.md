@@ -69,7 +69,7 @@ is unavailable. Shutdown reasons are recorded as `stop_requested` events.
 - One **Download** button, with a dropdown for the format: project JSON or the supported MiniEdit v2 `.mn` subset. Both files import again unchanged, including the project name and description. JSON preserves fractional link settings. MiniEdit exports require whole-number bandwidth/loss, because its properties dialog parses integers. A topology that is not yet valid is not written to a file, because such a file could not be imported back; the reason is shown instead. Import warns when controller settings are remapped to the managed controller.
 - **Observe** starts a fresh network with mitigation off. Select a host for interface details or three bounded pings; select a switch for its flow table. These diagnostics are disabled during experiments so they do not change the measurement workload.
 - An experiment chooses one or more attackers and one or more victims in the same subnet, plus the traffic kinds to send — TCP SYN, UDP, ICMP, or a mix. Attackers and victims are picked from a paginated host table (host name, IP address, switch parent, 5 or 10 rows per page); a host already taken by the other role is shown but locked so it can never be both. Every observation and inspector tab carries a plain-language hover tooltip explaining what it shows and why it is useful. Legitimate clients are not chosen: every remaining host in the victims' subnet is inferred as one, and the workspace probes them against the victims to measure whether normal traffic still gets through. Each attacker floods every victim, so the attacker × victim product is capped (at 16 flows) to keep a run bounded; selected traffic kinds are spread across the attackers. Defaults are 30 seconds baseline, 20 seconds at 100 packets/second per flow, and 30 seconds recovery. Limits are 1,000 packets/second per flow and 300 seconds for attack traffic. The independent GNU `timeout` supervisor sends TERM at the deadline and KILL after a two-second grace period; each generator's packet count is bounded as well. No public/custom target input, spoofing, unrestricted shell, or unlimited flood is provided.
-- A run clock in the header uses the runner's monotonic elapsed time, independent of browser wall-clock changes or retained event buffers. The Traffic tab stacks five panels on one clock — packets/s by role, website checks, ping, Packet-Ins and flow rules, and CPU — with the same phase bands. A table under the panels, for experiment runs only, compares baseline, attack and recovery and states the recovery rule. Below it, *Proposal evaluation metrics* lists the thesis proposal's metrics (section 3.4.1, Table 3.1) for that run, grouped as model, network, system, response and recovery, each with its formula and proposal section, for LLM and entropy runs alike; **Download CSV** exports them for the results tables. How runs are repeated and compared is fixed in [the evaluation protocol](evaluation-protocol.md).
+- A run clock in the header uses the runner's monotonic elapsed time, independent of browser wall-clock changes or retained event buffers. The Traffic tab stacks five panels on one clock — packets/s by role, website checks, ping, Packet-Ins and flow rules, and CPU — with the same phase bands. A table under the panels, for experiment runs only, compares baseline, attack and recovery and states the recovery rule. Every number the report needs is gathered in the **Results** tab (below); how runs are repeated and compared is fixed in [the evaluation protocol](evaluation-protocol.md).
 - Website checks run on their own loop, one client→victim pair a second, and do not pause the 1 s sampler. A failed check is a red ✗, not a gap. Experiment runs also ping each victim five times a second from the first legitimate client. That adds 5 ICMP packets/s of normal traffic per victim, the same for every detector.
 - Select a link to capture headers: at most 60 seconds / 2,000 packets, one capture at a time. Expand a packet row for Ethernet/IP/transport header fields. No payload or PCAP is persisted. Snap length is 256 bytes; this is a teaching view, not full Wireshark.
 
@@ -103,13 +103,26 @@ the detector and show how it did, with no shell commands:
   Renyi, Tsallis, normalised, min-entropy), the threshold model (EWMA, rolling mean or median,
   the improved EWMA of Yu et al.) and whether the band learns every window or only the normal-
   looking ones ([detection modes](detection-modes.md#entropy-measures-and-threshold-models)).
-* **Detection results tab** (below the topology, shown only for an LLM selection): a per-host confusion matrix, precision,
-  recall, false-positive rate, accuracy and F1, the time to the first and last attacker
-  detected, a per-host table, the traffic toward the victim and service probes by phase,
-  the responses requested (and any legitimate client they hit), and a live chart that
-  puts the flood next to the detections. It reads recorded events only, so it works
-  live and in replays with a recorded LLM selection. Selecting entropy or no detection
-  hides this results tab; if it was open, the workspace returns to Traffic. Replays
+* **Results tab** (below the topology, the first tab, for every detector: LLM, entropy or
+  none): every number of one run in one place, each with its definition on hover.
+  *How well it detected* (one host per run: confusion matrix, detection rate, false alarm
+  rate, precision, accuracy, F1, first/average/all detection time, early detection rate;
+  per-flow rates and Brier/ECE calibration as a second unit for the LLM); *What each
+  decision cost* (time per decision mean/median/95th percentile, decisions per second,
+  capacity, cached verdicts, skipped polls, detector-service CPU and memory, Ryu, Open
+  vSwitch and lab-machine CPU); *Effect on legitimate users* (website availability and
+  request time, ping RTT and loss per phase, first failed check); *Network and control
+  plane*; *Response*; *Recovery* (equations 8 and 9); the per-host table, the attack and
+  detection chart, and the setup the run recorded. Metrics that cannot exist for the
+  detector are listed once instead of row by row. A run that should not be counted says
+  why (stopped early, telemetry lost, baseline shorter than the entropy warm-up, no
+  website checks during the attack, detector not ready). Once a run is over the tab
+  reads its full record from the lab (the browser keeps only the latest events) and
+  scores it against the setup the run recorded; replays use their full record too.
+  **Download results row (CSV)** writes one row with the same columns for every run and
+  detector, so the rows of many runs stack under one header; **Download all metrics
+  (CSV)** writes every value on its own line with its definition. GPU use on the computer
+  that runs Ollama is not measured; the tab lists what the lab does not measure. Replays
   use their saved detector selection. The right-panel Detection settings and the
   Threshold tab remain available for entropy.
 
@@ -177,7 +190,7 @@ buffers (16 MB, `grow_buffer`), and the controller keeps its `detection` and
 `mitigation_requested` events (the ones the results are scored from) and resends them until
 the receiver takes them. The same run now loses none (`gap` events stay at 0). Bulk `flows`
 messages can still be dropped when the runner is overwhelmed; that is reported as a `gap` and
-the Detection tab says its numbers are then a lower bound.
+the Results tab says the run should not be counted.
 
 ## Architecture and security tradeoffs
 
