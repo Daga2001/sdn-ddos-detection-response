@@ -504,6 +504,35 @@ export async function api<T>(
   return response.json();
 }
 
+/** Every recorded event of a run, oldest first, read page by page from the lab. */
+export async function fetchRunEvents(id: string): Promise<Observation[]> {
+  let all: Observation[] = [];
+  let after = 0;
+  for (;;) {
+    const page = await api<Observation[]>(`/runs/${id}/events?after=${after}`);
+    if (!page.length) break;
+    all = all.concat(page);
+    after = page[page.length - 1].seq;
+    if (all.length > 100000)
+      throw new Error(
+        "This record holds more than 100,000 events, which is too much for the browser to read. Download its JSON or CSV from the history list instead.",
+      );
+  }
+  return all.sort(
+    (a, b) => Date.parse(a.ts) - Date.parse(b.ts) || a.seq - b.seq,
+  );
+}
+
+/** Save text the browser built (a CSV, say) as a file. */
+export function downloadText(name: string, text: string, type: string) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 export function download(name: string, data: unknown) {
   const url = URL.createObjectURL(
     new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }),

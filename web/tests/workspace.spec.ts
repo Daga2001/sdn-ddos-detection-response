@@ -469,6 +469,8 @@ test("refresh releases page ownership and a new page gets a different owner", as
   });
   await stableIdleStatus(page);
   await mockApi(page);
+  // Observe needs a forwarding choice, the same for every detector.
+  await page.getByRole("radio", { name: /Per-port rules/ }).check();
   const startRequest = page.waitForRequest(
     (request) =>
       request.method() === "POST" && request.url().endsWith("/api/runs"),
@@ -477,6 +479,7 @@ test("refresh releases page ownership and a new page gets a different owner", as
   const firstOwner = (await startRequest).postDataJSON().owner_id;
   expect(firstOwner).toBeTruthy();
   await page.reload();
+  await page.getByRole("radio", { name: /Per-port rules/ }).check();
   // Navigation may discard a beacon. The ownership socket is the independent
   // stop path, tested with the real API in test_browser_ownership.py.
   expect(
@@ -495,6 +498,7 @@ test("locking releases ownership while hiding a tab does not", async ({
 }) => {
   await stableIdleStatus(page);
   await mockApi(page);
+  await page.getByRole("radio", { name: /Per-port rules/ }).check();
   await expect(
     page.getByRole("button", { name: "▷ Observe", exact: true }),
   ).toBeEnabled();

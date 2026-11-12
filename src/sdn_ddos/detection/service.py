@@ -7,6 +7,7 @@ runner can reach them with the contract it already speaks:
     POST /entropy/observe  entropy detector (one adaptive state per run)
     GET  /health           unauthenticated readiness probe used by the lab
     GET  /config, PUT /config, GET /models   choose the active mode/LLM
+    GET  /usage            this process's CPU time and memory (decision cost)
 
 Only the *active* mode answers; the other detector's route returns 409. The
 service is stateless with respect to storage: the controller records decisions.
@@ -26,6 +27,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Literal, Optional
 
+import psutil
 import requests
 from fastapi import FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -178,6 +180,23 @@ class DetectorService:
         self._health: Optional[Dict[str, Any]] = None
         self._health_at = 0.0
         self._last_warm = -WARM_INTERVAL_SECONDS
+        self._process = psutil.Process()
+
+    def usage(self) -> Dict[str, Any]:
+        """CPU seconds used so far and resident memory of this service process.
+
+        The controller samples this to report what each decision costs. With the LLM
+        the model itself runs in Ollama, outside this process, so these numbers are
+        the service's own work (prompt building, parsing, the entropy computation).
+        """
+
+        times = self._process.cpu_times()
+        return {
+            "pid": self._process.pid,
+            "mode": self.mode,
+            "cpu_seconds": round(times.user + times.system, 6),
+            "rss_bytes": int(self._process.memory_info().rss),
+        }
 
     def warm_model(self) -> bool:
         """Load the model into Ollama's memory; a cold load can exceed call timeouts."""
@@ -403,6 +422,13 @@ def create_app(
                 status.HTTP_502_BAD_GATEWAY, f"cannot list Ollama models: {exc}"
             ) from exc
         return {"models": installed, "active": service.model}
+
+    @application.get("/usage")
+    def usage(
+        x_api_key: Optional[str] = Header(default=None, alias="X-Api-Key"),
+    ) -> Dict[str, Any]:
+        authorize(x_api_key)
+        return service.usage()
 
     @application.post("/predict", response_model=PredictResponse)
     def predict(

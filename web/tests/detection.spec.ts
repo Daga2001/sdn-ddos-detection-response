@@ -177,18 +177,19 @@ async function mockLab(
   page: Page,
   detector: unknown = options,
   failFirst = false,
+  status: Record<string, unknown> = { state: "idle", run_id: null },
 ): Promise<{ started: unknown[] }> {
   const captured: { started: unknown[] } = { started: [] };
   let optionRequests = 0;
   // A live event stream that stays open, so the workspace reports "Runner connected".
-  await page.addInitScript(() => {
+  await page.addInitScript((initial) => {
     class OpenStream {
       listeners: Record<string, ((event: { data: string }) => void)[]> = {};
       onerror: (() => void) | null = null;
       constructor() {
         setTimeout(() => {
           for (const listener of this.listeners["status"] ?? [])
-            listener({ data: JSON.stringify({ state: "idle", run_id: null }) });
+            listener({ data: JSON.stringify(initial) });
         }, 0);
       }
       addEventListener(
@@ -200,7 +201,7 @@ async function mockLab(
       close() {}
     }
     (window as unknown as { EventSource: unknown }).EventSource = OpenStream;
-  });
+  }, status);
   await page.routeWebSocket("**/api/ownership", (socket) => {
     socket.send(
       JSON.stringify({ owner_id: "12345678-1234-4234-8234-123456789abc" }),
@@ -280,7 +281,7 @@ test("the detector can be switched from the top bar and from the Detection tab",
   const quick = page.getByLabel("Detector", { exact: true });
   // It starts from what the detector service is set to.
   await expect(quick).toHaveValue("llm:llama3.2:3b");
-  await observationTab(page, "Detection").click();
+  await observationTab(page, "Results").click();
   await quick.selectOption("llm:gemma2:2b");
   await inspectorTab(page, "Detection").click();
   await expect(page.getByRole("combobox", { name: /^Model/ })).toHaveValue(
@@ -289,8 +290,8 @@ test("the detector can be switched from the top bar and from the Detection tab",
   await page.getByRole("button", { name: /^Entropy/ }).click();
   await expect(quick).toHaveValue("entropy");
   await expect(quick.locator("option:checked")).toHaveText("Entropy · Shannon");
-  await expect(observationTab(page, "Detection")).toHaveCount(0);
-  await expect(observationTab(page, "Traffic")).toHaveClass("active");
+  // Results is one tab for every detector: switching does not hide it.
+  await expect(observationTab(page, "Results")).toHaveClass("active");
   for (const [measure, name] of [
     ["renyi", "Rényi"],
     ["tsallis", "Tsallis"],
@@ -311,17 +312,13 @@ test("the detector can be switched from the top bar and from the Detection tab",
   await expect(page.getByText(/needs about 40 s of baseline/)).toBeVisible();
   await page.getByRole("button", { name: /^No detection/ }).click();
   await expect(quick).toHaveValue("off");
-  await expect(observationTab(page, "Detection")).toHaveCount(0);
+  await expect(observationTab(page, "Results")).toHaveClass("active");
   await expect(
     page.getByRole("spinbutton", { name: /^Band width/ }),
   ).toHaveCount(0);
   await quick.selectOption("llm:gemma2:2b");
-  await expect(observationTab(page, "Detection")).toBeVisible();
-  await expect(observationTab(page, "Traffic")).toHaveClass("active");
-  await observationTab(page, "Detection").click();
-  await quick.selectOption("off");
+  await expect(observationTab(page, "Results")).toHaveClass("active");
   await expect(observationTab(page, "Detection")).toHaveCount(0);
-  await expect(observationTab(page, "Traffic")).toHaveClass("active");
 });
 
 test("the detection setup is sent with the experiment so it is saved with the run", async ({
@@ -420,7 +417,7 @@ test("a replay scores the detector against the experiment's ground truth", async
   ).toBeVisible();
   await page.getByRole("button", { name: "Replay" }).click();
   await page.getByLabel("Replay position", { exact: true }).fill("9");
-  await observationTab(page, "Detection").click();
+  await observationTab(page, "Results").click();
   // h1 detected (VP), h2 missed (FN), h4 wrongly flagged (FP), h5 untouched (VN).
   await expect(
     page.getByLabel("True positive 1", { exact: true }),
@@ -445,8 +442,11 @@ test("a replay scores the detector against the experiment's ground truth", async
   ).toBeDisabled();
 });
 
-for (const mode of ["entropy", "off", null]) {
-  test(`a non-LLM replay hides detection results (${mode ?? "unset"})`, async ({
+const metricValue = (page: Page, key: string) =>
+  page.locator(`[data-metric="${key}"] dd`);
+
+for (const mode of ["llm", "entropy", "off"]) {
+  test(`the Results tab gathers a replay's numbers in one place (${mode})`, async ({
     page,
   }) => {
     await mockLab(page);
@@ -458,27 +458,105 @@ for (const mode of ["entropy", "off", null]) {
           status: "completed",
           settings: {
             ...settings,
-            detection: mode ? { ...settings.detection, mode } : null,
+            detection: { ...settings.detection, mode },
           },
         },
       }),
     );
-    await observationTab(page, "Detection").click();
     await inspectorTab(page, "History").click();
     await page.getByRole("button", { name: "Replay" }).click();
-    await expect(observationTab(page, "Detection")).toHaveCount(0);
-    await expect(observationTab(page, "Traffic")).toHaveClass("active");
-    await page.getByRole("button", { name: "Exit", exact: true }).click();
-    await expect(observationTab(page, "Detection")).toBeVisible();
-    await expect(observationTab(page, "Traffic")).toHaveClass("active");
+    // A replay's results use its full record, wherever the replay cursor is.
+    await page.getByLabel("Replay position", { exact: true }).fill("2");
+    await observationTab(page, "Results").click();
+    const results = page.locator(".results-view");
+    await expect(results.getByText("RECORDED RUN · FULL RECORD")).toBeVisible();
+    for (const title of [
+      "How well it detected",
+      "What each decision cost",
+      "Effect on legitimate users",
+      "Network and control plane",
+      "Response",
+      "Recovery",
+      "What was tested",
+    ])
+      await expect(
+        results.getByRole("region", { name: title, exact: true }),
+      ).toBeVisible();
+    if (mode === "off") {
+      await expect(results.getByText(/No detector ran/)).toBeVisible();
+      // Metrics that cannot exist without a detector are listed once.
+      await expect(
+        results.getByRole("region", { name: "How well it detected" }),
+      ).toContainText("Does not apply to this run: Detection rate (recall)");
+    } else {
+      // h1 named 8 s into the attack, h2 never; h4 (legitimate) named once.
+      await expect(metricValue(page, "detection_rate")).toHaveText("50 %");
+      await expect(metricValue(page, "false_alarm_rate")).toHaveText("50 %");
+      await expect(metricValue(page, "mean_detection")).toHaveText("8 s");
+      if (mode === "entropy")
+        await expect(
+          results.getByRole("region", { name: "How well it detected" }),
+        ).toContainText(/Does not apply to this run: .*Brier score/);
+      else
+        await expect(metricValue(page, "brier")).toContainText(
+          "no judged flows",
+        );
+    }
+    await expect(metricValue(page, "response_time")).toHaveText("10 s");
+    await expect(metricValue(page, "detector")).toHaveText(mode);
+    // This record predates the cost measurement: it says so instead of a zero.
+    if (mode !== "off")
+      await expect(metricValue(page, "decisions")).toContainText(
+        "older than the cost measurement",
+      );
+    const download = page.waitForEvent("download");
+    await results
+      .getByRole("button", { name: "Download results row (CSV)" })
+      .click();
+    const file = await download;
+    expect(file.suggestedFilename()).toBe(`results-${mode}-record-row.csv`);
+    const text = await (await file.createReadStream()).toArray();
+    const [header, row] = Buffer.concat(text).toString().split("\n");
+    expect(header.startsWith("run_id,started_utc,topology,detector,")).toBe(
+      true,
+    );
+    expect(header.split(",")).toContain("detection_rate_pct");
+    expect(row.split(",")[0]).toBe("record");
   });
 }
 
+test("a finished run's results are read again from its full record", async ({
+  page,
+}) => {
+  await mockLab(page, options, false, {
+    state: "idle",
+    run_id: "record",
+    runner_instance_id: "runner",
+  });
+  // Registered last, so it sees the requests first and passes them on.
+  let reads = 0;
+  await page.route("**/api/runs/record/events**", (route) => {
+    reads += 1;
+    return route.fallback();
+  });
+  await observationTab(page, "Results").click();
+  await expect(page.getByText("FINAL RESULT · FULL RECORD")).toBeVisible();
+  await expect(metricValue(page, "detection_rate")).toHaveText("50 %");
+  // This old record has no website checks, so the tab warns against counting it.
+  await expect(
+    page.getByText("Do not count this run in the results."),
+  ).toBeVisible();
+  await expect(
+    page.getByText("No website checks were recorded during the attack."),
+  ).toBeVisible();
+  expect(reads).toBeGreaterThan(0);
+});
+
 test("results are not invented before anything has run", async ({ page }) => {
   await mockLab(page);
-  await observationTab(page, "Detection").click();
+  await observationTab(page, "Results").click();
   await expect(
-    page.getByText("Detection results appear with an experiment."),
+    page.getByText("Results appear once an experiment's attack starts."),
   ).toBeVisible();
   await expect(
     page.getByLabel("False negative 1", { exact: true }),
