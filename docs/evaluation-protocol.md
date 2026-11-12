@@ -33,8 +33,8 @@ The attack window is bounded by the recorded `attack_started` / `attack_stopped`
 
 | Unit | Positive | Negative | Where it is computed |
 | --- | --- | --- | --- |
-| **Host per run** (primary) | attacker named at least once | legitimate client never named | Traffic tab → *Proposal evaluation metrics*; Detection tab |
-| **Judged flow sample** (LLM/RF) | attacker's flow during the attack phase | legitimate client's flow, or attacker's flow during the baseline | Traffic tab (*per judged flow*), `scripts/evaluate_live_detection.py` |
+| **Host per run** (primary) | attacker named at least once | legitimate client never named | Results tab |
+| **Judged flow sample** (LLM) | attacker's flow during the attack phase | legitimate client's flow, or attacker's flow during the baseline | Results tab (*per-flow* rows), `scripts/evaluate_live_detection.py` |
 | **Entropy window** | window inside the attack phase | window inside the baseline | `scripts/replay_entropy.py` |
 | **Labeled sample set** (offline) | `label = 1` | `label = 0` | `scripts/compare_llms.py` (also Brier and output consistency) |
 
@@ -43,8 +43,11 @@ rate can come from the same run.
 
 ## 3. Metric catalogue
 
-All of these appear in the Traffic tab table for every experiment run, whatever the detector,
-and can be exported with **Download CSV**. *Proposal* is where the metric is defined.
+All of these appear in the Results tab for every experiment run, whatever the detector, and
+are exported with **Download results row (CSV)** (one row per run, the same columns for every
+detector) or **Download all metrics (CSV)** (one line per value, with its definition).
+*Proposal* is where the metric is defined. C1–C6 measure the cost of each decision, which
+is the new part of this work.
 
 | ID | Metric | Definition | Proposal | ISO/IEC 25010/25059 |
 | --- | --- | --- | --- | --- |
@@ -71,6 +74,15 @@ and can be exported with **Download CSV**. *Proposal* is where the metric is def
 | R4 | Mitigation effectiveness | 1 − (victim packets/s ≥ 10 s after the response) / (victim packets/s before it) | §3.4.2 | effectiveness |
 | T1 | Service recovery time | t_stable − t_stop; several victims: max(t_stable,i) − t_stop | eq. 8, eq. 9 | recoverability |
 | T2 | Controller recovery time | t_stable − t_stop on Ryu CPU and Packet-In rate | eq. 8 | recoverability |
+| C1 | Time per decision | time the controller waits for the detector / decisions (mean, median, 95th percentile); LLM: one flow sample sent to the model, entropy: one window | §1.5 (cost efficiency) | time behaviour |
+| C2 | Decisions per second | decisions in the attack phase / its length; capacity = 1000 / median C1 | §1.5 | capacity |
+| C3 | Detector CPU time per decision | detector-service CPU seconds between its first and last sample / decisions in between | §1.5 | resource utilization |
+| C4 | Detector CPU and memory | detector-service process CPU % per phase and peak memory (its own `GET /usage`) | §1.5 | resource utilization |
+| C5 | Cached and skipped decisions | LLM verdicts reused for identical samples; switch polls replaced before the model judged them | §3.2.1 | capacity |
+| C6 | Service lifetime under attack | seconds from the attack start to the first failed website check (in the no-defense arm, how long the service lasts) | §1.5 | availability |
+
+GPU use, GPU memory and power on the computer that runs Ollama are not measured; with the LLM,
+C3 and C4 describe the detector service only, not the model's own computation.
 
 Degradation of a rate whose baseline is usually 0 (loss, failed checks) is reported in
 percentage points; a relative change would divide by zero.
@@ -83,22 +95,20 @@ attackers and victims, topology.
 
 **Mandatory comparison arms** for every scenario:
 
-1. **No defense** (detector off): the reference for N1–N4, S1–S4 and T1–T2, as RFC 8456
+1. **No defense** (detector off): the reference for N1–N4, S1–S4, T1–T2 and C6, as RFC 8456
    §5.3.2 requires (same measurements without and with the defense).
 2. **Rule-only baseline**: `pktrate ≥ 50 packets/s` applied to the same flow samples. The
    `lab` prompt instructs the model to decide only on that threshold, so without this arm the
-   contribution of the LLM cannot be separated from that of the rule.
-3. **Classical ML baseline**: the repository's Random Forest contract (`detection/api.py`)
-   trained on runs that are not used for testing. Recent comparisons show tree ensembles
-   matching or beating fine-tuned LLMs on flow data (Mehavilla et al., 2026).
-4. **Entropy** and **LLM**, each alone (implemented), and **entropy ∧ LLM** as the proposal
-   specifies in section 3.2.2 (not implemented yet; see section 7).
+   contribution of the LLM cannot be separated from that of the rule (not implemented yet).
+3. **Entropy** and **LLM**, each alone (implemented). They are tested separately, not
+   combined (decision of 28 Oct 2026). Classical ML detectors (Random Forest, XGBoost) are
+   future work (decision of 8 Nov 2026).
 
 **Repetitions.** At least **10 runs per cell** (RFC 8456 §4.7), in randomized order, with the
 run order, seed and repository commit recorded. Run the no-defense arm in the same session as
 the defended arms.
 
-**Data separation.** Prompt examples, entropy calibration and Random Forest training use a
+**Data separation.** Prompt examples and entropy calibration use a
 *calibration* set of runs; every reported number comes from *held-out* runs recorded after the
 settings were frozen. The current `lab` prompt examples come from the same sessions as its
 evaluation set (`docs/detection-modes.md`); repeat that evaluation on new runs.
