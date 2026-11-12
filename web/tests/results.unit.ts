@@ -267,7 +267,7 @@ test("an entropy run says what does not apply, and a no-defense run scores nothi
   assert.equal(metric(entropy, "entropy_measure").value, "norm");
   assert.match(
     metric(entropy, "decisions").note ?? "",
-    /older than the cost measurement/,
+    /no cost data reached the lab/,
   );
   const off = scored([], "off");
   assert.equal(metric(off, "detection_rate").value, null);
@@ -316,8 +316,32 @@ test("the long CSV has one line per value, with its definition", () => {
 
 test("a run is flagged when it should not be counted", () => {
   const valid = scored(llmRun());
-  assert.deepEqual(valid.problems, []);
-  assert.equal(metric(valid, "valid").value, "yes");
+  // The test run's 30 s baseline is too short for the recovery rule: said, not hidden.
+  assert.deepEqual(valid.problems, [
+    "The baseline was too short to learn the website's normal response time, so recovery cannot be measured (the protocol uses 300 s).",
+  ]);
+  assert.equal(metric(valid, "valid").value, "no");
+  // A controller that sent nothing, and a recovery shorter than 10 checks, are flagged.
+  const silent = runResults({
+    events: [
+      ev(0, "phase", { state: "baseline" }),
+      ev(30, "phase", { state: "attack" }),
+      ev(30, "attack_started", {}),
+      ev(60, "attack_stopped", {}),
+      ev(60, "phase", { state: "recovery" }),
+      ev(66, "phase", { state: "completed" }),
+    ],
+    topology,
+    experiment,
+    run: { id: "x", status: "completed" },
+    active: false,
+  });
+  assert.ok(silent);
+  assert.match(silent.problems.join(" "), /controller sent no samples/);
+  assert.match(
+    silent.problems.join(" "),
+    /recovery phase \(6 s\) was shorter than the 10/,
+  );
   const stopped = scored([...llmRun(), ev(50, "stop_requested", {})]);
   assert.match(stopped.problems.join(" "), /stopped before it finished/);
   assert.equal(metric(stopped, "valid").value, "no");
