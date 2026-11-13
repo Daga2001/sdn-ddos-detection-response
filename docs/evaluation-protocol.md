@@ -76,7 +76,7 @@ is the new part of this work.
 | T2 | Controller recovery time | t_stable − t_stop on Ryu CPU and Packet-In rate | eq. 8 | recoverability |
 | C1 | Time per decision | time the controller waits for the detector / decisions (mean, median, 95th percentile); LLM: one flow sample sent to the model, entropy: one window | §1.5 (cost efficiency) | time behaviour |
 | C2 | Decisions per second | decisions in the attack phase / its length; capacity = 1000 / median C1 | §1.5 | capacity |
-| C3 | Detector CPU time per decision | detector-service CPU seconds between its first and last sample / decisions in between | §1.5 | resource utilization |
+| C3 | Detector CPU time per decision | CPU time the detector service's request threads spent deciding (thread CPU time: waiting for Ollama, health checks and other requests are not counted) / decisions | §1.5 | resource utilization |
 | C4 | Detector CPU and memory | detector-service process CPU % per phase and peak memory (its own `GET /usage`) | §1.5 | resource utilization |
 | C5 | Cached and skipped decisions | LLM verdicts reused for identical samples; switch polls replaced before the model judged them | §3.2.1 | capacity |
 | C6 | Service lifetime under attack | seconds from the attack start to the first failed website check (in the no-defense arm, how long the service lasts) | §1.5 | availability |

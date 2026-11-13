@@ -198,7 +198,12 @@ def test_controller_samples_carry_the_totals_and_the_detector_usage(
     readings = iter([1.0, 1.5])
 
     def fake_usage(base: str, key: str) -> Dict[str, float]:
-        return {"cpu_seconds": next(readings), "rss_bytes": 52428800.0}
+        cpu = next(readings)
+        return {
+            "cpu_seconds": cpu,
+            "rss_bytes": 52428800.0,
+            "decision_cpu_seconds": cpu / 10,
+        }
 
     clock = iter([100.0, 102.0])
     monkeypatch.setattr(app_modes, "fetch_usage", fake_usage)
@@ -209,6 +214,7 @@ def test_controller_samples_carry_the_totals_and_the_detector_usage(
     controller._sample_usage()
     sampled = controller._extra_resources()
     assert sampled["detector_rss_bytes"] == 52428800
+    assert sampled["detector_decision_cpu_seconds"] == 0.1
     assert sampled["detector_cpu_percent"] is None  # needs two samples
     controller._sample_usage()
     assert controller._extra_resources()["detector_cpu_percent"] == 25.0
