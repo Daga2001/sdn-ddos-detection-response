@@ -215,11 +215,13 @@ export function decisionCost(events: Observation[], spans: PhaseSpan[]) {
     (sum, call) => sum + call.decisions,
     0,
   );
-  // Detector CPU time per decision: CPU seconds spent between the first and the
-  // last sample that carry both totals, divided by the decisions in between.
+  // Detector CPU time per decision: CPU seconds its request threads spent
+  // deciding, between the first and the last sample that carry both totals,
+  // divided by the decisions in between. The process's whole CPU time is not
+  // used: health checks and usage readings would be charged to the decisions.
   const paired = samples.filter(
     (sample) =>
-      finite(sample.data.detector_cpu_seconds) !== null &&
+      finite(sample.data.detector_decision_cpu_seconds) !== null &&
       finite(sample.data.decisions_total) !== null,
   );
   let cpuMsPerDecision: number | null = null;
@@ -227,7 +229,8 @@ export function decisionCost(events: Observation[], spans: PhaseSpan[]) {
     const first = paired[0].data;
     const end = paired[paired.length - 1].data;
     const decided = end.decisions_total - first.decisions_total;
-    const cpu = end.detector_cpu_seconds - first.detector_cpu_seconds;
+    const cpu =
+      end.detector_decision_cpu_seconds - first.detector_decision_cpu_seconds;
     if (decided > 0 && cpu >= 0) cpuMsPerDecision = (cpu * 1000) / decided;
   }
   const detectorCpu = samples.map((sample) => ({
@@ -682,7 +685,7 @@ export function runResults(input: {
     "Detector CPU time per decision",
     "ms",
     cost.cpuMsPerDecision,
-    "CPU time of the detector service process between its first and last sample / decisions in between. With the LLM the model runs in Ollama, outside this process.",
+    "CPU time the detector service's request threads spent deciding (thread CPU time, so waiting for Ollama does not count) / decisions. With the LLM the model itself runs in Ollama, outside this process.",
   );
   const detectorCpu = perPhase((phase) =>
     mean(numbers(byPhase(cost.detectorCpu, spans, phase).map((s) => s.cpu))),

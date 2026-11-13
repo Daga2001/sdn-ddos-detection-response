@@ -145,6 +145,7 @@ function llmRun(): Observation[] {
       decisions_failed_total: 0,
       polls_skipped_total: 0,
       detector_cpu_seconds: 10,
+      detector_decision_cpu_seconds: 1,
       detector_cpu_percent: 2,
       detector_rss_bytes: 52428800,
     }),
@@ -156,7 +157,8 @@ function llmRun(): Observation[] {
       decisions_reused_total: 3,
       decisions_failed_total: 0,
       polls_skipped_total: 4,
-      detector_cpu_seconds: 10.3,
+      detector_cpu_seconds: 10.9,
+      detector_decision_cpu_seconds: 1.3,
       detector_cpu_percent: 12,
       detector_rss_bytes: 62914560,
     }),
@@ -210,7 +212,7 @@ test("the cost of each decision comes from the controller's totals and calls", (
   assert.equal(metric(results, "decisions_per_s_attack").value, 0.1);
   assert.equal(metric(results, "decision_capacity_per_s").value, 2.5);
   assert.equal(metric(results, "polls_skipped").value, 4);
-  // 0.3 s of detector CPU for 3 decisions
+  // 0.3 s of decision CPU for 3 decisions (the whole process used 0.9 s)
   assert.equal(
     Math.round(metric(results, "detector_cpu_per_decision").value as number),
     100,

@@ -394,6 +394,10 @@ class ModeSwitchController(EnterpriseDDoSController):
             "detector_rss_bytes": int(usage["rss_bytes"]),
             "detector_cpu_percent": percent,
         }
+        if "decision_cpu_seconds" in usage:
+            self._usage_row["detector_decision_cpu_seconds"] = usage[
+                "decision_cpu_seconds"
+            ]
 
     def _usage_loop(self) -> None:
         interval = max(1.0, float(self.settings.poll_interval_seconds))
