@@ -6,7 +6,7 @@ text, or ping lines without starting a process.
 
 from __future__ import annotations
 
-import math
+import bisect
 import os
 import re
 from collections.abc import Mapping, Sequence
@@ -238,10 +238,14 @@ def read_system(psutil_module: Any) -> dict[str, Any]:
 class PingTracker:
     """One continuous ping. Sent counts follow icmp_seq; a silent seq is a loss.
 
-    ping does not print a line when it sends. The sequence number is the send
-    count: seq 1 leaves at `started`, seq n at started + (n - 1) * 0.2 s. A
-    seq with no reply within 1 s of that send is lost. Replies that arrive
-    later do not un-lose it.
+    ping does not print a line when it sends, and on a busy machine it falls
+    slightly behind its 0.2 s interval, so a fixed clock (seq n at started +
+    (n - 1) * 0.2 s) drifts ahead of the real sends: after a minute it counted
+    pings as lost before ping had sent them. The send time of an answered seq is
+    its arrival minus its round-trip time; an unanswered seq is placed 0.2 s per
+    seq after the last answered seq before it, so the schedule re-anchors on every
+    reply. A seq with no reply within 1 s of its send is lost; each seq is judged
+    once, in order, and a reply that arrives later does not un-lose it.
     """
 
     def __init__(self, client: str, target: str, started: float) -> None:
@@ -250,6 +254,9 @@ class PingTracker:
         self.started = started
         self.wall_start = datetime.now(timezone.utc)
         self.replies: dict[int, tuple[float, float, str]] = {}
+        self._answered: list[int] = []  # answered seqs, sorted
+        self._judged_through = 0  # every seq up to this one has been judged
+        self._counted_through = 0  # every seq up to this one was counted as sent
         self.emitted_until = started
 
     def feed(self, line: str, arrival: Optional[float] = None) -> None:
@@ -266,25 +273,45 @@ class PingTracker:
             when = arrival
         stamp = self._wall(when)
         # The first printed reply for a seq wins; a duplicate does not recount.
-        self.replies.setdefault(seq, (when, rtt, stamp))
+        if seq not in self.replies:
+            bisect.insort(self._answered, seq)
+            self.replies[seq] = (when, rtt, stamp)
 
     def _send_time(self, seq: int) -> float:
-        return self.started + (seq - 1) * PING_INTERVAL
+        reply = self.replies.get(seq)
+        if reply is not None:
+            return reply[0] - reply[1] / 1000.0
+        index = bisect.bisect_left(self._answered, seq)
+        if index == 0:
+            return self.started + (seq - 1) * PING_INTERVAL
+        below = self._answered[index - 1]
+        return self._send_time(below) + (seq - below) * PING_INTERVAL
+
+    def _seq_at(self, moment: float) -> int:
+        """The last seq sent at or before `moment` (0 before the first)."""
+
+        if moment < self.started:
+            return 0
+        low, high = 0, len(self._answered)
+        while low < high:
+            middle = (low + high) // 2
+            if self._send_time(self._answered[middle]) <= moment:
+                low = middle + 1
+            else:
+                high = middle
+        if low == 0:
+            seq = int((moment - self.started) / PING_INTERVAL) + 1
+        else:
+            anchor = self._answered[low - 1]
+            seq = anchor + int((moment - self._send_time(anchor)) / PING_INTERVAL)
+        if low < len(self._answered):
+            seq = min(seq, self._answered[low] - 1)  # not past a later reply
+        return max(seq, 0)
 
     def _wall(self, mono: float) -> str:
         return (self.wall_start + timedelta(seconds=mono - self.started)).isoformat()
 
-    def _sent_through(self, moment: float) -> int:
-        if moment < self.started:
-            return 0
-        expected = int((moment - self.started) / PING_INTERVAL) + 1
-        seen = max(self.replies) if self.replies else 0
-        return max(expected, seen)
-
-    def _lost(self, seq: int, moment: float) -> bool:
-        send = self._send_time(seq)
-        if moment < send + PING_LOSS_AFTER:
-            return False
+    def _lost(self, seq: int) -> bool:
         reply = self.replies.get(seq)
         if reply is None:
             return True
@@ -302,21 +329,20 @@ class PingTracker:
         return events
 
     def _event(self, start: float, end: float) -> dict[str, Any]:
-        first = (
-            1
-            if start <= self.started
-            else math.ceil((start - self.started) / PING_INTERVAL) + 1
-        )
-        last = math.floor((end - self.started - 1e-12) / PING_INTERVAL) + 1
-        sent = list(range(first, last + 1)) if last >= first else []
+        # A later reply can move the estimate back, so count each seq once.
+        last = self._seq_at(end - 1e-9)
+        sent = max(0, last - self._counted_through)
+        self._counted_through = max(self._counted_through, last)
         # Losses are reported in the second their 1 s window closes, so the
-        # count is final. `sent` is the seqs that left during this second.
-        lost_seqs = [
-            seq
-            for seq in range(1, self._sent_through(end - 1e-9) + 1)
-            if start <= self._send_time(seq) + PING_LOSS_AFTER < end
-            and self._lost(seq, end)
-        ]
+        # count is final; seqs are judged in order and only once.
+        lost_seqs: list[int] = []
+        while True:
+            seq = self._judged_through + 1
+            if self._send_time(seq) + PING_LOSS_AFTER >= end:
+                break
+            self._judged_through = seq
+            if self._lost(seq):
+                lost_seqs.append(seq)
         replies = [
             [stamp, rtt]
             for _seq, (arrival, rtt, stamp) in sorted(self.replies.items())
@@ -330,7 +356,7 @@ class PingTracker:
         return {
             "client": self.client,
             "target": self.target,
-            "sent": len(sent),
+            "sent": sent,
             "lost": len(lost_seqs),
             "replies": replies,
             "answered": answered,

@@ -126,6 +126,43 @@ def test_ping_counts_sent_by_icmp_seq_and_losses_after_one_second() -> None:
     assert later[0]["sent"] == 5
 
 
+def run_ping(
+    interval: float, seconds: int, silent: tuple[float, float] = (-1, -1)
+) -> tuple[list[dict], int]:
+    """Feed a ping that sends every `interval` s; return its per-second events."""
+
+    tracker = PingTracker("h1", "h3", started=0.0)
+    events = []
+    seq, send = 1, 0.0
+    for second in range(1, seconds + 1):
+        while send < second:
+            if not silent[0] <= send < silent[1]:
+                tracker.feed(
+                    f"64 bytes from 10.0.0.3: icmp_seq={seq} ttl=64 time=0.1 ms",
+                    arrival=send + 0.0001,
+                )
+            seq, send = seq + 1, send + interval
+        events.extend(tracker.take(float(second)))
+    return events, seq - 1
+
+
+def test_a_ping_slower_than_its_interval_loses_nothing() -> None:
+    # On a busy lab machine ping fell behind its 0.2 s interval; a fixed clock
+    # then drifted ahead of the real sends and, after about a minute, counted
+    # every ping as lost although every one was answered.
+    events, sent = run_ping(interval=0.21, seconds=300)
+    assert sum(event["lost"] for event in events) == 0
+    assert abs(sum(event["sent"] for event in events) - sent) <= 5
+
+
+def test_a_real_outage_is_still_counted_as_loss() -> None:
+    events, _ = run_ping(interval=0.2, seconds=40, silent=(10.0, 15.0))
+    lost = sum(event["lost"] for event in events)
+    assert 24 <= lost <= 26  # 5 s without replies at 5 pings a second
+    window = [e for e in events if e["lost"]]
+    assert window[0]["observed_at"] < window[-1]["observed_at"]
+
+
 def test_packet_rates_from_interface_counters() -> None:
     rates = RateCounters()
     assert rates.observe("h1", 0, 0, 1.0, 0, 0) is None
