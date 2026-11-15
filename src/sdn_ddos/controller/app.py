@@ -12,7 +12,7 @@ import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, ClassVar, Dict, List, Optional, Tuple
+from typing import Any, ClassVar, Dict, List, Optional, Sequence, Tuple
 
 import psutil
 import requests
@@ -468,6 +468,38 @@ class EnterpriseDDoSController(app_manager.RyuApp):
             rows.append(row)
         return FlowBatch(dpid, observed_at, rows, samples, sample_indexes)
 
+    def _is_protected(self, source: Optional[str]) -> bool:
+        """Whether `source` may never be named as an attacker. The baseline names
+        anyone; `ModeSwitchController` answers from the protected list."""
+
+        return False
+
+    def _name_refused(self, source: Optional[str], detector: str) -> bool:
+        """True when a detector tried to name a protected host: the name is dropped and
+        counted, so a run can say how often the victim would have been named."""
+
+        if not self._is_protected(source):
+            return False
+        counts = getattr(self, "names_suppressed", None)
+        if counts is None:
+            counts = self.names_suppressed = {}
+        key = f"{detector}:{source}"
+        first = key not in counts
+        counts[key] = counts.get(key, 0) + 1
+        if first:
+            self.logger.warning(
+                "NAME SUPPRESSED detector=%s host=%s is protected (counted, "
+                "not logged again)",
+                detector,
+                source,
+            )
+        return True
+
+    def _unprotected(self, sources: Sequence[str], detector: str) -> Tuple[str, ...]:
+        """The sources a detector may name: `sources` minus the protected hosts."""
+
+        return tuple(s for s in sources if not self._name_refused(s, detector))
+
     def _finish_flow_batch(
         self, batch: FlowBatch, predictions: Optional[List[Dict[str, Any]]]
     ) -> None:
@@ -485,6 +517,8 @@ class EnterpriseDDoSController(app_manager.RyuApp):
                 probability_value = float(probability)
                 row = rows[row_index]
                 row["prob_ddos"] = probability_value
+                if self._name_refused(row["ipv4_src"], "llm"):
+                    continue  # the model's score stays on the row; nobody is named
                 row["label"] = 1
                 self.store.record_detection(
                     {

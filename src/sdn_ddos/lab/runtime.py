@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 from collections import deque
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Optional
 
@@ -33,6 +34,7 @@ from sdn_ddos.lab.contracts import (
     legitimate_clients,
 )
 from sdn_ddos.lab.detection_settings import controller_env as controller_env_for
+from sdn_ddos.lab.detection_settings import protected_value
 from sdn_ddos.lab.events import RateCounters, utc_now
 from sdn_ddos.lab.measurements import (
     PingTracker,
@@ -118,6 +120,7 @@ class MininetRuntime:
         detection: Optional[DetectionConfig] = None,
         *,
         forwarding: str,
+        protected_hosts: Sequence[str] = (),
     ) -> None:
         self.topology = topology
         self.run_id = run_id
@@ -125,6 +128,8 @@ class MininetRuntime:
         self.mitigation = mitigation
         self.detection = detection
         self.forwarding = forwarding
+        # Networks no detector may name and the response may not touch (the victims).
+        self.protected_hosts = tuple(protected_hosts)
         self.network: Any = None
         self.processes: list[ManagedProcess] = []
         self.controller: Optional[ManagedProcess] = None
@@ -202,7 +207,13 @@ class MininetRuntime:
             SDN_MATCH_L4_PORTS=forwarding_flag(self.forwarding),
         )
         if self.detection is not None:
-            controller_env.update(controller_env_for(self.detection))
+            controller_env.update(
+                controller_env_for(self.detection, self.protected_hosts)
+            )
+        elif self.protected_hosts:
+            controller_env["SDN_RESPONSE_PROTECTED"] = protected_value(
+                self.protected_hosts
+            )
         self.controller = self._spawn(
             [
                 os.environ.get("SDN_RYU_MANAGER", "/opt/ryu/bin/ryu-manager"),

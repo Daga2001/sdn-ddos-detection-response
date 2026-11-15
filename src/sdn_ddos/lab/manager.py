@@ -17,7 +17,7 @@ from sdn_ddos.lab.contracts import (
     probe_pairs,
     validate_experiment,
 )
-from sdn_ddos.lab.detection_settings import DetectorClient
+from sdn_ddos.lab.detection_settings import DetectorClient, victim_addresses
 from sdn_ddos.lab.events import EventJournal, utc_now
 from sdn_ddos.lab.measurements import checks_due
 from sdn_ddos.lab.ownership import OwnerLeases
@@ -221,6 +221,7 @@ class LabManager:
             data = {"source": "unconfigured"}
         data["mitigation"] = experiment.mitigation
         data["forwarding"] = request.forwarding
+        data["protected_hosts"] = victim_addresses(request.topology, experiment)
         self.journal.emit("detection_config", data)
 
     def _persist(self, event: dict[str, Any]) -> None:
@@ -311,6 +312,10 @@ class LabManager:
             extra: dict[str, Any] = {}
             if request.experiment and request.experiment.detection is not None:
                 extra["detection"] = request.experiment.detection
+            if request.experiment:
+                extra["protected_hosts"] = victim_addresses(
+                    request.topology, request.experiment
+                )
             self.runtime = self.runtime_factory(
                 request.topology,
                 self.run_id,

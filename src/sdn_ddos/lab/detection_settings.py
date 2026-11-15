@@ -14,12 +14,12 @@ An experiment without a `DetectionConfig` changes nothing: the detector keeps wh
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Optional
 
 import requests
 
-from sdn_ddos.lab.contracts import DetectionConfig, EntropyParams
+from sdn_ddos.lab.contracts import DetectionConfig, EntropyParams, Experiment
 
 DETECTOR_TIMEOUT = (1.0, 8.0)
 
@@ -41,7 +41,29 @@ def entropy_features(entropy: EntropyParams) -> list[str]:
     return features
 
 
-def controller_env(detection: DetectionConfig) -> dict[str, str]:
+def victim_addresses(topology: Any, experiment: Experiment) -> list[str]:
+    """The victims' addresses as /32 networks, to protect them (see `ResponseParams`).
+
+    A detector never names a protected host as an attacker and the response never acts
+    on it. The victims are protected unless `protect_victims` is turned off.
+    """
+
+    detection = experiment.detection
+    if detection is not None and not detection.response.protect_victims:
+        return []
+    addresses = {host.name: host.ip.split("/")[0] for host in topology.hosts}
+    return [f"{addresses[name]}/32" for name in experiment.victims if name in addresses]
+
+
+def protected_value(*groups: Sequence[str]) -> str:
+    """`SDN_RESPONSE_PROTECTED`: the networks of every group, once each, in order."""
+
+    return ",".join(dict.fromkeys(item for group in groups for item in group))
+
+
+def controller_env(
+    detection: DetectionConfig, protected_hosts: Sequence[str] = ()
+) -> dict[str, str]:
     """Environment overrides for the Ryu controller of one run."""
 
     response = detection.response
@@ -65,7 +87,7 @@ def controller_env(detection: DetectionConfig) -> dict[str, str]:
         "SDN_RESPONSE_MAX_ACTIVE": str(response.max_active),
         "SDN_RESPONSE_CONFIRM_HITS": str(response.confirm_hits),
         "SDN_RESPONSE_CONFIRM_SECONDS": str(response.confirm_seconds),
-        "SDN_RESPONSE_PROTECTED": ",".join(response.protected),
+        "SDN_RESPONSE_PROTECTED": protected_value(response.protected, protected_hosts),
     }
 
 

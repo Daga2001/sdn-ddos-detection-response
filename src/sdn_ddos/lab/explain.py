@@ -31,6 +31,7 @@ _FIELDS = {
     "node": "device",
     "packets": "packet limit",
     "position": "canvas position",
+    "protect_victims": "protect the victims",
     "protocol": "protocol",
     "rate": "rate (packets per second)",
     "recovery": "recovery seconds",

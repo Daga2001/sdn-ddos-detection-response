@@ -889,9 +889,18 @@ export function DetectionPanel({
                   />
                 )}
               </div>
+              <CheckField
+                disabled={disabled}
+                label="Protect the victims"
+                hint="The experiment's victims are never named as attackers by either detector and the response never touches them. Turn it off to see how often a detector would name the victim (its replies to the flood look like a flood too)."
+                checked={response.protect_victims}
+                onChange={(on) =>
+                  !disabled && setResponse({ protect_victims: on })
+                }
+              />
               <Field
-                label="Never act on · addresses"
-                hint="Comma-separated private addresses or networks the response must never touch, such as 10.0.0.1 or 10.0.0.0/30."
+                label="Never name or act on · addresses"
+                hint="Comma-separated private addresses or networks that no detector may name as an attacker and the response must never touch, such as 10.0.0.1 or 10.0.0.0/30. The victims are added to this list when 'Protect the victims' is on."
               >
                 <input
                   type="text"
