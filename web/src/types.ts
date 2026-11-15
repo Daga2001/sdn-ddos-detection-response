@@ -299,7 +299,11 @@ export const emptyExperiment: Experiment = {
  * experiment recorded before this change never crashes the workspace.
  */
 export function normalizeExperiment(settings: unknown): Experiment {
-  const value = (settings ?? {}) as Record<string, any>;
+  const value = { ...((settings ?? {}) as Record<string, any>) };
+  // A saved run's settings also hold how it was forwarded (`forwarding`), which is a
+  // field of the start request, not of the experiment: the server rejects a stray
+  // `experiment.forwarding` (422, "Choose the forwarding rules"), so it never gets in.
+  delete value.forwarding;
   if (Array.isArray(value.attackers) || Array.isArray(value.victims)) {
     return {
       ...emptyExperiment,
