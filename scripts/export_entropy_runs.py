@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from sdn_ddos.config import DatabaseSettings
@@ -49,7 +50,17 @@ def main() -> int:
         default=2.0,
         help="runs sending at most this many pkt/s per attacker are not attacks",
     )
+    parser.add_argument(
+        "--topology",
+        type=Path,
+        help="the project's topology JSON (hosts with their IPs): adds the attackers' "
+        "and victims' addresses so scripts/replay_entropy.py can score who was named",
+    )
     args = parser.parse_args()
+    addresses: Dict[str, str] = {}
+    if args.topology is not None:
+        hosts = json.loads(args.topology.read_text(encoding="utf-8"))["hosts"]
+        addresses = {host["name"]: host["ip"].split("/")[0] for host in hosts}
     import psycopg2  # imported late: the database driver is only needed here
 
     database = DatabaseSettings.from_env()
@@ -75,6 +86,16 @@ def main() -> int:
                     "a1": stopped.isoformat(),
                     "benign": float(settings.get("rate") or 0) <= args.benign_rate,
                     "settings": settings.get("detection", {}).get("entropy", {}),
+                    "attackers": [
+                        addresses[n]
+                        for n in settings.get("attackers", [])
+                        if n in addresses
+                    ],
+                    "victims": [
+                        addresses[n]
+                        for n in settings.get("victims", [])
+                        if n in addresses
+                    ],
                 }
             )
     json.dump(runs, sys.stdout, indent=1)
