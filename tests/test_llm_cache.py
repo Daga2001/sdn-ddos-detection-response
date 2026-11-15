@@ -272,3 +272,57 @@ def test_an_error_in_the_extra_fields_is_reported_and_the_sample_kept(
         "where": "extra controller fields",
         "error": "RuntimeError('boom')",
     }
+
+
+def _flow_stat(proto: int, src: str, packets: int, age: int) -> Any:
+    match = {
+        "in_port": 1,
+        "eth_src": "00:00:00:00:00:01",
+        "eth_dst": "00:00:00:00:00:02",
+        "ipv4_src": src,
+        "ipv4_dst": "10.0.0.1",
+        "ip_proto": proto,
+    }
+    return SimpleNamespace(
+        priority=10,
+        cookie=0,
+        table_id=0,
+        match=match,
+        packet_count=packets,
+        byte_count=packets * 60,
+        duration_sec=age,
+        duration_nsec=0,
+    )
+
+
+def _batch(match_l4_ports: bool) -> Any:
+    from sdn_ddos.controller.core import FlowRateTracker
+
+    controller = EnterpriseDDoSController.__new__(EnterpriseDDoSController)
+    controller.flow_rates = FlowRateTracker()
+    controller.match_l4_ports = match_l4_ports
+    datapath = SimpleNamespace(id=1)
+    for packets, age in ((0, 0), (300, 1)):  # the first poll only sets the baseline
+        stats = [
+            _flow_stat(6, "10.0.0.11", packets, age),
+            _flow_stat(17, "10.0.0.31", packets, age),
+            _flow_stat(1, "10.0.0.2", packets, age),
+        ]
+        batch = controller._flow_batch(
+            SimpleNamespace(msg=SimpleNamespace(datapath=datapath, body=stats))
+        )
+    return batch
+
+
+def test_port_free_flows_of_every_protocol_are_sent_to_the_model() -> None:
+    batch = _batch(match_l4_ports=False)
+    assert len(batch.rows) == 3
+    assert [s["ip_proto"] for s in batch.samples] == [6, 17, 1]
+    assert {s["l4_dst_port"] for s in batch.samples} == {0}
+    # The stored rows keep what the switch reported: no port.
+    assert {row["l4_dst_port"] for row in batch.rows} == {None}
+
+
+def test_per_port_rules_still_send_only_icmp_without_a_port() -> None:
+    batch = _batch(match_l4_ports=True)
+    assert [s["ip_proto"] for s in batch.samples] == [1]

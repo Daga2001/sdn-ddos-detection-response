@@ -459,7 +459,9 @@ class EnterpriseDDoSController(app_manager.RyuApp):
                 "label": 0,
                 "prob_ddos": None,
             }
-            sample = build_model_sample(row)
+            sample = build_model_sample(
+                row, port_free=not getattr(self, "match_l4_ports", True)
+            )
             if sample is not None:
                 samples.append(sample)
                 sample_indexes.append(len(rows))

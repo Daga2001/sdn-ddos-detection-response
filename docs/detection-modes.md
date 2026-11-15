@@ -131,6 +131,18 @@ bash scripts/last_run_report.sh [run_id]   # phases, who was flagged, decisions
   one, so an ICMP flood never reached the model (0 of 2 attackers detected in 135 s).
   `build_model_sample` now sends ICMP with `l4_dst_port = 0` (how flow datasets record it):
   2 of 2 detected within 8.5 s, no false positive. The entropy detector never needed this.
+* With `port_free` forwarding no rule matches the layer-4 port, so **every** IPv4 flow
+  reaches the sample builder without `l4_dst_port`, TCP and UDP included, and used to be
+  dropped: the LLM saw only ICMP while the entropy detector counted all of it (campaign R0,
+  3 SYN/UDP attackers at 300 pkt/s: 0 of 3 named, only ICMP replies and pings were judged).
+  `build_model_sample(row, port_free=True)` now sends any IPv4 flow with `l4_dst_port = 0`
+  (`NO_PORT`, the same convention as ICMP), so both detectors judge the same flows.
+  **This is a design decision for the tutor**: it keys only on the one `forwarding` setting
+  every detector shares (there is no per-detector switch), it leaves `per_port` untouched
+  (a TCP/UDP flow without a port is still dropped there) and it does not change the prompt:
+  `lab` decides on `pktrate` and merely prints "Puerto destino L4: 0". The stored flow rows
+  still say "no port" (NULL). The Random Forest model of `detection.api` was trained with real
+  ports, so port 0 is outside its training data; it is not used by the lab.
 
 ## LLM prompt profiles and calibration
 
@@ -450,7 +462,8 @@ Found while attacking the lab (they only live in the subclass):
 * A SYN flood makes every RST reply a new flow (~1 new flow per attack packet),
   which is the flow-table exhaustion the thesis studies; `flows_per_switch` in
   the entropy decisions records it.
-* ICMP flows have no L4 port; `build_model_sample` sends them to the LLM with port 0 (see above).
+* ICMP flows have no L4 port, and with `port_free` neither has any other flow; `build_model_sample`
+  sends them to the LLM with port 0 (see above).
   The entropy detector does not catch a symmetric ICMP echo flood: the replies mirror the
   requests, so H(src) and H(dst) stay at the baseline's value (campaign E4: 0 of 2).
 * The entropy detector is blind to floods whose source/destination entropy stays inside the
