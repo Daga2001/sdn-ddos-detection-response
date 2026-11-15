@@ -16,6 +16,24 @@ stopped, so detector variants can be compared on identical traffic without runni
 A detector is described as comma-separated `name=value` settings (any EntropyDetector field;
 `features=src+dst+dport`). The lab defaults (k 2.5, 16 warm-up windows, 2 consecutive windows,
 minimum rate 2 pkt/s) apply unless a setting overrides them.
+
+Naming (who the detector accused, not only whether it alarmed): give a run its `attackers`
+and `victims` as IP lists in runs.json and every table row also says how many attackers were
+named, how many legitimate hosts and whether a victim was. `--protect` applies the lab's rule
+"a protected host is never named" to the replayed names (the victims), counting how many
+names it dropped, so a detector can be scored with and without it on the same windows.
+
+No dump (`--from-events`): the controller also stores every window as an `entropy_window`
+event in `lab_events`, with the entropies of each distribution (`panel`) and the packet rate.
+Export them as JSON lines and replay the *values* through the same bands, which re-scores the
+alarm side (threshold, margin, k, warm-up, consecutive windows, learning context) of runs whose
+flows were not dumped. It cannot name anybody (the flows are not in the event) and it can only
+use a measure the panel holds (shannon, norm, renyi order 2 or 10, tsallis order 2, min).
+
+    psql ... -At -c "select json_build_object('run', run_id, 'at', data->>'observed_at',
+        'data', data) from lab_events where kind = 'entropy_window' and run_id in ('...')
+        order by seq" > events.jsonl
+    python3 scripts/replay_entropy.py --from-events events.jsonl runs.json --detail "..."
 """
 
 from __future__ import annotations
@@ -27,10 +45,12 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from statistics import mean, median
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from sdn_ddos.detection.entropy import (
+    PEAK_DECAY,
+    SIDES,
     EntropyDetector,
     EntropyResult,
     FlowObservation,
@@ -77,9 +97,114 @@ def load_windows(path: Path) -> Dict[str, List[Dict[str, Any]]]:
     return runs
 
 
-def replay_run(
+def panel_key(measure: str, order: float) -> str:
+    """Which entry of an event's `panel` holds this measure."""
+
+    keys = {
+        ("shannon", None): "shannon",
+        ("norm", None): "norm",
+        ("min", None): "min",
+        ("renyi", 2.0): "renyi2",
+        ("renyi", 10.0): "renyi10",
+        ("tsallis", 2.0): "tsallis2",
+    }
+    key = keys.get((measure, order if measure in ("renyi", "tsallis") else None))
+    if key is None:
+        raise ValueError(
+            f"--from-events cannot replay measure={measure} order={order:g}; the "
+            "event's panel holds shannon, norm, min, renyi order 2 or 10, tsallis order 2"
+        )
+    return key
+
+
+def replay_values(
     windows: List[Dict[str, Any]], settings: Dict[str, Any]
 ) -> List[Tuple[float, EntropyResult]]:
+    """Replay `entropy_window` events: the recorded entropies go through the bands.
+
+    The same learning and alarm rules as `EntropyDetector.observe` (warm-up, band side,
+    learning context, update hold, consecutive windows), fed with the values the event
+    already holds instead of recomputing them from flows. Windows whose rate is under the
+    replayed minimum rate are idle. Nobody is named: the flows are not in the event.
+    """
+
+    detector = EntropyDetector(**{**LAB_DEFAULTS, **settings})
+    key = panel_key(detector.measure, detector.order)
+    state = detector._state(0)
+    results: List[Tuple[float, EntropyResult]] = []
+    for window in windows:
+        data = window["data"]
+        stamp = parse_time(window["at"])
+        total = float(data.get("total_rate") or 0.0)
+        panel = data.get("panel") or {}
+        active = [name for name in detector.features if name in panel]
+        if total < detector.min_total_rate or len(active) < len(detector.features):
+            state.streak = 0
+            state.recent_peak *= PEAK_DECAY
+            results.append((stamp, EntropyResult(0, False, "idle", total_rate=total)))
+            continue
+        values = {name: float(panel[name][key]) for name in active}
+        if not all(state.bands[name].ready for name in active):
+            for name in active:
+                state.bands[name].update(values[name], total)
+            results.append((stamp, EntropyResult(0, False, "warmup", total_rate=total)))
+            continue
+        deciding = [n for n in active if not detector.decide or n in detector.decide]
+        suspicious = any(
+            detector._outside(state.bands[name], values[name], SIDES[name])
+            for name in deciding
+        )
+        if detector.context == "all":
+            state.streak = state.streak + 1 if suspicious else 0
+            for name in active:
+                state.bands[name].update(values[name], total)
+        elif suspicious:
+            state.streak += 1
+            state.pending.clear()
+        else:
+            state.streak = 0
+            state.pending.append(values)
+            while len(state.pending) > detector.update_hold:
+                old = state.pending.pop(0)
+                for name in active:
+                    if name in old:
+                        state.bands[name].update(old[name], total)
+        results.append(
+            (
+                stamp,
+                EntropyResult(
+                    0,
+                    True,
+                    "evaluated",
+                    total_rate=total,
+                    suspicious=suspicious,
+                    confirmed=suspicious
+                    and state.streak >= detector.consecutive_windows,
+                    consecutive=state.streak,
+                ),
+            )
+        )
+    return results
+
+
+def load_events(path: Path) -> Dict[str, List[Dict[str, Any]]]:
+    """`entropy_window` events as JSON lines: {"run", "at", "data"} (see the docstring)."""
+
+    runs: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            record = json.loads(line)
+            runs[record["run"]].append(record)
+    return runs
+
+
+def replay_run(
+    windows: List[Dict[str, Any]],
+    settings: Dict[str, Any],
+    from_events: bool = False,
+) -> List[Tuple[float, EntropyResult]]:
+    if from_events:
+        return replay_values(windows, settings)
     detector = EntropyDetector(**{**LAB_DEFAULTS, **settings})
     results = []
     for window in windows:
@@ -92,6 +217,40 @@ def replay_run(
         }
         results.append((parse_time(window["at"]), detector.observe(0, flows, extra)))
     return results
+
+
+def naming(
+    results: List[Tuple[float, EntropyResult]],
+    attackers: Sequence[str],
+    victims: Sequence[str],
+    protect: bool = False,
+) -> Dict[str, Any]:
+    """Who the replayed detector accused over the whole run (confirmed alarms only).
+
+    `protect` drops the victims from the names, as the controller does with protected
+    hosts, and counts the names it dropped (`suppressed`). Without runs.json's `attackers`
+    there is nothing to score and the result is empty.
+    """
+
+    if not attackers:
+        return {}
+    named: set = set()
+    suppressed = 0
+    for _, result in results:
+        if not result.confirmed:
+            continue
+        for host in result.candidates:
+            if protect and host in victims:
+                suppressed += 1
+            else:
+                named.add(host)
+    return {
+        "attackers_named": len(named & set(attackers)),
+        "attackers": len(set(attackers)),
+        "legit_named": len(named - set(attackers) - set(victims)),
+        "victim_named": bool(named & set(victims)),
+        "suppressed": suppressed,
+    }
 
 
 def score(
@@ -124,23 +283,30 @@ def compare(
     windows: Dict[str, List[Dict[str, Any]]],
     runs: List[Dict[str, Any]],
     settings: Dict[str, Any],
+    from_events: bool = False,
+    protect: bool = False,
 ) -> Dict[str, Any]:
     scored = []
     for meta in runs:
         if meta["run"] not in windows:
             continue
-        results = replay_run(windows[meta["run"]], settings)
-        scored.append(
-            (
-                meta,
-                score(
-                    results,
-                    parse_time(meta["a0"]),
-                    parse_time(meta["a1"]),
-                    bool(meta.get("benign")),
-                ),
-            )
+        results = replay_run(windows[meta["run"]], settings, from_events)
+        row = score(
+            results,
+            parse_time(meta["a0"]),
+            parse_time(meta["a1"]),
+            bool(meta.get("benign")),
         )
+        if not from_events:
+            row.update(
+                naming(
+                    results,
+                    meta.get("attackers", []),
+                    meta.get("victims", []),
+                    protect,
+                )
+            )
+        scored.append((meta, row))
     attacks = [(m, s) for m, s in scored if not m.get("benign")]
     delays = [s["delay"] for _, s in attacks if s["delay"] is not None]
     # A false alarm is one raised before the attack, or any alarm of a run with no attack;
@@ -157,6 +323,11 @@ def compare(
         "attack_recall": (
             round(mean(s["attack_recall"] for _, s in attacks), 2) if attacks else 0.0
         ),
+        "attackers_named": sum(s.get("attackers_named", 0) for _, s in scored),
+        "attackers_total": sum(s.get("attackers", 0) for _, s in scored),
+        "legit_named": sum(s.get("legit_named", 0) for _, s in scored),
+        "victim_runs": sum(1 for _, s in scored if s.get("victim_named")),
+        "suppressed": sum(s.get("suppressed", 0) for _, s in scored),
     }
 
 
@@ -276,6 +447,13 @@ def print_detail(result: Dict[str, Any]) -> None:
             f"{meta['label']:48s} {verdict:9s} {delay:>9s}  false alarms {s['false_alarms']}"
             f" (before {s['before']}, after {s['after']})"
             f"  recall {s['attack_recall']:.2f}  ready {s['ready_before_attack']}"
+            + (
+                f"  named {s['attackers_named']}/{s['attackers']} attackers,"
+                f" {s['legit_named']} legit, victim {'YES' if s['victim_named'] else 'no'}"
+                f", {s['suppressed']} suppressed"
+                if "attackers_named" in s
+                else ""
+            )
         )
 
 
@@ -283,7 +461,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("windows", type=Path, help="the SDN_ENTROPY_DUMP file")
+    parser.add_argument(
+        "windows",
+        type=Path,
+        help="the SDN_ENTROPY_DUMP file (with --from-events: the events JSON lines)",
+    )
+    parser.add_argument(
+        "--from-events",
+        action="store_true",
+        help="replay entropy_window events (values only, nobody is named)",
+    )
+    parser.add_argument(
+        "--protect",
+        action="store_true",
+        help="drop the runs' victims from the replayed names, as the controller does",
+    )
     parser.add_argument(
         "runs", type=Path, help="JSON list: run, label, a0, a1 (and benign)"
     )
@@ -312,7 +504,9 @@ def main() -> int:
         "--pass", dest="pass_name", help="only the runs marked with this pass"
     )
     args = parser.parse_args()
-    windows = load_windows(args.windows)
+    windows = (
+        load_events(args.windows) if args.from_events else load_windows(args.windows)
+    )
     runs: List[Optional[Dict[str, Any]]] = json.loads(
         args.runs.read_text(encoding="utf-8")
     )
@@ -321,7 +515,7 @@ def main() -> int:
         runs = [meta for meta in runs if str(meta.get("pass")) == args.pass_name]
     if args.full:
         rows = [
-            (n, compare(windows, runs, st))
+            (n, compare(windows, runs, st, args.from_events, args.protect))
             for n, st in full_grid()
             if not args.only or args.only in n
         ]
@@ -329,11 +523,27 @@ def main() -> int:
         print_table(rows[: args.top])
         return 0
     if args.detail is not None:
-        print_detail(compare(windows, runs, parse_settings(args.detail)))
+        print_detail(
+            compare(
+                windows,
+                runs,
+                parse_settings(args.detail),
+                args.from_events,
+                args.protect,
+            )
+        )
         return 0
-    rows = [(name, compare(windows, runs, settings)) for name, settings in grid()]
+    rows = [
+        (name, compare(windows, runs, settings, args.from_events, args.protect))
+        for name, settings in grid()
+    ]
     rows += [
-        (f"custom {text}", compare(windows, runs, parse_settings(text)))
+        (
+            f"custom {text}",
+            compare(
+                windows, runs, parse_settings(text), args.from_events, args.protect
+            ),
+        )
         for text in args.set
     ]
     print_table(rows)

@@ -399,6 +399,18 @@ python3 scripts/replay_entropy.py entropy_windows.jsonl runs.json \
     --detail "measure=renyi,order=10,center=median,spread=mad,context=all"
 ```
 
+Two additions for calibrating without running the lab again. `runs.json` may carry each run's
+`attackers` and `victims` (IP lists; `export_entropy_runs.py --topology project.json` writes them) and
+the tables then also say how many attackers were named, how many legitimate hosts and whether a victim
+was; `--protect` applies the protected-host rule to the replayed names. And when a run has no dump,
+`--from-events events.jsonl` replays the `entropy_window` events stored in `lab_events` (the entropies
+and the rate, not the flows): it re-scores the alarm side with another threshold, margin, `k`, warm-up
+or number of windows, but cannot name anybody and only supports the measures the event's `panel` holds.
+On the two entropy runs of campaign R0 the two modes agree to within one window of false alarms
+(191 against 190 and 118 against 117 with the "Destination entropy" preset; the event export lacks 2 of
+the 486 dumped windows). The replay only judges the settings it is given: choose them on calibration
+runs and score the held-out ones once.
+
 (The flow rows the controller stores in the database are capped by
 `SDN_MAX_FLOW_ROWS_PER_POLL`, so they cannot be used for this: during a flood the cap keeps
 about 300 of tens of thousands of flows and the entropies come out wrong.)
