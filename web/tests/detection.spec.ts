@@ -783,3 +783,50 @@ test("the destination-entropy and pair-entropy presets are one click away and th
     rate_threshold: 800,
   });
 });
+
+test("the calibrated destination-entropy preset sets the values chosen by replay", async ({
+  page,
+}) => {
+  const lab = await mockLab(page);
+  await inspectorTab(page, "Detection").click();
+  await page.getByRole("button", { name: /^Entropy/ }).click();
+  await page
+    .getByRole("button", {
+      name: "Destination entropy (calibrated)",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByRole("combobox", { name: /^Threshold centre/ }),
+  ).toHaveValue("median");
+  await expect(
+    page.getByRole("combobox", { name: /^Alarm decided by/ }),
+  ).toHaveValue("dst");
+  await expect(
+    page.getByRole("spinbutton", { name: /^Consecutive windows/ }),
+  ).toHaveValue("1");
+  await inspectorTab(page, "Experiment").click();
+  await page.getByLabel(/I confirm these hosts/).check();
+  await chooseForwarding(page);
+  await page.getByRole("button", { name: "Start experiment" }).click();
+  await expect.poll(() => lab.started.length).toBe(1);
+  const sent = lab.started[0] as {
+    experiment: {
+      detection: { poll_seconds: number; entropy: Record<string, unknown> };
+    };
+  };
+  expect(sent.experiment.detection.poll_seconds).toBe(0.5);
+  expect(sent.experiment.detection.entropy).toMatchObject({
+    measure: "min",
+    center: "median",
+    spread: "mad",
+    k: 5,
+    context: "normal",
+    window_seconds: 1,
+    warmup_windows: 30,
+    consecutive_windows: 1,
+    candidate_min_rate: 50,
+    candidate_share: 0.3,
+    decide: ["dst"],
+  });
+});

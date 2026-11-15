@@ -415,6 +415,60 @@ runs and score the held-out ones once.
 `SDN_MAX_FLOW_ROWS_PER_POLL`, so they cannot be used for this: during a flood the cap keeps
 about 300 of tens of thousands of flows and the entropies come out wrong.)
 
+### Destination entropy (calibrated)
+
+The "Destination entropy" preset follows the paper and is what the lab measured first: in the
+university network it named every attacker but also 17 to 19 legitimate hosts per run and raised
+alarms in most baseline windows (campaigns R0 and R1). Cause: the lab's only legitimate traffic is a
+website check once a second from a rotating client (25 to 60 packets/s in one 1 s window, all to one
+destination) plus 5 pings/s, so a window with a check sits far below a threshold of "EWMA minus 0.01" and
+the check's client is the busiest source of that window. "Destination entropy (calibrated)" is the
+setting that results from replaying four calibration runs through a grid fixed beforehand. It is **not** a
+published detector.
+
+* Runs (calibration only, port-free forwarding, 120 s baseline / 60 s attack / 60 s recovery, windows of
+  1 s, polls every 0.5 s, `window_mode` mean): `78746efa` (baseline with a 1 pkt/s ICMP control, scored as a run
+  without attack), `44c49fee` (3 attackers, SYN+UDP, 300 pkt/s), `a728f375` (1 attacker, SYN, 1000 pkt/s)
+  and `06356a99` (3 attackers, SYN+UDP, 30 pkt/s). No held-out run was used.
+* Procedure: `scripts/calibrate_entropy.py` replays every configuration of the grid through the real
+  `EntropyDetector`. Primary grid, 6000 configurations: five measures (`norm`, `shannon`, Renyi and Tsallis of order 2,
+  `min`) x 25 threshold models (EWMA minus a margin of 0.01 to 0.3; EWMA, median+MAD and mean+std with
+  `k` of 2.5 to 10, each learning only normal windows or every window) x warm-up 16 or 30 windows x 1, 2 or 3
+  consecutive windows x a minimum rate to be named of 20, 50, 100 or 200 packets/s x a candidate share of 0.1 or 0.3,
+  with the minimum window rate left at the preset's 2. The secondary grid (24000) also moves that minimum
+  rate (2, 20, 100, 500).
+* Rule, fixed before the sweep: (1) no legitimate host named in any run and any phase, (2) most attackers
+  named (7 in total), (3) shortest mean time to the first alarm that names an attacker, (4) fewest alarms
+  before the attack. 61 of the 6000 configurations tie at the best rank (135 of 24000), so ties are broken by stability: the share of
+  one-step neighbours (one parameter moved to the next value of the grid, or the learning context flipped) that
+  still name all 7 attackers and no legitimate host, then the fewest changes from the original preset,
+  then a median+MAD centre over a mean, then the name.
+* Result, primary: 5169 of 6000 name no legitimate host, 1090 of them also name all 7 attackers; the original
+  preset (norm, EWMA minus 0.01, 1 window, 20 packets/s) names 72 legitimate hosts in total and raises 298 alarms
+  before the attacks. The chosen setting names 7 of 7 attackers, no legitimate host and no victim,
+  raises no alarm in the 4 baselines (0 of about 90 evaluated windows each) nor in recovery, and alarms 59 to 60 of 60
+  attack windows; the first alarm that names an attacker comes 0.8 s (S1), 1.7 s (S2) and 0.7 s (S4) into the attack.
+  Seven of its eight neighbours work too; the one that does not is a minimum rate of 20 packets/s, which names one
+  legitimate client during the 30 pkt/s attack. The working range of that minimum rate is narrow and set by this lab's traffic:
+  200 packets/s misses the 30 pkt/s attackers and 20 names a legitimate client. Freeing the minimum window rate
+  (secondary) reaches the same best rank with a different winner (`min_rate=20`, 16 warm-up windows) and no better
+  outcome.
+
+| Setting | "Destination entropy" | "Destination entropy (calibrated)" |
+| --- | --- | --- |
+| Measure | normalised Shannon | min-entropy (`-log2(max p)`) |
+| Threshold | EWMA (0.13) minus 0.01 | median of the normal windows +/- 5 x MAD (floor 0.05 bits) |
+| Warm-up / windows needed | 30 / 1 | 30 / 1 |
+| Window / poll | 1 s / 0.5 s | 1 s / 0.5 s |
+| Alarm decided by | destination | destination |
+| A host is named from | 20 pkt/s, share 0.3 | 50 pkt/s, share 0.3 |
+
+How to read it: min-entropy looks at the share of the busiest destination, so a flood that concentrates the traffic
+(its replies keep the victim and the attacker at half each) moves it from about 1 bit to 0.5-0.7 bit, while one website check
+(one client, one server) does not; the rate to be named separates the 30 pkt/s attackers from the busiest legitimate clients.
+Both are properties of this lab's traffic. The rule is a rate threshold in part, like the LLM prompt `lab`, and it must be
+validated on held-out runs, on other topologies and with other legitimate traffic before it is reported as a result.
+
 ### Never naming the victim
 
 Once the attackers are answered (blocked), what is left in the window is the victim's
