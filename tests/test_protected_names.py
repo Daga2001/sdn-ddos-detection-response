@@ -130,6 +130,8 @@ def test_the_suppressed_names_are_part_of_the_controller_sample() -> None:
     instance.cost = app_modes.DecisionCost()
     instance._unprotected((VICTIM,), "llm")
     instance._unprotected((VICTIM,), "llm")
+    instance.protected_flows_skipped = 5
     row_out = instance._extra_resources()
+    assert row_out["protected_flows_skipped_total"] == 5
     assert row_out["names_suppressed_total"] == 2
     assert row_out["names_suppressed"] == {f"llm:{VICTIM}": 2}
