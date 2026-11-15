@@ -542,6 +542,40 @@ judged in the background, see above, so a slow model delays detections, not the 
 The prompt is in `llm_api.py` (`PROMPT_TEMPLATE`); compare models on the same
 samples with `scripts/compare_llms.py`.
 
+### A "not DDoS" verdict is never an attack (`to_prediction`)
+
+The model answers `{"comparacion", "is_ddos", "confidence"}` and `llm_api.to_prediction` puts it on the
+controller's `prob_ddos` scale, which the threshold (`SDN_DDOS_THRESHOLD`, 0.8 in the lab) then judges.
+`confidence` is how sure the model is of its own verdict. The conversion used to be
+`prob_ddos = confidence` for `is_ddos=true` and `1 - confidence` for `is_ddos=false`, so the answer
+`{"is_ddos": false, "confidence": 0.0}` became `prob_ddos = 1.0` and was flagged as an attack.
+
+Evidence (offline probe of 880 calls with the exact `lab` prompt, llama3.2:3b, temperature 0, seed 42; the whole
+answers are kept outside the repository, in `resultados/agentes/datos/ollama_offline/probe.jsonl`): `is_ddos=true` only appeared at 50 and 300
+pkt/s (160 of 160 calls) and never below 50 (560 of 560 answered false), but 343 of the 503 calls that
+were flagged were `is_ddos=false` with `confidence=0.0`, e.g. `"0.50 es menor que 10"` at 0.5 pkt/s and
+`"20.00 es menor que 10"` at 20 pkt/s. The port did not matter (0 and 80 gave the same flags in every cell) and
+the false alarms on legitimate hosts at 0.5 pkt/s (a flow of h_moodle with `prob 1.00`) and the "detections" at 20-49
+pkt/s had the same origin. In the database, the positives whose score is exactly 1.00 are this answer: 568 of 573 positives at
+10-50 pkt/s, and all 14 below 10 pkt/s after the port fix; real attacks (at least 50 pkt/s) score 0.98.
+
+New rule, `to_prediction` only: `is_ddos=true` keeps `prob_ddos = confidence`; `is_ddos=false` gives
+`min(1 - confidence, 0.5)` (`NEGATIVE_PROB_CAP`). A negative answer stays informative (confidence 0.9 gives 0.1,
+confidence 0.0 gives 0.5) and can never exceed 0.5.
+
+* With a threshold **above** 0.5 (the lab uses 0.8) a negative answer is never flagged.
+* With a threshold of **exactly** 0.5 the controller's `>=` still flags a negative answer of confidence 0.0 (prob 0.5).
+* With a threshold **below** 0.5 a doubtful negative answer is flagged: 0.3 flags every negative answer of confidence 0.7 or
+  less. That threshold asks for it; the rule does not hide it.
+* A failed or unparsable call keeps its old answer, `pred_label=0, prob_ddos=0.0`. The prompt, the threshold, the poll
+  and the number of samples are untouched.
+
+Consequence to watch: the "ambiguous" band (10 to 50 pkt/s) that the `lab` prompt leaves to the model was flagged
+only through this contradiction. With the rule the offline answers predict no flag below 50 pkt/s, so a flood of
+30 pkt/s per attacker is no longer detected by the LLM unless the model starts answering `is_ddos=true` there. The
+numbers of the calibration tables above (and `scripts/compare_llms.py`, which uses the same function) were measured with
+the old conversion. This is a design decision for the tutor; it was not made to favour either detector.
+
 ## Robustness fixes over the baseline controller
 
 Found while attacking the lab (they only live in the subclass):
