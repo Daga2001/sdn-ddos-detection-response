@@ -108,6 +108,7 @@ export type ResponseParams = {
   confirm_hits: number;
   confirm_seconds: number;
   protected: string[];
+  protect_victims: boolean;
 };
 /** Which detector judges a run and how it is tuned; saved with the experiment. */
 export type DetectionConfig = {
@@ -174,6 +175,7 @@ export const defaultResponse: ResponseParams = {
   confirm_hits: 1,
   confirm_seconds: 30,
   protected: [],
+  protect_victims: true,
 };
 export const defaultDetection: DetectionConfig = {
   mode: "llm",

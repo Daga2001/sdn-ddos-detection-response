@@ -112,6 +112,21 @@ def test_rejects_unsafe_or_unusable_sources() -> None:
     assert enforcer.calls == []
 
 
+def test_is_protected_is_the_one_test_for_naming_and_acting() -> None:
+    responder = manager(
+        "block",
+        protected=(
+            ipaddress.IPv4Network("10.0.0.1/32"),
+            ipaddress.IPv4Network("10.0.9.0/24"),
+        ),
+    )
+    assert responder.is_protected("10.0.0.1")
+    assert responder.is_protected("10.0.9.77")
+    for source in (None, "", "10.0.0.2", "not-an-ip", "::1"):
+        assert not responder.is_protected(source)
+    assert not manager("block").is_protected("10.0.0.1")  # nothing protected
+
+
 def test_dry_run_records_without_touching_switches() -> None:
     enforcer = FakeEnforcer()
     responder = manager("escalate", enforcer, dry_run=True)

@@ -213,7 +213,7 @@ on the attacker; `rate_limit` cut the traffic towards the victim from ~800 to
 
 Safety rails: only addresses inside `SDN_ALLOWED_TARGET_CIDRS` are touched,
 `SDN_RESPONSE_PROTECTED` (comma list of IPs/CIDRs, e.g. the victim and
-infrastructure) never is, every action expires by itself, at most
+infrastructure) never is named or touched (see "Protected hosts" below), every action expires by itself, at most
 `SDN_RESPONSE_MAX_ACTIVE` sources are handled at once, and
 `SDN_RESPONSE_DRY_RUN=true` records what *would* be done (`dry_run_*` in
 `mitigation_events.action`, no telemetry, no flows) so detector decisions can
@@ -423,6 +423,34 @@ request (30 packets in a 1 s window) over the victim's last retries to the block
 attackers was enough to put the frozen band out of range again and a legitimate client was
 named and blocked (seen with 8 attackers, 3.8 s and 34.8 s after the flood). A second flood
 bigger than 5 % of the first is still named at once.
+
+### Protected hosts: the victim is never named (both detectors)
+
+A flood is answered, so the victim's replies (RST, ICMP port-unreachable) are flows with a high
+packet rate whose *source* is the victim. Both detectors can therefore name it: the LLM judges
+those flows one by one (campaign R0, run af3baba3: the victim was named about 66 times), and the
+entropy detector only avoids it through its own memory of past victims. Telling an attacker from
+the victim by the traffic alone is ambiguous (a SYN flood is answered one RST per SYN, so both
+directions have the same rate), so the rule uses a list the operator configures.
+
+One rule, applied at the controller to both detectors: **a protected host is never named as an
+attacker and the response never acts on it** (`ResponseManager.is_protected`, the same test the
+response already used; the LLM path is `EnterpriseDDoSController._finish_flow_batch`, the entropy
+path `ModeSwitchController._entropy_loop`, both through `_name_refused`/`_unprotected`).
+The list is `SDN_RESPONSE_PROTECTED` ("Never name or act on" in the Detection tab). The runner adds
+the experiment's victims to it unless `response.protect_victims` is false ("Protect the victims").
+That the victims are known is operator knowledge (the servers to defend), not knowledge of
+the attackers, but it is a design decision for the tutor.
+
+Nothing is hidden: every refused name is counted. The controller sample carries
+`names_suppressed_total` and `names_suppressed` (per `detector:address`), the LLM decision gets
+`protected_source: true` in its details, an entropy decision lists `protected_candidates`, and the
+first refusal of each host is logged (`NAME SUPPRESSED`). The run's `detection_config` event lists the
+protected networks (`protected_hosts`). To measure how often a detector would have named the
+victim, run once with "Protect the victims" off: with it on the Results tab reports
+"Victim named as a source: no" by construction, and the counter holds the real figure.
+The LLM still *judges* the protected flows (they use part of its sample budget); not sending them
+to the model at all is a separate decision not taken here.
 
 ### Forwarding rules (`forwarding`, `SDN_MATCH_L4_PORTS`)
 
