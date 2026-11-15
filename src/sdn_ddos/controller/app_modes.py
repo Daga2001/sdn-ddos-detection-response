@@ -386,6 +386,9 @@ class ModeSwitchController(EnterpriseDDoSController):
         row.update(getattr(self, "cost", DecisionCost()).totals())
         row["polls_skipped_total"] = int(getattr(self, "llm_skipped", 0))
         suppressed = getattr(self, "names_suppressed", {})
+        row["protected_flows_skipped_total"] = int(
+            getattr(self, "protected_flows_skipped", 0)
+        )
         row["names_suppressed_total"] = sum(suppressed.values())
         row["names_suppressed"] = dict(suppressed)
         if mode != "off":
@@ -558,11 +561,6 @@ class ModeSwitchController(EnterpriseDDoSController):
                     "new_calls": len(fresh),
                     "cached": index not in asked,
                     "flows_in_poll": len(samples),
-                    **(
-                        {"protected_source": True}
-                        if sources is not None and self._is_protected(sources[index])
-                        else {}
-                    ),
                 },
             )
         return full

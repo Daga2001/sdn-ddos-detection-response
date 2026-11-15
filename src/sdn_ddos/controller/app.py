@@ -462,11 +462,25 @@ class EnterpriseDDoSController(app_manager.RyuApp):
             sample = build_model_sample(
                 row, port_free=not getattr(self, "match_l4_ports", True)
             )
-            if sample is not None:
+            if sample is not None and self._keep_from_the_model(row):
                 samples.append(sample)
                 sample_indexes.append(len(rows))
             rows.append(row)
         return FlowBatch(dpid, observed_at, rows, samples, sample_indexes)
+
+    def _keep_from_the_model(self, row: Dict[str, Any]) -> bool:
+        """True when the model may judge this flow. A flow whose source is a protected
+        host (the victim's replies to a flood) is never judged: it could not be named
+        anyway and it would take a share of the poll's few samples. The row itself is
+        still stored with the others."""
+
+        if not self._is_protected(row["ipv4_src"]):
+            return True
+        if getattr(self, "mode", "llm") == "llm":
+            self.protected_flows_skipped = (
+                getattr(self, "protected_flows_skipped", 0) + 1
+            )
+        return False
 
     def _is_protected(self, source: Optional[str]) -> bool:
         """Whether `source` may never be named as an attacker. The baseline names

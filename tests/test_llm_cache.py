@@ -295,12 +295,15 @@ def _flow_stat(proto: int, src: str, packets: int, age: int) -> Any:
     )
 
 
-def _batch(match_l4_ports: bool) -> Any:
+def _batch(match_l4_ports: bool, protected: Any = None, mode: str = "llm") -> Any:
     from sdn_ddos.controller.core import FlowRateTracker
 
     controller = EnterpriseDDoSController.__new__(EnterpriseDDoSController)
     controller.flow_rates = FlowRateTracker()
     controller.match_l4_ports = match_l4_ports
+    controller.mode = mode
+    if protected is not None:
+        controller._is_protected = protected  # type: ignore[method-assign]
     datapath = SimpleNamespace(id=1)
     for packets, age in ((0, 0), (300, 1)):  # the first poll only sets the baseline
         stats = [
@@ -311,6 +314,7 @@ def _batch(match_l4_ports: bool) -> Any:
         batch = controller._flow_batch(
             SimpleNamespace(msg=SimpleNamespace(datapath=datapath, body=stats))
         )
+    batch.controller = controller
     return batch
 
 
@@ -326,3 +330,31 @@ def test_port_free_flows_of_every_protocol_are_sent_to_the_model() -> None:
 def test_per_port_rules_still_send_only_icmp_without_a_port() -> None:
     batch = _batch(match_l4_ports=True)
     assert [s["ip_proto"] for s in batch.samples] == [1]
+
+
+def test_a_protected_source_never_enters_the_models_samples_but_its_row_is_kept() -> (
+    None
+):
+    # The victim's replies to a flood must not use the poll's few model samples.
+    batch = _batch(False, protected=lambda ip: ip == "10.0.0.31")
+    assert [row["ipv4_src"] for row in batch.rows] == [
+        "10.0.0.11",
+        "10.0.0.31",
+        "10.0.0.2",
+    ]
+    assert [s["ip_proto"] for s in batch.samples] == [6, 1]
+    assert batch.sample_indexes == [0, 2]  # still pointing at the right rows
+    assert batch.controller.protected_flows_skipped == 1
+    assert batch.rows[1]["prob_ddos"] is None  # stored, never judged
+
+
+def test_without_protected_hosts_every_sample_is_kept_and_nothing_is_counted() -> None:
+    batch = _batch(False, protected=lambda ip: False)
+    assert len(batch.samples) == 3
+    assert getattr(batch.controller, "protected_flows_skipped", 0) == 0
+
+
+def test_the_skip_is_only_counted_for_the_llm() -> None:
+    batch = _batch(False, protected=lambda ip: True, mode="entropy")
+    assert batch.samples == []
+    assert getattr(batch.controller, "protected_flows_skipped", 0) == 0

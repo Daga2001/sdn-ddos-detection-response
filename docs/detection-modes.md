@@ -455,14 +455,21 @@ That the victims are known is operator knowledge (the servers to defend), not kn
 the attackers, but it is a design decision for the tutor.
 
 Nothing is hidden: every refused name is counted. The controller sample carries
-`names_suppressed_total` and `names_suppressed` (per `detector:address`), the LLM decision gets
-`protected_source: true` in its details, an entropy decision lists `protected_candidates`, and the
+`names_suppressed_total` and `names_suppressed` (per `detector:address`), an entropy decision lists
+`protected_candidates`, and the
 first refusal of each host is logged (`NAME SUPPRESSED`). The run's `detection_config` event lists the
 protected networks (`protected_hosts`). To measure how often a detector would have named the
 victim, run once with "Protect the victims" off: with it on the Results tab reports
 "Victim named as a source: no" by construction, and the counter holds the real figure.
-The LLM still *judges* the protected flows (they use part of its sample budget); not sending them
-to the model at all is a separate decision not taken here.
+The LLM does not *judge* the flows whose source is protected: they never enter the choice of the
+poll's samples (`_flow_batch`), so the victim's replies to a flood no longer take a share of the
+`SDN_LLM_MAX_SAMPLES` budget or of the GPU (campaign R1, 3 SYN/UDP attackers: 78 of the LLM's names were
+the victim's and 108 polls went unjudged). The rows are still stored in `flows` with no `prob_ddos`,
+nothing else the model sees changes, and the controller sample counts them as
+`protected_flows_skipped_total`. Because they are never judged the LLM no longer shows up in
+`names_suppressed`; the naming test in `_finish_flow_batch` stays as a second guard. Run with
+"Protect the victims" off to see what the model does with those flows. The model's own mistakes on
+legitimate flows (a 0.5 pkt/s flow judged an attack) are not corrected here.
 
 ### Forwarding rules (`forwarding`, `SDN_MATCH_L4_PORTS`)
 
