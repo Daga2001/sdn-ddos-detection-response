@@ -7,7 +7,9 @@ costs. Two things are measured here, both inside the lab:
   trip, the language-model call included), kept as running totals so a dropped
   telemetry event never removes a decision from them;
 * the CPU time and memory of the detector service process, which reports them
-  itself through ``GET /usage``.
+  itself through ``GET /usage``, together with the CPU time its request threads
+  spent deciding (so health checks and other requests are not charged to the
+  decisions).
 
 What a decision is depends on the detector: for the LLM it is one flow sample sent
 to the model, for entropy it is one evaluated window of the whole network. LLM
@@ -88,7 +90,16 @@ def usage_from(payload: Any) -> Optional[Dict[str, float]]:
         return None
     if not math.isfinite(cpu) or cpu < 0 or rss < 0:
         return None
-    return {"cpu_seconds": float(cpu), "rss_bytes": float(rss)}
+    usage = {"cpu_seconds": float(cpu), "rss_bytes": float(rss)}
+    decided = payload.get("decision_cpu_seconds")
+    if (
+        isinstance(decided, (int, float))
+        and not isinstance(decided, bool)
+        and math.isfinite(decided)
+        and decided >= 0
+    ):
+        usage["decision_cpu_seconds"] = float(decided)
+    return usage
 
 
 def cpu_percent_since(

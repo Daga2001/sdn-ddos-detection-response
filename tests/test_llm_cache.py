@@ -198,7 +198,12 @@ def test_controller_samples_carry_the_totals_and_the_detector_usage(
     readings = iter([1.0, 1.5])
 
     def fake_usage(base: str, key: str) -> Dict[str, float]:
-        return {"cpu_seconds": next(readings), "rss_bytes": 52428800.0}
+        cpu = next(readings)
+        return {
+            "cpu_seconds": cpu,
+            "rss_bytes": 52428800.0,
+            "decision_cpu_seconds": cpu / 10,
+        }
 
     clock = iter([100.0, 102.0])
     monkeypatch.setattr(app_modes, "fetch_usage", fake_usage)
@@ -209,6 +214,7 @@ def test_controller_samples_carry_the_totals_and_the_detector_usage(
     controller._sample_usage()
     sampled = controller._extra_resources()
     assert sampled["detector_rss_bytes"] == 52428800
+    assert sampled["detector_decision_cpu_seconds"] == 0.1
     assert sampled["detector_cpu_percent"] is None  # needs two samples
     controller._sample_usage()
     assert controller._extra_resources()["detector_cpu_percent"] == 25.0
@@ -219,3 +225,50 @@ def test_controller_samples_carry_the_totals_and_the_detector_usage(
     controller._usage_row = {"detector_cpu_seconds": 1.0}
     controller.mode = "off"
     assert "detector_cpu_seconds" not in controller._extra_resources()
+
+
+class Store:
+    def __init__(self) -> None:
+        self.rows: List[Dict[str, Any]] = []
+
+    def add_controller_row(self, row: Dict[str, Any]) -> None:
+        self.rows.append(row)
+
+
+def poll_once(controller: Any) -> List[Any]:
+    import psutil
+
+    controller.datapaths = {}
+    controller.store = Store()
+    controller.logger = SimpleNamespace(exception=lambda *args: None)
+    controller._monitor_once(psutil.Process())
+    return controller.telemetry.items
+
+
+def test_a_poll_before_the_mode_is_known_still_publishes_the_sample(
+    controller: Any,
+) -> None:
+    # The base class starts polling before the subclass reads its mode from the
+    # detector service; that first poll once crashed the poll loop for the run.
+    del controller.mode
+    items = poll_once(controller)
+    kinds = [kind for kind, _ in items]
+    assert kinds == ["controller"]
+    sample_row = items[0][1]
+    assert sample_row["cpu_seconds"] >= 0 and "detector" not in sample_row
+    assert controller.store.rows == [sample_row]
+
+
+def test_an_error_in_the_extra_fields_is_reported_and_the_sample_kept(
+    controller: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken() -> Dict[str, Any]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(controller, "_extra_resources", broken)
+    items = poll_once(controller)
+    assert [kind for kind, _ in items] == ["controller_error", "controller"]
+    assert items[0][1] == {
+        "where": "extra controller fields",
+        "error": "RuntimeError('boom')",
+    }

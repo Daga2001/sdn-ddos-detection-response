@@ -236,29 +236,51 @@ class EnterpriseDDoSController(app_manager.RyuApp):
         process = psutil.Process(os.getpid())
         process.cpu_percent(interval=None)
         while True:
-            observed_at = datetime.now(timezone.utc)
-            for datapath in list(self.datapaths.values()):
-                self._request_stats(datapath)
-            times = process.cpu_times()
-            resource_row = {
-                "ts": observed_at,
-                "cpu_percent": float(process.cpu_percent(interval=None)),
-                "rss_bytes": int(process.memory_info().rss),
-                "cpu_seconds": round(times.user + times.system, 6),
-            }
-            count = int(getattr(self, "_packet_ins", 0))
-            rate, baseline = handled_rate(
-                getattr(self, "_packet_in_sample", None),
-                count,
-                time.monotonic(),
-            )
-            self._packet_in_sample = baseline
-            resource_row["packet_in_handled"] = count
-            resource_row["packet_in_handled_per_s"] = rate
-            resource_row.update(self._extra_resources())
-            self.telemetry.emit("controller", resource_row)
-            self.store.add_controller_row(resource_row)
+            # This loop polls the switches; every detector depends on it. An error
+            # in one poll is reported and the next poll goes ahead, instead of the
+            # greenthread dying and leaving the run without statistics.
+            try:
+                self._monitor_once(process)
+            except Exception as exc:
+                self._report_error("monitor", exc)
             hub.sleep(self.settings.poll_interval_seconds)
+
+    def _report_error(self, where: str, exc: BaseException) -> None:
+        """Log an internal error and tell the lab about it (`controller_error`)."""
+
+        self.logger.exception("controller error in %s", where)
+        self.telemetry.emit(
+            "controller_error", {"where": where, "error": repr(exc)[:500]}
+        )
+
+    def _monitor_once(self, process: Any) -> None:
+        """One poll: ask the switches for statistics, publish the controller sample."""
+
+        observed_at = datetime.now(timezone.utc)
+        for datapath in list(self.datapaths.values()):
+            self._request_stats(datapath)
+        times = process.cpu_times()
+        resource_row = {
+            "ts": observed_at,
+            "cpu_percent": float(process.cpu_percent(interval=None)),
+            "rss_bytes": int(process.memory_info().rss),
+            "cpu_seconds": round(times.user + times.system, 6),
+        }
+        count = int(getattr(self, "_packet_ins", 0))
+        rate, baseline = handled_rate(
+            getattr(self, "_packet_in_sample", None),
+            count,
+            time.monotonic(),
+        )
+        self._packet_in_sample = baseline
+        resource_row["packet_in_handled"] = count
+        resource_row["packet_in_handled_per_s"] = rate
+        try:
+            resource_row.update(self._extra_resources())
+        except Exception as exc:  # the sample itself still goes out
+            self._report_error("extra controller fields", exc)
+        self.telemetry.emit("controller", resource_row)
+        self.store.add_controller_row(resource_row)
 
     def _extra_resources(self) -> Dict[str, Any]:
         """More fields for the controller sample; the detection modes add their cost."""

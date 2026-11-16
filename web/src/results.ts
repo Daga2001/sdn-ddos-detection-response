@@ -96,6 +96,9 @@ export type RunResults = {
   detector: string;
 };
 
+/** Recovery needs this many answered website checks in a row, one a second. */
+const RECOVERY_CHECKS_NEEDED = 10;
+
 /** Why a detector metric is empty in a run that had no detector. */
 export const NO_DETECTOR = "no detector ran (no-defense run)";
 
@@ -212,11 +215,13 @@ export function decisionCost(events: Observation[], spans: PhaseSpan[]) {
     (sum, call) => sum + call.decisions,
     0,
   );
-  // Detector CPU time per decision: CPU seconds spent between the first and the
-  // last sample that carry both totals, divided by the decisions in between.
+  // Detector CPU time per decision: CPU seconds its request threads spent
+  // deciding, between the first and the last sample that carry both totals,
+  // divided by the decisions in between. The process's whole CPU time is not
+  // used: health checks and usage readings would be charged to the decisions.
   const paired = samples.filter(
     (sample) =>
-      finite(sample.data.detector_cpu_seconds) !== null &&
+      finite(sample.data.detector_decision_cpu_seconds) !== null &&
       finite(sample.data.decisions_total) !== null,
   );
   let cpuMsPerDecision: number | null = null;
@@ -224,7 +229,8 @@ export function decisionCost(events: Observation[], spans: PhaseSpan[]) {
     const first = paired[0].data;
     const end = paired[paired.length - 1].data;
     const decided = end.decisions_total - first.decisions_total;
-    const cpu = end.detector_cpu_seconds - first.detector_cpu_seconds;
+    const cpu =
+      end.detector_decision_cpu_seconds - first.detector_decision_cpu_seconds;
     if (decided > 0 && cpu >= 0) cpuMsPerDecision = (cpu * 1000) / decided;
   }
   const detectorCpu = samples.map((sample) => ({
@@ -577,7 +583,7 @@ export function runResults(input: {
       : "none";
   const costWhy = off
     ? noDetector
-    : "not recorded: this run is older than the cost measurement";
+    : "not recorded: no cost data reached the lab from the controller in this run";
   const costMetric = (
     key: string,
     label: string,
@@ -679,7 +685,7 @@ export function runResults(input: {
     "Detector CPU time per decision",
     "ms",
     cost.cpuMsPerDecision,
-    "CPU time of the detector service process between its first and last sample / decisions in between. With the LLM the model runs in Ollama, outside this process.",
+    "CPU time the detector service's request threads spent deciding (thread CPU time, so waiting for Ollama does not count) / decisions. With the LLM the model itself runs in Ollama, outside this process.",
   );
   const detectorCpu = perPhase((phase) =>
     mean(numbers(byPhase(cost.detectorCpu, spans, phase).map((s) => s.cpu))),
@@ -1100,6 +1106,46 @@ export function runResults(input: {
   }
   if (!byPhase(checks, spans, "attack").length && !active)
     problems.push("No website checks were recorded during the attack.");
+  // A controller that crashed, even partly, is visible in its own output (the
+  // Commands tab) or in the controller_error events it sends.
+  const controllerIds = new Set(
+    events
+      .filter((e) => e.kind === "command" && e.data.node === "controller")
+      .map((e) => e.data.id),
+  );
+  const controllerOutput = events
+    .filter((e) => e.kind === "command_output" && controllerIds.has(e.data.id))
+    .map((e) => String(e.data.text ?? ""))
+    .join("\n");
+  const reported = events.filter((e) => e.kind === "controller_error");
+  if (
+    reported.length ||
+    /Traceback|uncaught exception/.test(controllerOutput)
+  ) {
+    const line =
+      controllerOutput.match(/^\s*(\w+(?:Error|Exception)\b[^\n]*)$/m)?.[1] ??
+      (reported[0] ? String(reported[0].data.error ?? "") : "");
+    problems.push(
+      `The controller hit an internal error during the run${line ? ` (${line.slice(0, 160)})` : ""}, so its statistics and detections may be incomplete. Its output is in the Commands tab.`,
+    );
+  }
+  if (!events.some((event) => event.kind === "controller") && !active)
+    problems.push(
+      "The controller sent no samples during the run (no CPU, Packet-In, flow-rule or judged-flow data), so the detection, cost and control-plane numbers are missing.",
+    );
+  if (!active && service.overall === "baseline too short to judge")
+    problems.push(
+      "The baseline was too short to learn the website's normal response time, so recovery cannot be measured (the protocol uses 300 s).",
+    );
+  const recoverySeconds = spanSeconds(spans, "recovery");
+  if (
+    !active &&
+    recoverySeconds !== null &&
+    recoverySeconds < RECOVERY_CHECKS_NEEDED
+  )
+    problems.push(
+      `The recovery phase (${Math.round(recoverySeconds)} s) was shorter than the ${RECOVERY_CHECKS_NEEDED} website checks in a row that recovery needs (the protocol uses 300 s).`,
+    );
   const notReady = events.some(
     (event) =>
       event.kind === "detector" &&
