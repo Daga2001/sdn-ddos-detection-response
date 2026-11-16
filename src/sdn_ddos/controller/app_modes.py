@@ -363,10 +363,16 @@ class ModeSwitchController(EnterpriseDDoSController):
     def _extra_resources(self) -> Dict[str, Any]:
         """Decision totals, and the detector's latest CPU and memory sample."""
 
-        row: Dict[str, Any] = {"detector": self.mode}
+        # The base class starts its poll loop before this class has read the mode
+        # from the detector service (that read yields to other greenthreads), so the
+        # first samples can arrive while the mode is still unknown.
+        mode = getattr(self, "mode", None)
+        if mode is None:
+            return {}
+        row: Dict[str, Any] = {"detector": mode}
         row.update(getattr(self, "cost", DecisionCost()).totals())
         row["polls_skipped_total"] = int(getattr(self, "llm_skipped", 0))
-        if self.mode != "off":
+        if mode != "off":
             row.update(getattr(self, "_usage_row", {}))
         return row
 
@@ -388,6 +394,10 @@ class ModeSwitchController(EnterpriseDDoSController):
             "detector_rss_bytes": int(usage["rss_bytes"]),
             "detector_cpu_percent": percent,
         }
+        if "decision_cpu_seconds" in usage:
+            self._usage_row["detector_decision_cpu_seconds"] = usage[
+                "decision_cpu_seconds"
+            ]
 
     def _usage_loop(self) -> None:
         interval = max(1.0, float(self.settings.poll_interval_seconds))

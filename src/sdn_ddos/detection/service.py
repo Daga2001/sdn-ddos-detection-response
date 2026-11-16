@@ -181,6 +181,16 @@ class DetectorService:
         self._health_at = 0.0
         self._last_warm = -WARM_INTERVAL_SECONDS
         self._process = psutil.Process()
+        # CPU time of the request threads while they decide (thread_time: waiting
+        # on Ollama is not CPU), apart from health checks and other requests.
+        self._decision_cpu = 0.0
+        self._decision_calls = 0
+        self._cost_lock = threading.Lock()
+
+    def count_decision(self, cpu_seconds: float, decisions: int) -> None:
+        with self._cost_lock:
+            self._decision_cpu += max(0.0, cpu_seconds)
+            self._decision_calls += decisions
 
     def usage(self) -> Dict[str, Any]:
         """CPU seconds used so far and resident memory of this service process.
@@ -196,6 +206,8 @@ class DetectorService:
             "mode": self.mode,
             "cpu_seconds": round(times.user + times.system, 6),
             "rss_bytes": int(self._process.memory_info().rss),
+            "decision_cpu_seconds": round(self._decision_cpu, 6),
+            "decision_calls": self._decision_calls,
         }
 
     def warm_model(self) -> bool:
@@ -443,9 +455,11 @@ def create_app(
                 "samples must contain at least 1 item",
             )
         llm = service.llm_settings()
+        started = time.thread_time()
         predictions = [
             judge_sample(sample, llm, service.http) for sample in payload.samples
         ]
+        service.count_decision(time.thread_time() - started, len(payload.samples))
         return PredictResponse(predictions=predictions)
 
     @application.post("/entropy/observe")
@@ -461,8 +475,10 @@ def create_app(
             "dport": [(b.weight, b.count) for b in payload.dports],
             "proto": [(b.weight, b.count) for b in payload.protos],
         }
+        started = time.thread_time()
         with service.lock:
             result = detector.observe(payload.scope, flows, extra)
+        service.count_decision(time.thread_time() - started, 1)
         return {
             "confirmed": result.confirmed,
             "reason": result.reason,

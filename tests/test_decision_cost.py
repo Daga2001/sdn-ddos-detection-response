@@ -73,6 +73,13 @@ def test_usage_is_read_as_numbers() -> None:
         "cpu_seconds": 2.0,
         "rss_bytes": 4096.0,
     }
+    assert usage_from(
+        {"cpu_seconds": 2, "rss_bytes": 4096, "decision_cpu_seconds": 0.25}
+    ) == {"cpu_seconds": 2.0, "rss_bytes": 4096.0, "decision_cpu_seconds": 0.25}
+    # a bad decision total is dropped, the rest is kept
+    assert "decision_cpu_seconds" not in (
+        usage_from({"cpu_seconds": 2, "rss_bytes": 1, "decision_cpu_seconds": -1}) or {}
+    )
 
 
 def test_cpu_percent_is_measured_between_two_samples() -> None:
@@ -99,6 +106,13 @@ def test_the_detector_reports_its_own_cpu_time_and_memory() -> None:
     body = api.get("/usage", headers=KEY).json()
     assert body["mode"] == "entropy"
     assert body["cpu_seconds"] >= 0 and body["rss_bytes"] > 0
+    assert body["decision_cpu_seconds"] == 0 and body["decision_calls"] == 0
+    # an entropy window is one decision; its thread CPU time is counted apart
+    window = {"run_id": "r1", "scope": 0, "flows": []}
+    assert api.post("/entropy/observe", json=window, headers=KEY).status_code == 200
+    counted = api.get("/usage", headers=KEY).json()
+    assert counted["decision_calls"] == 1
+    assert 0 <= counted["decision_cpu_seconds"] <= counted["cpu_seconds"]
     assert service(api_key="").get("/usage", headers=KEY).status_code == 503
 
 

@@ -145,6 +145,7 @@ function llmRun(): Observation[] {
       decisions_failed_total: 0,
       polls_skipped_total: 0,
       detector_cpu_seconds: 10,
+      detector_decision_cpu_seconds: 1,
       detector_cpu_percent: 2,
       detector_rss_bytes: 52428800,
     }),
@@ -156,7 +157,8 @@ function llmRun(): Observation[] {
       decisions_reused_total: 3,
       decisions_failed_total: 0,
       polls_skipped_total: 4,
-      detector_cpu_seconds: 10.3,
+      detector_cpu_seconds: 10.9,
+      detector_decision_cpu_seconds: 1.3,
       detector_cpu_percent: 12,
       detector_rss_bytes: 62914560,
     }),
@@ -210,7 +212,7 @@ test("the cost of each decision comes from the controller's totals and calls", (
   assert.equal(metric(results, "decisions_per_s_attack").value, 0.1);
   assert.equal(metric(results, "decision_capacity_per_s").value, 2.5);
   assert.equal(metric(results, "polls_skipped").value, 4);
-  // 0.3 s of detector CPU for 3 decisions
+  // 0.3 s of decision CPU for 3 decisions (the whole process used 0.9 s)
   assert.equal(
     Math.round(metric(results, "detector_cpu_per_decision").value as number),
     100,
@@ -267,7 +269,7 @@ test("an entropy run says what does not apply, and a no-defense run scores nothi
   assert.equal(metric(entropy, "entropy_measure").value, "norm");
   assert.match(
     metric(entropy, "decisions").note ?? "",
-    /older than the cost measurement/,
+    /no cost data reached the lab/,
   );
   const off = scored([], "off");
   assert.equal(metric(off, "detection_rate").value, null);
@@ -316,8 +318,32 @@ test("the long CSV has one line per value, with its definition", () => {
 
 test("a run is flagged when it should not be counted", () => {
   const valid = scored(llmRun());
-  assert.deepEqual(valid.problems, []);
-  assert.equal(metric(valid, "valid").value, "yes");
+  // The test run's 30 s baseline is too short for the recovery rule: said, not hidden.
+  assert.deepEqual(valid.problems, [
+    "The baseline was too short to learn the website's normal response time, so recovery cannot be measured (the protocol uses 300 s).",
+  ]);
+  assert.equal(metric(valid, "valid").value, "no");
+  // A controller that sent nothing, and a recovery shorter than 10 checks, are flagged.
+  const silent = runResults({
+    events: [
+      ev(0, "phase", { state: "baseline" }),
+      ev(30, "phase", { state: "attack" }),
+      ev(30, "attack_started", {}),
+      ev(60, "attack_stopped", {}),
+      ev(60, "phase", { state: "recovery" }),
+      ev(66, "phase", { state: "completed" }),
+    ],
+    topology,
+    experiment,
+    run: { id: "x", status: "completed" },
+    active: false,
+  });
+  assert.ok(silent);
+  assert.match(silent.problems.join(" "), /controller sent no samples/);
+  assert.match(
+    silent.problems.join(" "),
+    /recovery phase \(6 s\) was shorter than the 10/,
+  );
   const stopped = scored([...llmRun(), ev(50, "stop_requested", {})]);
   assert.match(stopped.problems.join(" "), /stopped before it finished/);
   assert.equal(metric(stopped, "valid").value, "no");
@@ -384,4 +410,34 @@ test("values are shown with their unit and quoted safely in CSV", () => {
   });
   assert.equal(resultRowCsv(results).split("\n")[1].split(",")[0], '"1');
   assert.match(metricsTableCsv(results), /"a ""b""",quoted,,"1, 2"/);
+});
+
+test("a controller crash is flagged with its error", () => {
+  const crashed = scored([
+    ...llmRun(),
+    ev(1, "command", { id: "c-1", node: "controller", argv: ["ryu-modes"] }),
+    ev(2, "command_output", {
+      id: "c-1",
+      text: "hub: uncaught exception: Traceback (most recent call last):\n  File app.py\nAttributeError: 'ModeSwitchController' object has no attribute 'mode'\n",
+    }),
+  ]);
+  assert.match(
+    crashed.problems.join(" "),
+    /controller hit an internal error during the run \(AttributeError: 'ModeSwitchController' object has no attribute 'mode'\)/,
+  );
+  const reported = scored([
+    ...llmRun(),
+    ev(40, "controller_error", {
+      where: "monitor",
+      error: "RuntimeError('boom')",
+    }),
+  ]);
+  assert.match(reported.problems.join(" "), /\(RuntimeError\('boom'\)\)/);
+  // another host's output with an error is not the controller's
+  const other = scored([
+    ...llmRun(),
+    ev(1, "command", { id: "h-1", node: "h1", argv: ["curl"] }),
+    ev(2, "command_output", { id: "h-1", text: "ValueError: x\nTraceback" }),
+  ]);
+  assert.doesNotMatch(other.problems.join(" "), /controller hit/);
 });
