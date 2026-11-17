@@ -12,7 +12,9 @@ Never commit credentials, private keys, passphrases, database URLs, proxy lists,
 
 - `src/sdn_ddos/controller/app.py` is a Ryu OpenFlow 1.3 learning switch. It polls flow/port statistics, calls the local inference API, records metrics, and can install temporary source-IP drop rules.
 - `src/sdn_ddos/detection/api.py` exposes authenticated `GET /health` and `POST /predict`. Model loading requires an explicit path and SHA-256 checksum.
-- `src/sdn_ddos/topology/enterprise.py` builds the implemented four-switch/nine-host Mininet topology. `topology/spec.py` is dependency-free and is the source for inventory tests.
+- `src/sdn_ddos/controller/app_modes.py` (`ModeSwitchController`) runs one detector per run: `llm`, `rule` (the packet-rate rule, the LLM's comparison arm on the same flow samples), `entropy`, or `off`. The detector service `src/sdn_ddos/detection/service.py` hosts them behind one authenticated API; the graphical lab (`src/sdn_ddos/lab/`, `web/`) configures it per run.
+- `src/sdn_ddos/topology/enterprise.py` is the original four-switch/nine-host CLI topology; the lab experiments use the nine-switch/25-host university topology (`scripts/campaign/topologia_universidad.json`, GUI preset).
+- `topology/spec.py` is dependency-free and is the source for inventory tests.
 - `src/sdn_ddos/experiments/attack_launcher.py` is a bounded SYN-rate generator for private Mininet addresses only.
 - `src/sdn_ddos/storage.py` buffers PostgreSQL inserts. `NullMetricsStore` is used when `SDN_DB_ENABLED=false`.
 - `database/schema.sql` is the canonical schema; do not reintroduce remote database defaults or hidden DDL migrations in application startup.

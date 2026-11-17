@@ -460,6 +460,7 @@ export function describeRun(run: Run): string {
   const parts: string[] = [];
   if (run.detector_mode === "llm")
     parts.push(`LLM ${run.detector_model ?? ""}`.trim());
+  else if (run.detector_mode === "rule") parts.push("Packet-rate rule");
   else if (run.detector_mode === "entropy") parts.push("Entropy");
   else if (run.detector_mode === "off") parts.push("No detection");
   if (run.attackers)

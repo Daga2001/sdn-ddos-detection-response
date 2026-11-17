@@ -71,7 +71,12 @@ def detector_lines(scenario: Scenario) -> list[str]:
         return [
             "Detección: botón 'No detection' (selector superior o pestaña Detection)."
         ]
-    if mode == "llm":
+    if mode == "rule":
+        lines = [
+            "Detección: botón 'Packet-rate rule' (selector superior o pestaña Detection)",
+            f"   Attack at ≥ {d.get('rule_pktrate', 50)} pkt/s   Samples per poll = {d.get('llm_max_samples', 5)}",
+        ]
+    elif mode == "llm":
         lines = [
             "Detección: botón 'LLM' (selector superior o pestaña Detection)",
             f"   Model = {d.get('model', 'llama3.2:3b')}   Prompt profile = {d.get('prompt', 'lab')}   Samples per poll = {d.get('llm_max_samples', 5)}   Attack probability ≥ {d.get('threshold', 0.8)}",
