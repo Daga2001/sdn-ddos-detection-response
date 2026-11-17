@@ -321,6 +321,36 @@ export function runResults(input: {
   ) => add({ key, label, unit: "text", group, definition, value });
   runText("run_id", "Run id", run?.id ?? events[0]?.run_id ?? null, "Run id.");
   runText(
+    "purpose",
+    "Run purpose",
+    config.purpose ?? experiment.purpose ?? null,
+    "calibration (tunes the prompt and thresholds), held_out (recorded after the settings were frozen; the only runs reported), pilot or exploration.",
+  );
+  runText(
+    "scenario",
+    "Test case",
+    config.scenario || experiment.scenario || null,
+    "Test case label the run was recorded under (e.g. TC-2).",
+  );
+  runText(
+    "settings_fingerprint",
+    "Settings fingerprint",
+    config.settings_fingerprint ?? null,
+    "SHA-256 (first 16 hex) of the detector settings and forwarding. Held-out runs of one comparison must share the fingerprint of the frozen settings.",
+  );
+  runText(
+    "repository_commit",
+    "Repository commit",
+    config.repository_commit ?? null,
+    "Commit of the code that ran (unknown when the lab could not read it).",
+  );
+  runText(
+    "prompt_sha256",
+    "Prompt hash",
+    config.detector_prompt_sha256 ?? null,
+    "SHA-256 of the prompt text the detector service used (LLM runs).",
+  );
+  runText(
     "started_utc",
     "Started (UTC)",
     run?.started_at ?? events[0]?.ts ?? null,
