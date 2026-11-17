@@ -134,7 +134,12 @@ export type Experiment = {
   confirm_isolated_lab: boolean;
   /** null: leave the detector as the lab was started (older runs, no detector). */
   detection: DetectionConfig | null;
+  /** Why the run is made; only held_out runs are reported (calibration tunes). */
+  purpose: RunPurpose;
+  /** Test case the run belongs to (e.g. TC-2), to group runs into cells. */
+  scenario: string;
 };
+export type RunPurpose = "exploration" | "pilot" | "calibration" | "held_out";
 
 /** The values measured and calibrated in the lab (docs/detection-modes.md). */
 export const defaultEntropy: EntropyParams = {
@@ -293,6 +298,8 @@ export const emptyExperiment: Experiment = {
   mitigation: false,
   confirm_isolated_lab: false,
   detection: null,
+  purpose: "exploration",
+  scenario: "",
 };
 
 /**

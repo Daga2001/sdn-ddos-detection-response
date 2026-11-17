@@ -259,6 +259,37 @@ def test_start_applies_detection_before_the_run_and_records_it(monkeypatch):
     assert announced[0]["data"]["entropy"]["k"] == 2.5
     stored = manager.repository.run(manager.run_id)["settings"]
     assert stored["detection"]["mode"] == "entropy"  # saved with the scenario
+    data = announced[0]["data"]
+    assert data["purpose"] == "exploration" and data["scenario"] == ""
+    assert len(data["settings_fingerprint"]) == 16
+    assert "repository_commit" in data and "repository_branch" in data
+
+
+def test_a_held_out_run_records_its_purpose_and_the_detector_provenance(monkeypatch):
+    instant_run(monkeypatch)
+    detector = RecordingDetector()
+    detector.config = lambda: {
+        "mode": "llm",
+        "prompt_sha256": "f" * 64,
+        "ollama_version": "0.12.0",
+        "model_details": {"digest": "d", "quantization_level": "Q4_K_M"},
+    }
+    manager = LabManager(MemoryRepository(), ExperimentRuntime, detector)
+    manager.start(
+        start_request(
+            detection=DetectionConfig(mode="llm"), purpose="held_out", scenario="TC-2"
+        )
+    )
+    wait_for(manager, {"completed"})
+    data = next(
+        e["data"]
+        for e in manager.events(0)["events"]
+        if e["kind"] == "detection_config"
+    )
+    assert data["purpose"] == "held_out" and data["scenario"] == "TC-2"
+    assert data["detector_prompt_sha256"] == "f" * 64
+    assert data["detector_ollama_version"] == "0.12.0"
+    assert data["detector_model_details"]["quantization_level"] == "Q4_K_M"
 
 
 def test_start_without_detection_keeps_the_detector_untouched_but_records_it(
