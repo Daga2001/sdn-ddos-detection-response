@@ -27,7 +27,8 @@ evidence yet.
 1. Publish the model-training pipeline and approved model card.
 2. Add entropy calculations over source and destination distributions.
 3. Add consecutive-window confirmation and explicit suspicious-event state.
-4. Evaluate a prompt-driven lightweight LLM beside the statistical baseline.
+4. Evaluate a prompt-driven lightweight LLM beside the statistical baseline and the
+   packet-rate rule that applies the prompt's own threshold without a model (`rule`).
 5. Add rate limiting and persistent blacklist escalation behind independent safety controls.
 6. Implement the proposal’s controller, switch, single-host, multi-host, and subtle low-rate scenarios.
 7. Add baseline/attack/recovery analysis scripts and reproducible result reports.

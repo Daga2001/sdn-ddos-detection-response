@@ -101,6 +101,50 @@ def test_predict_uses_llm_only_in_llm_mode() -> None:
     assert other.status_code == 409
 
 
+def test_the_rule_judges_the_same_samples_by_packet_rate_without_the_model() -> None:
+    fake = FakeOllama(["llama3.2:3b"])
+    api = client("rule", fake)
+    slow = dict(SAMPLE, pktrate=49.99)
+    edge = dict(SAMPLE, pktrate=50.0)
+    response = api.post("/predict", json={"samples": [slow, edge]}, headers=KEY)
+    assert response.status_code == 200
+    assert response.json()["predictions"] == [
+        {"pred_label": 0, "prob_ddos": 0.0},
+        {"pred_label": 1, "prob_ddos": 1.0},
+    ]
+    assert fake.prompts == []  # the model is never asked
+    usage = api.get("/usage", headers=KEY).json()
+    assert usage["mode"] == "rule" and usage["decision_calls"] == 2
+    health = api.get("/health").json()
+    assert health["status"] == "ready" and health["backend"] == "rule"
+    body = {"run_id": "r", "flows": window(2)}
+    assert api.post("/entropy/observe", json=body, headers=KEY).status_code == 409
+
+
+def test_the_rule_threshold_is_configurable_and_validated(monkeypatch: Any) -> None:
+    api = client("rule")
+    assert api.get("/config", headers=KEY).json()["rule_pktrate"] == 50.0
+    changed = api.put("/config", json={"rule_pktrate": 10}, headers=KEY)
+    assert changed.status_code == 200 and changed.json()["rule_pktrate"] == 10.0
+    item = api.post(
+        "/predict", json={"samples": [dict(SAMPLE, pktrate=12.0)]}, headers=KEY
+    ).json()["predictions"][0]
+    assert item["pred_label"] == 1
+    for bad in (0, -1, 2_000_000):
+        assert (
+            api.put("/config", json={"rule_pktrate": bad}, headers=KEY).status_code
+            == 422
+        )
+    monkeypatch.setenv("SDN_RULE_PKTRATE", "95")
+    assert client("rule").get("/config", headers=KEY).json()["rule_pktrate"] == 95.0
+    monkeypatch.setenv("SDN_RULE_PKTRATE", "fast")
+    with pytest.raises(ValueError, match="not a number"):
+        client("rule")
+    monkeypatch.setenv("SDN_RULE_PKTRATE", "0")
+    with pytest.raises(ValueError, match="above 0"):
+        client("rule")
+
+
 def test_entropy_route_is_refused_outside_entropy_mode() -> None:
     body = {"run_id": "r", "flows": window(2)}
     assert (
@@ -125,6 +169,7 @@ def test_put_config_switches_mode_and_model_and_validates() -> None:
         "prompt": "insdn",
         "response": "block",
         "dry_run": False,
+        "rule_pktrate": 50.0,
     }
     assert api.get("/health").json()["mode"] == "entropy"
     assert api.get("/models", headers=KEY).json()["active"] == "qwen2.5:3b"

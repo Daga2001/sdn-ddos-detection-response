@@ -130,6 +130,19 @@ def test_detector_update_only_names_the_model_for_the_llm_mode():
         entropy["entropy"]["k"] == 2.5 and entropy["entropy"]["min_total_rate"] == 2.0
     )
     assert entropy["entropy"]["alpha_run"] is None
+    assert "rule_pktrate" not in llm and "rule_pktrate" not in entropy
+
+
+def test_the_rule_sends_its_threshold_and_shares_the_llm_sample_budget():
+    config = DetectionConfig(mode="rule", rule_pktrate=95, llm_max_samples=7)
+    update = detector_update(config)
+    assert update["mode"] == "rule" and update["rule_pktrate"] == 95.0
+    assert "model" not in update and "prompt" not in update
+    assert controller_env(config)["SDN_LLM_MAX_SAMPLES"] == "7"
+    assert DetectionConfig().rule_pktrate == 50.0
+    for bad in (0, -5, 2_000_000):
+        with pytest.raises(ValidationError):
+            DetectionConfig(mode="rule", rule_pktrate=bad)
 
 
 class FakeSession:

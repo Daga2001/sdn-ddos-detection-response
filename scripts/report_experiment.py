@@ -43,7 +43,7 @@ def main() -> int:
 
     record = json.loads(args.experiment.read_text())
     detector = record["mode"]
-    if detector not in ("llm", "entropy"):
+    if detector not in ("llm", "rule", "entropy"):
         raise SystemExit(f"experiment mode {detector!r} has no detector to evaluate")
     phases = {name: parse(value) for name, value in record["phases"].items()}
     start, end = phases["baseline_start"], phases["recovery_end"]
