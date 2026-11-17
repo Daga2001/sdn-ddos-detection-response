@@ -121,6 +121,43 @@ def test_the_rule_judges_the_same_samples_by_packet_rate_without_the_model() -> 
     assert api.post("/entropy/observe", json=body, headers=KEY).status_code == 409
 
 
+def test_config_reports_the_prompt_hash_and_the_model_provenance() -> None:
+    class TaggedOllama(FakeOllama):
+        def get(self, url: str, timeout: float) -> FakeResponse:
+            if url.endswith("/api/version"):
+                return FakeResponse({"version": "0.12.0"})
+            return FakeResponse(
+                {
+                    "models": [
+                        {
+                            "name": "llama3.2:3b",
+                            "digest": "abc",
+                            "details": {
+                                "quantization_level": "Q4_K_M",
+                                "parameter_size": "3.2B",
+                                "format": "gguf",
+                            },
+                        }
+                    ]
+                }
+            )
+
+    config = client("llm", TaggedOllama(["llama3.2:3b"])).get("/config", headers=KEY)
+    body = config.json()
+    assert len(body["prompt_sha256"]) == 64
+    assert body["ollama_version"] == "0.12.0"
+    assert body["model_details"] == {
+        "digest": "abc",
+        "quantization_level": "Q4_K_M",
+        "parameter_size": "3.2B",
+        "format": "gguf",
+    }
+    down = client("llm", FakeOllama([], up=False)).get("/config", headers=KEY).json()
+    assert down["ollama_version"] == "unknown" and "model_details" not in down
+    entropy = client("entropy").get("/config", headers=KEY).json()
+    assert "ollama_version" not in entropy and len(entropy["prompt_sha256"]) == 64
+
+
 def test_the_rule_threshold_is_configurable_and_validated(monkeypatch: Any) -> None:
     api = client("rule")
     assert api.get("/config", headers=KEY).json()["rule_pktrate"] == 50.0

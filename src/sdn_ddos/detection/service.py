@@ -18,6 +18,7 @@ Detector logic is reused from llm_api.py, rule.py and entropy.py without changes
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import logging
 import os
 import secrets
@@ -252,6 +253,43 @@ class DetectorService:
             update={"model": self.model, "prompt_profile": self.prompt}
         )
 
+    def provenance(self, timeout: float = 1.0) -> Dict[str, Any]:
+        """What a run must record to be reproduced: the exact prompt text and, with
+        the LLM, the Ollama version and the model's digest and quantization."""
+
+        result: Dict[str, Any] = {
+            "prompt_sha256": hashlib.sha256(
+                PROMPTS.get(self.prompt, "").encode("utf-8")
+            ).hexdigest()
+        }
+        if self.mode != "llm":
+            return result
+        try:
+            version = self.http.get(
+                f"{self.settings.base_url}/api/version", timeout=timeout
+            )
+            version.raise_for_status()
+            result["ollama_version"] = str(version.json().get("version", "unknown"))
+        except (requests.RequestException, KeyError, ValueError, AttributeError):
+            result["ollama_version"] = "unknown"
+        try:
+            tags = self.http.get(f"{self.settings.base_url}/api/tags", timeout=timeout)
+            tags.raise_for_status()
+            for item in tags.json().get("models", []):
+                if item.get("name") == self.model:
+                    details = item.get("details") or {}
+                    result["model_details"] = {
+                        "digest": item.get("digest", "unknown"),
+                        "quantization_level": details.get(
+                            "quantization_level", "unknown"
+                        ),
+                        "parameter_size": details.get("parameter_size", "unknown"),
+                        "format": details.get("format", "unknown"),
+                    }
+        except (requests.RequestException, KeyError, ValueError, AttributeError):
+            pass
+        return result
+
     def installed_models(self, timeout: float) -> List[str]:
         response = self.http.get(f"{self.settings.base_url}/api/tags", timeout=timeout)
         response.raise_for_status()
@@ -375,6 +413,7 @@ def create_app(
             "ollama_url": resolved.base_url,
             "entropy_runs": len(service._runs),
             "entropy": service.entropy_settings(),
+            **service.provenance(),
         }
 
     @application.put("/config")
