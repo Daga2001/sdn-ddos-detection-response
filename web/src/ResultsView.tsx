@@ -243,6 +243,10 @@ function criteria(config: Record<string, any> | null): string[] {
       `LLM ${config.model}, prompt profile “${config.prompt}”.`,
       `A flow is an attack when the model's probability ≥ ${config.threshold ?? 0.8}; up to ${config.llm_max_samples ?? "?"} flows per switch poll are judged.`,
     );
+  } else if (config.mode === "rule") {
+    lines.push(
+      `Packet-rate rule: a judged flow is an attack at ≥ ${config.rule_pktrate ?? 50} pkt/s; up to ${config.llm_max_samples ?? "?"} flows per switch poll are judged (the LLM's sample path).`,
+    );
   } else if (config.mode === "entropy") {
     const e = config.entropy ?? {};
     lines.push(

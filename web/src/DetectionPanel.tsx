@@ -30,6 +30,11 @@ const modes: { id: DetectionMode; label: string; note: string }[] = [
     note: "A language model judges each flow. Fast to react, but a slow model can hold up the controller.",
   },
   {
+    id: "rule",
+    label: "Packet-rate rule",
+    note: "The LLM's comparison arm: the same flows, judged by one threshold on packets/s, with no model.",
+  },
+  {
     id: "entropy",
     label: "Entropy",
     note: "Statistics of who talks to whom. No model needed; it must first learn what is normal.",
@@ -281,6 +286,35 @@ export function DetectionPanel({
               step={0.05}
               disabled={disabled}
               onChange={(value) => set({ threshold: value })}
+            />
+          </div>
+        </Section>
+      )}
+
+      {config.mode === "rule" && (
+        <Section
+          title="Packet-rate rule"
+          hint="The comparison arm for the LLM. The controller sends it exactly the flows it would send to the model (same samples per poll, same order) and applies the same response; a flow is an attack when its packet rate reaches the threshold. Without this arm a run cannot show what the model adds over the rule its lab prompt describes."
+        >
+          <div className="field-pair">
+            <NumberField
+              label="Attack at ≥ pkt/s"
+              hint="Packets per second at or above which a judged flow is an attack. 50 is the lab prompt's attack threshold (labeled lab flows: legitimate ≤ 3.6 pkt/s, attack ≥ 95 pkt/s)."
+              value={config.rule_pktrate}
+              min={0.1}
+              max={1000000}
+              step={1}
+              disabled={disabled}
+              onChange={(value) => set({ rule_pktrate: value })}
+            />
+            <NumberField
+              label="Samples per poll"
+              hint="Keep it equal to the LLM runs you compare with, so both see the same flows. 1 to 50."
+              value={config.llm_max_samples}
+              min={1}
+              max={50}
+              disabled={disabled}
+              onChange={(value) => set({ llm_max_samples: value })}
             />
           </div>
         </Section>
@@ -1015,6 +1049,10 @@ export function DetectorSwitch({
             LLM · {name}
           </option>
         ))}
+        <option value="rule">
+          Packet-rate rule · ≥{" "}
+          {config?.rule_pktrate ?? defaultDetection.rule_pktrate} pkt/s
+        </option>
         <option value="entropy">
           Entropy ·{" "}
           {entropyMeasures[config?.entropy.measure ?? defaultEntropy.measure]}

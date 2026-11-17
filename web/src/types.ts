@@ -51,7 +51,7 @@ export const trafficKinds: { id: TrafficKind; label: string; hint: string }[] =
       hint: "A ping flood of ICMP echo requests. It carries no port, only raw echo traffic toward the victim.",
     },
   ];
-export type DetectionMode = "llm" | "entropy" | "off";
+export type DetectionMode = "llm" | "rule" | "entropy" | "off";
 export type ResponsePolicy = "block" | "rate_limit" | "escalate";
 export type EntropyParams = {
   k: number;
@@ -117,6 +117,8 @@ export type DetectionConfig = {
   llm_max_samples: number;
   poll_seconds: number;
   threshold: number;
+  /** Packet-rate rule: a judged flow at or above this many packets/s is an attack. */
+  rule_pktrate: number;
   entropy: EntropyParams;
   response: ResponseParams;
 };
@@ -182,6 +184,7 @@ export const defaultDetection: DetectionConfig = {
   llm_max_samples: 5,
   poll_seconds: 5,
   threshold: 0.8,
+  rule_pktrate: 50,
   entropy: defaultEntropy,
   response: defaultResponse,
 };
@@ -234,6 +237,7 @@ export function detectionFromService(
     mode: current.mode ?? defaultDetection.mode,
     model: current.model ?? defaultDetection.model,
     prompt: current.prompt ?? defaultDetection.prompt,
+    rule_pktrate: current.rule_pktrate ?? defaultDetection.rule_pktrate,
     entropy: {
       ...defaultEntropy,
       k: entropy.k ?? defaultEntropy.k,

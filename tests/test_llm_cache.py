@@ -103,6 +103,31 @@ def test_cache_is_bounded_and_off_modes_do_nothing(controller: Any) -> None:
     assert controller._predict([sample(1.0)]) is None
 
 
+def test_the_rule_gets_the_same_samples_and_is_logged_and_costed_as_itself(
+    controller: Any,
+) -> None:
+    flows = [sample(900.0, 900), sample(300.0, 500), sample(2.0), sample(1.0)]
+    controller._predict(flows)
+    llm_asked = [s["pktrate"] for s in controller.calls[-1]]
+    llm_rows = len(controller.decisions.rows)
+
+    rule = app_modes.ModeSwitchController.__new__(app_modes.ModeSwitchController)
+    rule.mode = "rule"
+    rule.llm_max_samples = controller.llm_max_samples
+    rule.llm_cache_size = controller.llm_cache_size
+    rule._verdicts = OrderedDict()
+    rule.settings = controller.settings
+    rule.decisions = Recorder()
+    rule.telemetry = Events()
+    rule._predict(flows)
+    # same budget and order: the rule is shown exactly the flows the model saw
+    assert [s["pktrate"] for s in controller.calls[-1]] == llm_asked
+    assert len(rule.decisions.rows) == llm_rows
+    assert {row["detector"] for row in rule.decisions.rows} == {"rule"}
+    kinds = [data["detector"] for kind, data in rule.telemetry.items]
+    assert kinds == ["rule"]
+
+
 def test_service_failure_keeps_serving_cached_verdicts(
     controller: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
