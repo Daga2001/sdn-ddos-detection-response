@@ -75,6 +75,7 @@ function scored(events: Observation[], mode = "llm"): RunResults {
         model: "llama3.2:3b",
         prompt: "lab",
         threshold: 0.8,
+        rule_pktrate: 50,
         poll_seconds: 1,
         mitigation: true,
         response: { policy: "block", dry_run: false },
@@ -254,6 +255,38 @@ test("service, response and recovery are measured from the recorded events", () 
   );
 });
 
+test("a packet-rate rule run is scored per flow like the LLM, without calibration", () => {
+  const events = llmRun().map((event) =>
+    event.kind === "decision_cost"
+      ? { ...event, data: { ...event.data, detector: "rule" } }
+      : event.kind === "flows"
+        ? {
+            ...event,
+            data: {
+              ...event.data,
+              rows: [{ ipv4_src: ip("a1"), prob_ddos: 1, label: 1 }],
+            },
+          }
+        : event,
+  );
+  const rule = scored(events, "rule");
+  assert.equal(metric(rule, "detection_rate").value, 50);
+  assert.equal(metric(rule, "flow_decisions").value, 1);
+  assert.equal(metric(rule, "flow_detection_rate").value, 100);
+  assert.equal(metric(rule, "brier").value, null);
+  assert.match(metric(rule, "brier").note ?? "", /hard verdict/);
+  assert.match(metric(rule, "ece").note ?? "", /hard verdict/);
+  assert.equal(
+    metric(rule, "decision_unit").value,
+    "one flow sample judged by the rule",
+  );
+  assert.equal(metric(rule, "decisions_reused").value, 3);
+  assert.equal(metric(rule, "rule_pktrate").value, 50);
+  assert.equal(metric(rule, "model").value, null);
+  assert.equal(metric(rule, "probability_threshold").value, null);
+  assert.equal(metric(scored(llmRun()), "rule_pktrate").value, null);
+});
+
 test("an entropy run says what does not apply, and a no-defense run scores nothing", () => {
   const entropy = scored([], "entropy");
   assert.equal(metric(entropy, "flow_detection_rate").value, null);
@@ -283,6 +316,7 @@ test("every run writes the same columns in the same order, whatever the detector
     resultRow(results).map(([name]) => name);
   const llm = columns(scored(llmRun()));
   assert.deepEqual(columns(scored([], "entropy")), llm);
+  assert.deepEqual(columns(scored([], "rule")), llm);
   assert.deepEqual(columns(scored([], "off")), llm);
   assert.equal(new Set(llm).size, llm.length, "column names are unique");
   for (const name of [

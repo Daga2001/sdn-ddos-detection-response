@@ -1,4 +1,4 @@
-# Detection modes: LLM vs entropy
+# Detection modes: LLM, packet-rate rule and entropy
 
 The controller `src/sdn_ddos/controller/app_modes.py` runs **one** detector per
 run, chosen by the user. They are never combined so their behaviour can be
@@ -7,6 +7,7 @@ compared.
 | `SDN_DETECTION_MODE` | Detector | Where it runs |
 | --- | --- | --- |
 | `llm` (default) | Flow-level LLM verdict (Llama 3.2 3B by default) | Controller -> `llm_api` (:8001) -> Ollama on the Windows host |
+| `rule` | The LLM's comparison arm: the same flow samples judged by `pktrate ≥ SDN_RULE_PKTRATE` (50 packets/s), no model | Detector service (`detection/rule.py`) |
 | `entropy` | Network-wide Shannon entropy of source/destination IPs | Inside the controller |
 | `off` | None (metrics only) | - |
 
@@ -420,6 +421,30 @@ Every run, experiment or observation, chooses one forwarding setting. There is n
 * `port_free` (`SDN_MATCH_L4_PORTS=false`, Experiment B): a rule matches source, destination and protocol. A flood adds no rules after its first packet.
 
 Both controllers refuse to start if `SDN_MATCH_L4_PORTS` is missing or is not `true` or `false`. Entropy presets do not change this choice. Older saved runs have no `forwarding` field; the workspace shows per-port for LLM and off runs, and for entropy runs whose `match_ports` was true or missing, and port-free only for entropy runs that stored `match_ports` false. It does not rewrite those rows.
+
+## Packet-rate rule (`rule`)
+
+The `lab` prompt tells the model to decide only with the flow's packet rate (below 10
+packets/s normal, 50 or more attack). A run cannot show what the model adds over that
+one comparison unless the same comparison runs without a model, on the same flows, with
+the same response (Arp et al., USENIX Security 2022, pitfall "inappropriate baseline").
+The `rule` mode is that arm:
+
+* It answers `POST /predict` of the detector service with the same contract as the LLM,
+  so the controller takes the LLM's path unchanged: the same `SDN_LLM_MAX_SAMPLES` flows
+  per poll, in the same judging order, through the same verdict cache, judged off the
+  event loop, and the same response policy.
+* A judged flow is an attack when `pktrate ≥ SDN_RULE_PKTRATE` (default 50; in the GUI,
+  Detection tab → *Packet-rate rule* → *Attack at ≥ pkt/s*; saved with the run as
+  `rule_pktrate`). It answers `prob_ddos` 1.0 or 0.0, so it passes any probability
+  threshold and has no calibration (the Results tab marks Brier and ECE as not
+  applicable).
+* Decisions are logged as `detector = rule` and costed like the LLM's (`decision_cost`
+  events, *one decision = one flow sample judged by the rule*), so the Results tab and
+  its CSV compare the two on the same columns.
+
+Keep *Samples per poll* equal in the rule and LLM runs you compare; otherwise they do not
+see the same flows.
 
 ## LLM detector
 

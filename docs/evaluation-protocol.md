@@ -89,7 +89,7 @@ percentage points; a relative change would divide by zero.
 
 ## 4. Experimental design
 
-**Factors.** Detector {off, entropy, LLM}, response {off, dry run, block, rate_limit,
+**Factors.** Detector {off, rule, entropy, LLM}, response {off, dry run, block, rate_limit,
 escalate}, forwarding {per_port, port_free}, attack kind {SYN, UDP, ICMP}, rate, number of
 attackers and victims, topology.
 
@@ -97,9 +97,10 @@ attackers and victims, topology.
 
 1. **No defense** (detector off): the reference for N1–N4, S1–S4, T1–T2 and C6, as RFC 8456
    §5.3.2 requires (same measurements without and with the defense).
-2. **Rule-only baseline**: `pktrate ≥ 50 packets/s` applied to the same flow samples. The
+2. **Rule-only baseline** (detector `rule`, implemented): `pktrate ≥ 50 packets/s` applied
+   to the same flow samples, with the same sample budget, order, cache and response. The
    `lab` prompt instructs the model to decide only on that threshold, so without this arm the
-   contribution of the LLM cannot be separated from that of the rule (not implemented yet).
+   contribution of the LLM cannot be separated from that of the rule.
 3. **Entropy** and **LLM**, each alone (implemented). They are tested separately, not
    combined (decision of 28 Oct 2026). Classical ML detectors (Random Forest, XGBoost) are
    future work (decision of 8 Nov 2026).
