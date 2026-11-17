@@ -111,7 +111,14 @@ the defended arms.
 
 **Data separation.** Prompt examples and entropy calibration use a
 *calibration* set of runs; every reported number comes from *held-out* runs recorded after the
-settings were frozen. The current `lab` prompt examples come from the same sessions as its
+settings were frozen. Each run records why it was made (*Run purpose* in the Experiment
+panel: `exploration`, `pilot`, `calibration`, `held_out`), its test case label (e.g. `TC-2`),
+a **settings fingerprint** (SHA-256 of the detector settings and the forwarding choice,
+`lab/provenance.py`), the repository commit and, with the LLM, the SHA-256 of the prompt
+text, the Ollama version and the model's digest and quantization. Freezing means writing
+the fingerprint of the chosen settings in the test plan; a held-out run with another
+fingerprint, or recorded before the freeze, is not counted (`scripts/compare_runs.py`
+refuses to pool it). The current `lab` prompt examples come from the same sessions as its
 evaluation set (`docs/detection-modes.md`); repeat that evaluation on new runs.
 
 ## 5. Test cases
