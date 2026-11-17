@@ -9,7 +9,7 @@
     "test": "npm run test:unit && playwright test",
     "format": "prettier --write src tests *.ts *.json index.html",
     "format-check": "prettier --check src tests *.ts *.json index.html",
-    "test:unit": "node --experimental-strip-types --test tests/detection.unit.ts tests/traffic.unit.ts tests/evaluation.unit.ts tests/results.unit.ts"
+    "test:unit": "node --experimental-strip-types --test tests/detection.unit.ts tests/traffic.unit.ts tests/evaluation.unit.ts tests/results.unit.ts tests/result_rows.unit.ts"
   },
   "dependencies": {
     "@xyflow/react": "12.12.0",

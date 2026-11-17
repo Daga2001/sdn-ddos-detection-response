@@ -264,7 +264,8 @@ def validate_experiment(topology: Topology, experiment: Experiment) -> None:
         experiment.detection is not None and experiment.detection.mode == "off"
     ):
         raise ValueError(
-            "mitigation needs a detector: choose an LLM or entropy detection, "
+            "mitigation needs a detector: choose the LLM, the packet-rate rule "
+            "or entropy, "
             "or turn mitigation off"
         )
     if len(attackers) * len(victims) > MAX_GENERATORS:
