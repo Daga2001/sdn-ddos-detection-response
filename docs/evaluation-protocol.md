@@ -142,6 +142,13 @@ dropped `detection`/`mitigation_requested` events, and the run was not interrupt
 
 ## 6. Statistics and acceptance criteria
 
+`scripts/compare_runs.py` computes everything below from the Results tab's
+*Download results row (CSV)* files (one per run, or stacked): it keeps valid `held_out`
+runs (optionally only those after `--frozen-at`), groups them into cells (test case,
+forwarding, detector, response, traffic, attackers, rate), refuses a cell whose runs have
+different settings fingerprints, flags cells with fewer than 10 runs, and writes a
+Markdown report plus one summary row per cell (`--out`).
+
 * Continuous metrics (M5, N1, N4, S1–S4, R1, R2, T1, T2): mean and 95 % confidence interval
   (Student t) over runs, plus median and range.
 * Proportions (M2, M3, M6, N2, N3): pooled counts over runs with a **Wilson** 95 % interval;
