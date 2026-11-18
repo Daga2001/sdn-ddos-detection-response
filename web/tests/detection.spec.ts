@@ -517,8 +517,13 @@ for (const mode of ["llm", "entropy", "off"]) {
     expect(file.suggestedFilename()).toBe(`results-${mode}-record-row.csv`);
     const text = await (await file.createReadStream()).toArray();
     const [header, row] = Buffer.concat(text).toString().split("\n");
-    expect(header.startsWith("run_id,started_utc,topology,detector,")).toBe(
-      true,
+    // The provenance columns (purpose, test case, fingerprint, commit, prompt hash)
+    // come right after the run id; the facts of the run follow.
+    expect(
+      header.startsWith("run_id,purpose,scenario,settings_fingerprint,"),
+    ).toBe(true);
+    expect(header.split(",")).toEqual(
+      expect.arrayContaining(["started_utc", "topology", "detector"]),
     );
     expect(header.split(",")).toContain("detection_rate_pct");
     expect(row.split(",")[0]).toBe("record");
