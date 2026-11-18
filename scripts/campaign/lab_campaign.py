@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
 import random
 import re
 import subprocess
@@ -36,6 +37,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -46,7 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lab_runs import Lab
 from scenarios import SCENARIOS, Scenario
 
-RUNNER = "sdn-lab-runner-1"
+RUNNER = "sdn-lab-runner-1"  # the historical name; see runner_container()
 TERMINAL = ("idle", "stopped", "completed", "failed", "error")
 HERE = Path(__file__).resolve().parent
 
@@ -73,10 +75,41 @@ class Api(Lab):
                 return error.code, text
 
 
+def runner_container(
+    env: Optional[Mapping[str, str]] = None, running: Optional[str] = None
+) -> str:
+    """The runner container: SDN_RUNNER_CONTAINER, else the only running container whose
+    name ends in -runner-1 (the Compose project name decides the prefix), else the
+    historical name. Without it a missing container reads as an empty lab (no leftover
+    bridges, no rules seen) instead of failing."""
+
+    source = os.environ if env is None else env
+    named = source.get("SDN_RUNNER_CONTAINER", "").strip()
+    if named:
+        return named
+    if running is None:
+        try:
+            running = subprocess.run(
+                ["docker", "ps", "--format", "{{.Names}}"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            ).stdout
+        except (subprocess.TimeoutExpired, OSError):
+            running = ""
+    matches = [n for n in running.split() if n.endswith("-runner-1")]
+    return matches[0] if len(matches) == 1 else RUNNER
+
+
+_CONTAINER: list[str] = []
+
+
 def runner(command: str, timeout: int = 20) -> str:
+    if not _CONTAINER:
+        _CONTAINER.append(runner_container())
     try:
         return subprocess.run(
-            ["docker", "exec", RUNNER, "sh", "-c", command],
+            ["docker", "exec", _CONTAINER[0], "sh", "-c", command],
             capture_output=True,
             text=True,
             timeout=timeout,

@@ -73,3 +73,18 @@ def test_pilot_cells_are_labelled_by_interval() -> None:
     assert lab_campaign.with_poll(pilot, 0.5).case == "TC-3-poll0.5"
     held = next(s for s in THESIS if s.group == "TH")
     assert lab_campaign.with_poll(held, 0.5).case == held.case
+
+
+def test_the_runner_container_follows_the_compose_project_name() -> None:
+    names = "sdn-ddos-detection-response-web-1\nsdn-ddos-detection-response-runner-1\n"
+    assert (
+        lab_campaign.runner_container({}, names)
+        == "sdn-ddos-detection-response-runner-1"
+    )
+    # An explicit choice wins, and the historical name is the fallback.
+    assert (
+        lab_campaign.runner_container({"SDN_RUNNER_CONTAINER": "mine"}, names) == "mine"
+    )
+    assert lab_campaign.runner_container({}, "other-1\n") == "sdn-lab-runner-1"
+    two = "a-runner-1\nb-runner-1\n"
+    assert lab_campaign.runner_container({}, two) == "sdn-lab-runner-1"
