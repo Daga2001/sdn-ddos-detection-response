@@ -88,3 +88,45 @@ def test_the_runner_container_follows_the_compose_project_name() -> None:
     assert lab_campaign.runner_container({}, "other-1\n") == "sdn-lab-runner-1"
     two = "a-runner-1\nb-runner-1\n"
     assert lab_campaign.runner_container({}, two) == "sdn-lab-runner-1"
+
+
+def test_the_response_time_counts_only_responses_against_attackers() -> None:
+    scenario = lab_campaign.Scenario(
+        id="x",
+        group="TH",
+        title="x",
+        attackers=["a1"],
+        victims=["v"],
+        forwarding="port_free",
+    )
+    hosts = [("a1", "10.0.0.11"), ("v", "10.0.0.1"), ("l1", "10.0.0.21")]
+    topology = {
+        "hosts": [{"name": n, "ip": f"{ip}/24"} for n, ip in hosts],
+        "links": [],
+    }
+    stamp = "2026-11-18 08:{:02d}:{:04.1f}+00"
+    events = [
+        {"ts": stamp.format(30, 0.0), "kind": "attack_started", "data": {}},
+        # a legitimate client blocked in the baseline, 139 s before the attack
+        {
+            "ts": stamp.format(27, 40.7),
+            "kind": "mitigation_requested",
+            "data": {"ipv4_src": "10.0.0.21", "action": "temporary_drop"},
+        },
+        {
+            "ts": stamp.format(30, 3.5),
+            "kind": "mitigation_requested",
+            "data": {"ipv4_src": "10.0.0.11", "action": "temporary_drop"},
+        },
+        {"ts": stamp.format(31, 0.0), "kind": "attack_stopped", "data": {}},
+    ]
+    db = {"detections": {}, "mitigations": {}, "decisions": 0, "positive_decisions": 0}
+    metrics = lab_campaign.analyse(scenario, topology, events, db, {})
+    assert metrics["response_first_s"] == 3.5
+    assert metrics["collateral_first_s"] == pytest.approx(-139.3, abs=0.05)
+    assert metrics["collateral"] == ["l1"]
+    # nobody attacked was answered: no response time, not the collateral one
+    events.pop(2)
+    metrics = lab_campaign.analyse(scenario, topology, events, db, {})
+    assert metrics["response_first_s"] is None
+    assert metrics["collateral_first_s"] == pytest.approx(-139.3, abs=0.05)
