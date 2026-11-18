@@ -135,3 +135,17 @@ def test_the_suppressed_names_are_part_of_the_controller_sample() -> None:
     assert row_out["protected_flows_skipped_total"] == 5
     assert row_out["names_suppressed_total"] == 2
     assert row_out["names_suppressed"] == {f"llm:{VICTIM}": 2}
+
+
+def test_the_rule_arm_is_held_to_the_same_protected_rule_and_counted() -> None:
+    instance = controller()
+    instance.mode = "rule"
+    victim_flow = row(VICTIM, "10.0.0.11")
+    assert instance._keep_from_the_model(victim_flow) is False
+    assert instance._keep_from_the_model(row("10.0.0.11", VICTIM)) is True
+    assert instance.protected_flows_skipped == 1
+    batch = judged_batch()
+    instance._finish_flow_batch(batch, [{"prob_ddos": 1.0}] * 3)
+    named = [item["ipv4_src"] for item in instance.store.detections]
+    assert named == ["10.0.0.11", "10.0.0.2"]
+    assert instance.names_suppressed == {f"rule:{VICTIM}": 1}
