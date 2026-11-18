@@ -223,6 +223,15 @@ def seconds(first: str, second: str) -> float:
     return (parse_ts(second) - parse_ts(first)).total_seconds()
 
 
+def first_response(
+    responded: dict[str, list[tuple[float, str]]], hosts: list[str]
+) -> Optional[float]:
+    """The earliest response offset (s) against any of `hosts`, or None if none."""
+
+    offsets = [t for host in hosts for t, _ in responded.get(host, [])]
+    return round(min(offsets), 1) if offsets else None
+
+
 def analyse(
     scenario: Scenario,
     topology: dict[str, Any],
@@ -363,15 +372,11 @@ def analyse(
         "responded_attackers": sorted(
             name[a] for a in attackers if a in responded or a in db["mitigations"]
         ),
-        "response_first_s": round(
-            min(
-                (t for items in responded.values() for t, _ in items),
-                default=float("nan"),
-            ),
-            1,
-        )
-        if responded
-        else None,
+        # Seconds from the attack start to the first response against an attacker (None
+        # when none was answered); a legitimate host answered earlier or later is
+        # collateral_first_s, kept apart so it can never pass for the response time.
+        "response_first_s": first_response(responded, attackers),
+        "collateral_first_s": first_response(responded, legit),
         "responded_hosts": sorted(
             name.get(h, h) for h in set(responded) | set(db["mitigations"])
         ),
