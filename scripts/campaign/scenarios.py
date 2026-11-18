@@ -12,6 +12,13 @@ Groups
   R  response: rate limit / block / escalate, simulated and real, protected hosts, caps
   M  larger networks, many attackers/victims, no detector, no detection setup
   S  control flow: stop in the middle of an attack, a second start while running
+  TP thesis pilot: the polling interval (0.5, 1, 5 s) on TC-3, every detector
+  TC thesis calibration: LLM threshold and entropy setting, on TC-3 and TC-5
+  TH thesis held-out campaign: TC-2 to TC-5, every arm (none, rule, entropy, LLM)
+
+The TP, TC and TH groups are the final campaign of the thesis (docs/thesis-campaign.md).
+Their polling interval is given on the command line (--poll), because the pilot
+chooses it; their runs carry a purpose (pilot, calibration, held_out) and a test case.
 """
 
 from __future__ import annotations
@@ -40,6 +47,11 @@ class Scenario:
     expect: dict[str, Any] = field(default_factory=dict)
     refuse: Optional[str] = None
     stop_after: int = 0
+    # Recorded with the run so the statistics can group runs into cells.
+    purpose: str = "exploration"
+    case: str = ""
+    # TP/TC/TH scenarios take the polling interval from --poll (the pilot chooses it).
+    needs_poll: bool = False
     # Required. Entropy scenarios that used match_ports=False are port_free;
     # every other scenario is per_port. Empty is rejected, not a mode.
     forwarding: str = ""
@@ -68,6 +80,24 @@ def llm(
         "prompt": prompt,
         "llm_max_samples": samples,
         "threshold": threshold,
+    }
+    if poll is not None:
+        body["poll_seconds"] = poll
+    if response is not None:
+        body["response"] = response
+    return body
+
+
+def rule(
+    pktrate: float = 50.0,
+    response: Optional[dict[str, Any]] = None,
+    poll: Optional[float] = None,
+    samples: int = 5,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "mode": "rule",
+        "rule_pktrate": pktrate,
+        "llm_max_samples": samples,
     }
     if poll is not None:
         body["poll_seconds"] = poll
@@ -2133,5 +2163,136 @@ SCENARIOS: list[Scenario] = [
         forwarding="per_port",
     ),
 ]
+
+# ---- Thesis campaign (TP, TC, TH) ---------------------------------------------------
+# The test cases of the report (chapter 3, Table "Test cases"), with the hosts of the
+# university topology. One response for every detector: block a source after 2
+# detections within 30 s, for 300 s, never the servers, applied for real.
+SERVERS = ["10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4", "10.0.0.5"]
+THESIS_RESPONSE = response(
+    "block", dry_run=False, confirm_hits=2, confirm_seconds=30, block_seconds=300,
+    protected=SERVERS,
+)  # fmt: skip
+THESIS_PHASES = {"baseline": 180, "duration": 120, "recovery": 120}
+THESIS_CASES: dict[str, dict[str, Any]] = {
+    # SYN flood to port 8080; hping3 changes the source port of every packet, so with
+    # per-port rules nearly every reply of the victim needs a new rule (Packet-In).
+    "TC-2": {
+        "attackers": ["h_wifi1", "h_lab1"],
+        "victims": ["h_web"],
+        "traffic": ["syn"],
+        "rate": 1000,
+        "forwarding": "per_port",
+    },
+    # The same flood with port-free rules, no defense only: the forwarding factor of SO1.
+    "TC-2pf": {
+        "attackers": ["h_wifi1", "h_lab1"],
+        "victims": ["h_web"],
+        "traffic": ["syn"],
+        "rate": 1000,
+        "forwarding": "port_free",
+    },
+    # Kinds are spread over the attackers in order: h_wifi1 SYN, h_lab1 UDP, h_prof1 SYN.
+    "TC-3": {
+        "attackers": ["h_wifi1", "h_lab1", "h_prof1"],
+        "victims": ["h_web"],
+        "traffic": ["syn", "udp"],
+        "rate": 1000,
+        "forwarding": "port_free",
+    },
+    # Every attacker floods both victims: 8 flows, SYN from h_wifi1/h_lab1, UDP from
+    # h_wifi2/h_lab2 (the lab launches every attacker against every victim).
+    "TC-4": {
+        "attackers": ["h_wifi1", "h_wifi2", "h_lab1", "h_lab2"],
+        "victims": ["h_web", "h_files"],
+        "traffic": ["syn", "udp"],
+        "rate": 1000,
+        "forwarding": "port_free",
+    },
+    # 30 packets/s: the middle of the prompt's ambiguous band (10-50) and below the
+    # rule's threshold; 300 s of attack.
+    "TC-5": {
+        "attackers": ["h_wifi1", "h_lab1"],
+        "victims": ["h_web"],
+        "traffic": ["syn"],
+        "rate": 30,
+        "forwarding": "port_free",
+        "duration": 300,
+    },
+}
+
+
+def thesis_arm(arm: str, respond: bool = True) -> tuple[Optional[dict[str, Any]], bool]:
+    """Detection setup and mitigation flag of one arm; poll is set from --poll."""
+    answer = THESIS_RESPONSE if respond else None
+    if arm == "none":
+        return off(), False
+    if arm == "rule":
+        return rule(response=answer), respond
+    if arm == "entropy":
+        return entropy(response=answer), respond
+    if arm == "llm":
+        return llm(samples=5, threshold=0.8, response=answer), respond
+    raise ValueError(arm)
+
+
+def thesis_scenario(
+    sid: str, group: str, case: str, arm: str, purpose: str, title: str
+) -> Scenario:
+    spec = dict(THESIS_CASES[case])
+    phases = dict(THESIS_PHASES)
+    if "duration" in spec:
+        phases["duration"] = spec.pop("duration")
+    detection, mitigation = thesis_arm(arm)
+    return Scenario(
+        sid,
+        group,
+        title,
+        topology="university",
+        attackers=spec["attackers"],
+        victims=spec["victims"],
+        traffic=spec["traffic"],
+        rate=spec["rate"],
+        forwarding=spec["forwarding"],
+        mitigation=mitigation,
+        detection=detection,
+        purpose=purpose,
+        case=case,
+        needs_poll=True,
+        # A false block is a result to measure here, not a broken lab.
+        expect={"collateral_max": 25},
+        **phases,
+    )
+
+
+ARMS = ("none", "rule", "entropy", "llm")
+for _case in ("TC-2", "TC-3", "TC-4", "TC-5"):
+    for _arm in ARMS:
+        SCENARIOS.append(
+            thesis_scenario(
+                f"TH{_case[-1]}-{_arm}", "TH", _case, _arm, "held_out",
+                f"{_case} held-out, arm {_arm}",
+            )
+        )  # fmt: skip
+SCENARIOS.append(
+    thesis_scenario(
+        "TH2pf-none", "TH", "TC-2pf", "none", "held_out",
+        "TC-2 flood with port-free rules, held-out, no defense",
+    )
+)  # fmt: skip
+for _arm in ARMS[1:]:
+    SCENARIOS.append(
+        thesis_scenario(
+            f"TP3-{_arm}", "TP", "TC-3", _arm, "pilot", f"TC-3 pilot, arm {_arm}"
+        )
+    )
+for _case in ("TC-3", "TC-5"):
+    for _arm in ("entropy", "llm"):
+        SCENARIOS.append(
+            thesis_scenario(
+                f"TC{_case[-1]}-{_arm}", "TC", _case, _arm, "calibration",
+                f"{_case} calibration, arm {_arm}",
+            )
+        )  # fmt: skip
 
 BY_ID = {s.id: s for s in SCENARIOS}

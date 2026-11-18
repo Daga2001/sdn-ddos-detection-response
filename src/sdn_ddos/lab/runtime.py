@@ -43,6 +43,7 @@ from sdn_ddos.lab.measurements import (
     read_system,
 )
 from sdn_ddos.lab.processes import Emit, ManagedProcess
+from sdn_ddos.lab.provenance import os_release, package_version, repository_commit
 from sdn_ddos.lab.telemetry import grow_buffer
 from sdn_ddos.lab.topology import Topology
 
@@ -175,8 +176,10 @@ class MininetRuntime:
         result = {
             "python": platform.python_version(),
             "kernel": platform.release(),
+            "os": os_release(),
             "mininet": VERSION,
-            "ryu": "4.34",
+            "ryu": package_version("ryu"),
+            "repository_commit": repository_commit()["commit"],
             "poll_interval_seconds": os.environ.get("SDN_POLL_INTERVAL", "5"),
             "model_sha256": os.environ.get("DDOS_MODEL_SHA256") or "not_configured",
         }

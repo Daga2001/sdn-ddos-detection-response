@@ -2,7 +2,8 @@
 
 An experiment may carry a `DetectionConfig`. At run start the runner
 
-* pushes the detector-side part (mode, LLM, prompt, entropy tuning, response policy)
+* pushes the detector-side part (mode, LLM, prompt, rule threshold, entropy tuning,
+  response policy)
   to the detector service with `PUT /config`, and
 * hands the controller-side part (window shape, sample budget, response limits) over
   as environment variables of the Ryu process it spawns.
@@ -125,6 +126,10 @@ def detector_update(detection: DetectionConfig) -> dict[str, Any]:
     if detection.mode == "llm":
         update["model"] = detection.model
         update["prompt"] = detection.prompt
+    elif detection.mode == "rule":
+        # Only named for the rule, so a detector service older than the rule
+        # keeps accepting the other modes' settings.
+        update["rule_pktrate"] = detection.rule_pktrate
     return update
 
 

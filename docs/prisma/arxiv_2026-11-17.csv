@@ -1,0 +1,96 @@
+n,arxiv_id,date,title,decision
+1,2409.10561v3,2024-09-11,DrLLM: Prompt-Enhanced Distributed Denial-of-Service Resistance Method with Large Language Models,INC
+2,2605.26307v1,2026-05-25,Intelligent Detection and Mitigation of Carpet-Bombing DDoS Attacks in SDN Using Retrieval-Augmented Generation and Large Language Models,DUP:OA9
+3,2605.17960v1,2026-05-18,From Detection to Response: A Deep Learning and Retrieval-Augmented Generation Framework for Network Intrusion Mitigation,INC
+4,2511.00460v1,2025-11-01,Proactive DDoS Detection and Mitigation in Decentralized Software-Defined Networking via Port-Level Monitoring and Zero-Training Large Language Models,DUP:OA11
+5,2507.21193v1,2025-07-27,Interpretable Anomaly-Based DDoS Detection in AI-RAN with XAI and LLMs,INC
+6,2410.13722v1,2024-10-17,Persistent Pre-Training Poisoning of LLMs,EC2
+7,2412.10198v2,2024-12-13,From Allies to Adversaries: Manipulating LLM Tool-Calling through Adversarial Injection,EC2
+8,2402.14020v1,2024-02-21,Coercing LLMs to do and reveal (almost) anything,EC2
+9,2503.18487v2,2025-03-24,"Large Language Models powered Malicious Traffic Detection: Architecture, Opportunities and Case Study",EC3
+10,2611.17534v1,2026-11-12,I2C-GRPO: Insight Importance Checklist for Reinforcement Learning in a Multi-Agent DDoS Alert Triage Workflow,DUP:OA62
+11,2412.13879v4,2024-12-18,Crabs: Consuming Resource via Auto-generation for LLM-DoS Attack under Black-box Settings,EC2
+12,2312.09494v2,2023-12-15,No-Skim: Towards Efficiency Robustness Evaluation on Skimming-based Language Models,EC2
+13,2405.07638v1,2024-05-13,DoLLM: How Large Language Models Understanding Network Flow Data to Detect Carpet Bombing DDoS,DUP:OA5
+14,2505.18630v2,2025-05-24,DDO: Dual-Decision Optimization for LLM-Based Medical Consultation via Multi-Agent Collaboration,DUP:OA42
+15,2507.06323v1,2025-07-08,Bridging AI and Software Security: A Comparative Vulnerability Assessment of LLM Agent Deployment Paradigms,EC2
+16,2503.21674v1,2025-03-27,Intelligent IoT Attack Detection Design via ODLLM with Feature Ranking-based Knowledge Base,INC
+17,2503.00416v1,2025-03-01,Breaking the Loop: Detecting and Mitigating Denial-of-Service Vulnerabilities in Large Language Models,EC2
+18,2412.21051v4,2024-12-30,Toward Intelligent and Secure Cloud: Large Language Model Empowered Proactive Defense,INC
+19,2410.02916v3,2024-10-03,LLM Safeguard is a Double-Edged Sword: Exploiting False Positives for Denial-of-Service Attacks,EC2
+20,2410.14479v1,2024-10-18,Backdoored Retrievers for Prompt Injection Attacks on Retrieval Augmented Generation of Large Language Models,EC2
+21,2501.18636v2,2025-01-28,SafeRAG: Benchmarking Security in Retrieval-Augmented Generation of Large Language Model,EC2
+22,2505.18680v1,2025-05-24,$PD^3F$: A Pluggable and Dynamic DoS-Defense Framework Against Resource Consumption Attacks Targeting Large Language Models,EC2
+23,2510.09037v1,2025-10-10,Repairing Regex Vulnerabilities via Localization-Guided Instructions,EC2
+24,2509.09970v1,2025-09-12,Securing LLM-Generated Embedded Firmware through AI Agent-Driven Validation and Patching,EC2
+25,2604.03790v1,2026-04-04,Systematic Integration of Digital Twins and Constrained LLMs for Interpretable Cyber-Physical Anomaly Detection,EC2
+26,2506.08171v2,2025-06-09,Worst-Case Symbolic Constraints Analysis and Generalisation with Large Language Models,EC2
+27,2503.18483v1,2025-03-24,Explaining Domain Shifts in Language: Concept erasing for Interpretable Image Classification,EC2
+28,2601.14343v1,2026-01-20,Rethinking On-Device LLM Reasoning: Why Analogical Mapping Outperforms Abstract Thinking for IoT DDoS Detection,DUP:OA55
+29,2508.10043v1,2025-08-12,Securing Agentic AI: Threat Modeling and Risk Analysis for Network Monitoring Agentic AI System,EC2
+30,2305.06424v4,2023-05-10,Bot or Human? Detecting ChatGPT Imposters with A Single Question,EC2
+31,2608.20481v1,2026-08-20,AEGIS: Preventing Cross-Domain Resource Abuse in MCP,EC2
+32,2504.21680v1,2025-04-30,Hoist with His Own Petard: Inducing Guardrails to Facilitate Denial-of-Service Attacks on Retrieval-Augmented Generation of LLMs,EC2
+33,2512.07086v1,2025-12-08,ThinkTrap: Denial-of-Service Attacks against Black-box LLM Services via Infinite Thinking,EC2
+34,2608.10405v1,2026-08-11,Never Stop Speaking: a Denial-of-Service Attack on End-to-End Speech Language Models,EC2
+35,2605.11442v3,2026-05-12,Mobius Injection: From One-Shot Prompt Injection to Sustained Resource Exhaustion in AI Agent Infrastructure,EC2
+36,2609.15963v1,2026-09-14,Adversarial Testing of Automated Program Repair Agents for Security Vulnerabilities,EC2
+37,2604.24790v1,2026-04-25,Semantic Denial of Service in LLM-controlled robots,EC2
+38,2504.13515v1,2025-04-18,Large Language Models for Validating Network Protocol Parsers,EC2
+39,2609.38239v1,2026-09-29,Inference-Layer Security: Defending Against Adversarial Inference and Infrastructure Abuse,EC2
+40,2608.25667v2,2026-08-26,AI Slop and Hallucinations in Vulnerability Assessment: A Survey on Reasoning Failures and Trustworthy Mitigation,EC2
+41,2405.12750v2,2024-05-21,Generative AI in Cybersecurity: A Comprehensive Review of LLM Applications and Vulnerabilities,EC3
+42,2510.06530v1,2025-10-08,From Description to Detection: LLM based Extendable O-RAN Compliant Blind DoS Detection in 5G and Beyond,INC
+43,2509.24037v2,2025-09-28,Automated Vulnerability Validation and Verification: A Large Language Model Approach,EC2
+44,2604.18663v1,2026-04-20,Beyond Explicit Refusals: Soft-Failure Attacks on Retrieval-Augmented Generation,EC2
+45,2601.10955v2,2026-01-16,Beyond Max Tokens: Stealthy Resource Amplification via Tool Calling Chains in LLM Agents,EC2
+46,2606.21349v2,2026-06-19,LLM-assisted Generation of Pseudo-C2 Servers for IoT Malware Dynamic Analysis,EC2
+47,2607.10315v2,2026-07-11,Understanding Implicit Trust Errors in Core Carrier Networks through Multi-Agent Flaw Discovery and Analysis,EC2
+48,2504.02132v4,2025-04-02,One Pic is All it Takes: Poisoning Visual Document Retrieval Augmented Generation with a Single Image,EC2
+49,2604.22427v1,2026-04-24,Automation-Exploit: A Multi-Agent LLM Framework for Adaptive Offensive Security with Digital Twin-Based Risk-Mitigated Exploitation,EC2
+50,2605.08876v3,2026-05-09,OTora: A Unified Red Teaming Framework for Reasoning-Level Denial-of-Service in LLM Agents,EC2
+51,2406.00083v3,2024-06-03,BadRAG: Identifying Vulnerabilities in Retrieval Augmented Generation of Large Language Models,EC2
+52,2406.05870v4,2024-06-09,Machine Against the RAG: Jamming Retrieval-Augmented Generation with Blocker Documents,EC2
+53,2410.19223v1,2024-10-25,Integrating Large Language Models with Internet of Things Applications,EC3
+54,2508.11711v2,2025-08-14,"Enhancing GraphQL Security by Detecting Malicious Queries Using Large Language Models, Sentence Transformers, and Convolutional Neural Networks",EC2
+55,2512.23779v2,2025-12-29,Prompt-Induced Over-Generation as Denial-of-Service: A Black-Box Attack-Side Benchmark,EC2
+56,2610.15995v1,2026-10-11,AutoSec-RAN: Specification-Grounded LLM Fine-Tuning for Automated Security Analysis of O-RAN,EC2
+57,2510.09686v1,2025-10-09,Stop DDoS Attacking the Research Community with AI-Generated Survey Papers,DUP:OA20
+58,2503.03263v1,2025-03-05,A 262 TOPS Hyperdimensional Photonic AI Accelerator powered by a Si3N4 microcomb laser,EC2
+59,2508.11425v2,2025-08-15,Tapas Are Free! Training-Free Adaptation of Programmatic Agents via LLM-Guided Program Synthesis in Dynamic Environments,EC2
+60,2410.10760v1,2024-10-14,Denial-of-Service Poisoning Attacks against Large Language Models,EC2
+61,2510.19264v1,2025-10-22,LAPRAD: LLM-Assisted PRotocol Attack Discovery,EC2
+62,2511.18230v1,2025-11-23,Think Fast: Real-Time IoT Intrusion Reasoning Using IDS and LLMs at the Edge Gateway,INC
+63,2607.05474v1,2026-07-06,ShadowProbe: Language-Extensible Detection of Hidden Algorithmic Complexity Vulnerabilities,EC2
+64,2505.19911v2,2025-05-26,Attention! Your Vision Language Model Could Be Maliciously Manipulated,EC2
+65,2604.06900v1,2026-04-08,SentinelSphere: Integrating AI-Powered Real-Time Threat Detection with Cybersecurity Awareness Training,EC1
+66,2607.01641v1,2026-07-02,When Agents Do Not Stop: Uncovering Infinite Agentic Loops in LLM Agents,EC2
+67,2605.11202v1,2026-05-11,Continuous Discovery of Vulnerabilities in LLM Serving Systems with Fuzzing,EC2
+68,2601.14601v1,2026-01-21,Holmes: An Evidence-Grounded LLM Agent for Auditable DDoS Investigation in Cloud Networks,INC
+69,2602.00154v1,2026-01-29,ReasoningBomb: A Stealthy Denial-of-Service Attack by Inducing Pathologically Long Reasoning in Large Reasoning Models,EC2
+70,2409.09380v2,2024-09-14,The Midas Touch: Triggering the Capability of LLMs for RM-API Misuse Detection,EC2
+71,2602.20021v1,2026-02-23,Agents of Chaos,EC2
+72,2211.15363v4,2022-11-28,On the Security Vulnerabilities of Text-to-SQL Models,EC2
+73,2611.04356v1,2026-11-03,CloakFEM: Agentic FEM Code Generation for Red-Teaming Computational Resource Exhaustion,EC2
+74,2609.16204v1,2026-09-14,Decoy Direction Optimization: A Post-Hoc Defense Against LLM Abliteration,EC2
+75,2512.23995v2,2025-12-30,RepetitionCurse: Measuring and Understanding Router Imbalance in Mixture-of-Experts LLMs under DoS Stress,EC2
+76,2607.23147v2,2026-07-25,False Prophets: On the Security of World Models in Agentic Systems,EC2
+77,2606.14517v2,2026-06-12,From Shield to Target: Denial-of-Service Attacks on LLM-Based Agent Guardrails,EC2
+78,2506.07153v2,2025-06-08,Mind the Web: The Security of Web Use Agents,EC2
+79,2606.07968v1,2026-06-06,RecurGuard: Runtime Monitoring for Reasoning-Token Consumption Attacks,EC2
+80,2609.10052v1,2026-09-09,Direct Diversity Optimization for Diverse Successful Trajectories in Preference Post-Training,EC2
+81,2412.20154v1,2024-12-28,Defending Against Network Attacks for Secure AI Agent Migration in Vehicular Metaverses,EC1
+82,2504.12034v1,2025-04-16,OpDiffer: LLM-Assisted Opcode-Level Differential Testing of Ethereum Virtual Machine,EC2
+83,2606.08173v1,2026-06-06,AI-Native Closed-Loop Security for 6G-Enabled Cyber-Physical Systems: From Edge Detection to Network-Wide Mitigation,EC3
+84,2606.06261v1,2026-06-04,DAST: A VLM-LLM Framework for Cross-Interface Anomaly Detection in O-RAN,INC
+85,2609.26555v1,2026-09-22,Rouxii: Exploiting Honeypots with Deception-Aware AI Pentesters,EC2
+86,2602.12262v4,2026-02-12,Few-Step Diffusion Language Models via Trajectory Self-Distillation,EC2
+87,2603.22489v1,2026-03-23,Model Context Protocol Threat Modeling and Analyzing Vulnerabilities to Prompt Injection with Tool Poisoning,EC2
+88,2604.04852v1,2026-04-06,Strengthening Human-Centric Chain-of-Thought Reasoning Integrity in LLMs via a Structured Prompt Framework,EC2
+89,2509.01619v1,2025-09-01,Throttling Web Agents Using Reasoning Gates,EC2
+90,2611.16189v1,2026-11-12,SBA: A Practical Memory Performance Denial-of-Service Attack,EC2
+91,2508.18652v1,2025-08-26,UniC-RAG: Universal Knowledge Corruption Attacks to Retrieval-Augmented Generation,EC2
+92,2609.30217v1,2026-09-24,Instrumental Monitor Evasion Emerges Under Ordinary Task Pressure,EC2
+93,2609.36732v1,2026-09-29,Deep Learning Latency Attacks and Defenses: A Cross-Domain Survey of Availability Threats,EC2
+94,2606.03786v3,2026-06-02,"Conviction, persuasiveness, and cross-cutting exposure: a Bayesian model of voting behaviour in online political debates",EC2
+95,2412.06239v1,2024-12-09,Unseen Attack Detection in Software-Defined Networking Using a BERT-Based Large Language Model,INC

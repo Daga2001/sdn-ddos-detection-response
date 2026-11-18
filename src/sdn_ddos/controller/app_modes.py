@@ -100,7 +100,11 @@ class _TimeoutSession(requests.Session):
         return super().request(method, url, **kwargs)
 
 
-MODES = ("llm", "entropy", "off")
+MODES = ("llm", "rule", "entropy", "off")
+# Modes that judge flow samples through the detector's /predict: the LLM and the
+# packet-rate rule that is its comparison arm. Both get exactly the same samples
+# (same per-poll budget, judging order and cache) and the same response.
+FLOW_MODES = ("llm", "rule")
 MAX_HISTOGRAM_BINS = 2000  # the detector service accepts at most 5000 per request
 NETWORK_SCOPE = 0  # dpid slot used by the entropy detector for the whole network
 
@@ -238,7 +242,7 @@ class ModeSwitchController(EnterpriseDDoSController):
         self._llm_pending: PollQueue[FlowBatch] = PollQueue()
         self._llm_wake: Any = hub.Queue(64)
         self.llm_skipped = 0
-        if self.mode == "llm" and _truthy(os.environ.get("SDN_LLM_ASYNC", "true")):
+        if self.mode in FLOW_MODES and _truthy(os.environ.get("SDN_LLM_ASYNC", "true")):
             self.llm_thread: Any = hub.spawn(self._llm_loop)
         if self.mode == "entropy":
             self.entropy_thread = hub.spawn(self._entropy_loop)
@@ -487,7 +491,7 @@ class ModeSwitchController(EnterpriseDDoSController):
         samples: List[Dict[str, Any]],
         sources: Optional[List[Optional[str]]] = None,
     ) -> Optional[List[Dict[str, Any]]]:
-        if self.mode != "llm" or not samples:
+        if self.mode not in FLOW_MODES or not samples:
             return None
         keys = [self._sample_key(sample) for sample in samples]
         ranked = self._priority(samples, sources)
@@ -516,7 +520,7 @@ class ModeSwitchController(EnterpriseDDoSController):
             elapsed_ms = (time.monotonic() - started) * 1000.0
             fresh_ms = elapsed_ms / len(fresh)
             self._record_cost(
-                "llm",
+                self.mode,
                 len(fresh),
                 elapsed_ms,
                 reused=reused,
@@ -532,7 +536,7 @@ class ModeSwitchController(EnterpriseDDoSController):
                 while len(self._verdicts) > self.llm_cache_size:
                     self._verdicts.popitem(last=False)
         elif reused:
-            self._record_cost("llm", 0, 0.0, reused=reused)  # all served from cache
+            self._record_cost(self.mode, 0, 0.0, reused=reused)  # all from the cache
         if not selected:
             return None
         neutral: Dict[str, Any] = {"pred_label": 0, "prob_ddos": None}
@@ -551,7 +555,7 @@ class ModeSwitchController(EnterpriseDDoSController):
             ):
                 self._flagged_at[str(sources[index])] = time.monotonic()
             self.decisions.record(
-                "llm",
+                self.mode,
                 probability_is_attack(probability, self.settings.detection_threshold),
                 score=probability,
                 latency_ms=fresh_ms if index in asked else None,

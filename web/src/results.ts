@@ -287,6 +287,10 @@ export function runResults(input: {
   const detector: string =
     config.mode ?? experiment.detection?.mode ?? "unknown";
   const llm = detector === "llm";
+  // The packet-rate rule judges the LLM's flow samples, so it shares the per-flow
+  // metrics and the cost counters; it gives hard verdicts, so it has no calibration.
+  const rule = detector === "rule";
+  const perFlow = llm || rule;
   const entropy = detector === "entropy";
   const off = detector === "off";
   const metrics: Metric[] = [];
@@ -317,6 +321,36 @@ export function runResults(input: {
   ) => add({ key, label, unit: "text", group, definition, value });
   runText("run_id", "Run id", run?.id ?? events[0]?.run_id ?? null, "Run id.");
   runText(
+    "purpose",
+    "Run purpose",
+    config.purpose ?? experiment.purpose ?? null,
+    "calibration (tunes the prompt and thresholds), held_out (recorded after the settings were frozen; the only runs reported), pilot or exploration.",
+  );
+  runText(
+    "scenario",
+    "Test case",
+    config.scenario || experiment.scenario || null,
+    "Test case label the run was recorded under (e.g. TC-2).",
+  );
+  runText(
+    "settings_fingerprint",
+    "Settings fingerprint",
+    config.settings_fingerprint ?? null,
+    "SHA-256 (first 16 hex) of the detector settings and forwarding. Held-out runs of one comparison must share the fingerprint of the frozen settings.",
+  );
+  runText(
+    "repository_commit",
+    "Repository commit",
+    config.repository_commit ?? null,
+    "Commit of the code that ran (unknown when the lab could not read it).",
+  );
+  runText(
+    "prompt_sha256",
+    "Prompt hash",
+    config.detector_prompt_sha256 ?? null,
+    "SHA-256 of the prompt text the detector service used (LLM runs).",
+  );
+  runText(
     "started_utc",
     "Started (UTC)",
     run?.started_at ?? events[0]?.ts ?? null,
@@ -334,7 +368,7 @@ export function runResults(input: {
     "detector",
     "Detector",
     detector,
-    "llm, entropy or off (no defense).",
+    "llm, rule (packet-rate rule), entropy or off (no defense).",
   );
   runText(
     "model",
@@ -355,6 +389,15 @@ export function runResults(input: {
     group: "Run",
     definition: "A flow is an attack when P(attack) is at least this value.",
     value: llm ? (finite(config.threshold) ?? null) : null,
+  });
+  add({
+    key: "rule_pktrate",
+    label: "Rule threshold",
+    unit: "per_s",
+    group: "Run",
+    definition:
+      "Packet-rate rule runs only: a judged flow at or above this many packets/s is an attack.",
+    value: rule ? (finite(config.rule_pktrate) ?? null) : null,
   });
   runText(
     "entropy_measure",
@@ -549,8 +592,8 @@ export function runResults(input: {
       unit,
       group: "Detection",
       definition:
-        "Secondary unit, LLM only: one judged flow on one switch in one poll. Attackers' flows during the attack are attacks; legitimate clients' flows, and attackers' flows in the baseline, are normal.",
-      ...(llm && flowCount ? { value } : notApplicable(flowWhy)),
+        "Secondary unit, LLM and packet-rate rule: one judged flow on one switch in one poll. Attackers' flows during the attack are attacks; legitimate clients' flows, and attackers' flows in the baseline, are normal.",
+      ...(perFlow && flowCount ? { value } : notApplicable(flowWhy)),
     });
   flowMetric("flow_decisions", "Judged flows", "count", flowCount);
   flowMetric(
@@ -573,14 +616,25 @@ export function runResults(input: {
     "score",
     calibrated.ece,
   );
+  if (rule)
+    for (const key of ["brier", "ece"]) {
+      const metric = metrics.find((item) => item.key === key);
+      if (metric)
+        Object.assign(metric, {
+          value: null,
+          note: "not applicable: the rule gives a hard verdict, not a probability",
+        });
+    }
 
   // -- What each decision cost ------------------------------------------------------
   const cost = decisionCost(events, spans);
   const unit = llm
     ? "one flow sample sent to the model"
-    : entropy
-      ? "one evaluated window of the whole network"
-      : "none";
+    : rule
+      ? "one flow sample judged by the rule"
+      : entropy
+        ? "one evaluated window of the whole network"
+        : "none";
   const costWhy = off
     ? noDetector
     : "not recorded: no cost data reached the lab from the controller in this run";
@@ -618,13 +672,13 @@ export function runResults(input: {
     "decisions_reused",
     "Verdicts reused from the cache",
     "count",
-    llm ? cost.reused : null,
-    "LLM only: flows answered from the controller's cache of identical samples, at no model cost.",
+    perFlow ? cost.reused : null,
+    "LLM and rule: flows answered from the controller's cache of identical samples, at no detector cost.",
   );
-  if (!llm && !off)
+  if (!perFlow && !off)
     Object.assign(metrics[metrics.length - 1], {
       value: null,
-      note: "not applicable: only the LLM reuses verdicts",
+      note: "not applicable: only the flow detectors (LLM, rule) reuse verdicts",
     });
   costMetric(
     "decisions_failed",
@@ -672,10 +726,10 @@ export function runResults(input: {
     "polls_skipped",
     "Polls not judged",
     "count",
-    llm ? cost.skippedPolls : null,
-    "LLM only: switch polls replaced by a newer poll before the model could judge them, a sign the model could not keep up.",
+    perFlow ? cost.skippedPolls : null,
+    "LLM and rule: switch polls replaced by a newer poll before the detector could judge them, a sign it could not keep up.",
   );
-  if (!llm && !off)
+  if (!perFlow && !off)
     Object.assign(metrics[metrics.length - 1], {
       value: null,
       note: "not applicable: entropy judges every window",
