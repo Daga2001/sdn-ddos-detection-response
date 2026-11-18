@@ -119,6 +119,20 @@ FINE_GRAINED_MATCH = _truthy(os.environ.get("SDN_FINE_GRAINED_MATCH", "true"))
 MATCH_L4_PORTS: Optional[bool] = None
 
 
+def detection_mode(remote: Optional[Dict[str, Any]]) -> str:
+    """The run's detection mode: the one the detector service reports (the
+    packet-rate rule included), or, without a service, the environment's."""
+
+    mode = (
+        str(remote["mode"] if remote else os.environ.get("SDN_DETECTION_MODE", "llm"))
+        .strip()
+        .lower()
+    )
+    if mode not in MODES:
+        raise ValueError(f"detection mode must be one of {MODES}, got {mode!r}")
+    return mode
+
+
 class ModeSwitchController(EnterpriseDDoSController):
     """Baseline controller plus a selectable detection mechanism."""
 
@@ -130,17 +144,7 @@ class ModeSwitchController(EnterpriseDDoSController):
         # fixed for this run; without it (standalone scripts) the env decides.
         detector_base = self.settings.inference_url.rsplit("/", 1)[0]
         remote = fetch_remote_config(detector_base, self.settings.inference_api_key)
-        mode = (
-            str(
-                remote["mode"]
-                if remote
-                else os.environ.get("SDN_DETECTION_MODE", "llm")
-            )
-            .strip()
-            .lower()
-        )
-        if mode not in MODES:
-            raise ValueError(f"detection mode must be one of {MODES}, got {mode!r}")
+        mode = detection_mode(remote)
         self.mode = mode
         # What each decision costs (see controller/cost.py): running totals sent with
         # every controller sample, and the detector service's own CPU time and memory.

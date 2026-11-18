@@ -120,12 +120,12 @@ ALTER TABLE attack_windows ADD COLUMN IF NOT EXISTS run_id UUID;
 ALTER TABLE detection_events ADD COLUMN IF NOT EXISTS run_id UUID;
 ALTER TABLE mitigation_events ADD COLUMN IF NOT EXISTS run_id UUID;
 
--- One row per detector decision (LLM or entropy). Also available as
+-- One row per detector decision (LLM, packet-rate rule or entropy). Also available as
 -- database/migrations/001_detection_decisions.sql for existing databases.
 CREATE TABLE IF NOT EXISTS detection_decisions (
     id BIGSERIAL PRIMARY KEY,
     ts TIMESTAMPTZ NOT NULL,
-    detector TEXT NOT NULL CHECK (detector IN ('llm', 'entropy')),
+    detector TEXT NOT NULL CHECK (detector IN ('llm', 'rule', 'entropy')),
     dpid BIGINT,
     verdict BOOLEAN NOT NULL,
     score DOUBLE PRECISION,

@@ -113,12 +113,20 @@ def test_fresh_databases_create_detection_decisions() -> None:
     migration = (ROOT / "database/migrations/001_detection_decisions.sql").read_text()
     for fragment in (
         "CREATE TABLE IF NOT EXISTS detection_decisions",
-        "detector TEXT NOT NULL CHECK (detector IN ('llm', 'entropy'))",
+        "detector TEXT NOT NULL CHECK (detector IN (",
         "latency_ms DOUBLE PRECISION",
         "idx_detection_decisions_detector_ts",
     ):
         assert fragment in schema, f"schema.sql lacks: {fragment}"
         assert fragment in migration, f"migration lacks: {fragment}"
+
+
+def test_the_rule_arm_can_log_its_decisions() -> None:
+    schema = (ROOT / "database/schema.sql").read_text()
+    migration = (ROOT / "database/migrations/003_rule_decisions.sql").read_text()
+    allowed = "CHECK (detector IN ('llm', 'rule', 'entropy'))"
+    assert allowed in schema and allowed in migration
+    assert "DROP CONSTRAINT IF EXISTS detection_decisions_detector_check" in migration
 
 
 def test_external_database_uses_the_same_project_without_starting_postgres(
