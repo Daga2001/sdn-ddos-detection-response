@@ -21,6 +21,7 @@ from sdn_ddos.lab.detection_settings import DetectorClient
 from sdn_ddos.lab.events import EventJournal, utc_now
 from sdn_ddos.lab.measurements import checks_due
 from sdn_ddos.lab.ownership import OwnerLeases
+from sdn_ddos.lab.provenance import repository_commit, settings_fingerprint
 from sdn_ddos.lab.repository import Repository
 from sdn_ddos.lab.runtime import MininetRuntime
 
@@ -203,10 +204,16 @@ class LabManager:
         """Record which detector judged this run, so a replay shows its criteria."""
 
         experiment = request.experiment
+        code = repository_commit()
         if experiment is None:
             self.journal.emit(
                 "detection_config",
-                {"source": "observation", "forwarding": request.forwarding},
+                {
+                    "source": "observation",
+                    "forwarding": request.forwarding,
+                    "repository_commit": code["commit"],
+                    "repository_branch": code["branch"],
+                },
             )
             return
         if experiment.detection is not None:
@@ -219,8 +226,25 @@ class LabManager:
                 data = {"source": "detector-service"}
         else:
             data = {"source": "unconfigured"}
+        if experiment.detection is not None and self.detector is not None:
+            # What the detector service reports about itself (prompt text hash,
+            # Ollama version, model digest), so a frozen prompt can be checked.
+            try:
+                service = self.detector.config()
+            except ValueError:
+                service = {}
+            for key in ("prompt_sha256", "ollama_version", "model_details"):
+                if key in service:
+                    data[f"detector_{key}"] = service[key]
         data["mitigation"] = experiment.mitigation
         data["forwarding"] = request.forwarding
+        data["purpose"] = experiment.purpose
+        data["scenario"] = experiment.scenario
+        data["settings_fingerprint"] = settings_fingerprint(
+            experiment.detection, request.forwarding
+        )
+        data["repository_commit"] = code["commit"]
+        data["repository_branch"] = code["branch"]
         self.journal.emit("detection_config", data)
 
     def _persist(self, event: dict[str, Any]) -> None:

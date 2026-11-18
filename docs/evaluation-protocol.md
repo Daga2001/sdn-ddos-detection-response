@@ -111,7 +111,14 @@ the defended arms.
 
 **Data separation.** Prompt examples and entropy calibration use a
 *calibration* set of runs; every reported number comes from *held-out* runs recorded after the
-settings were frozen. The current `lab` prompt examples come from the same sessions as its
+settings were frozen. Each run records why it was made (*Run purpose* in the Experiment
+panel: `exploration`, `pilot`, `calibration`, `held_out`), its test case label (e.g. `TC-2`),
+a **settings fingerprint** (SHA-256 of the detector settings and the forwarding choice,
+`lab/provenance.py`), the repository commit and, with the LLM, the SHA-256 of the prompt
+text, the Ollama version and the model's digest and quantization. Freezing means writing
+the fingerprint of the chosen settings in the test plan; a held-out run with another
+fingerprint, or recorded before the freeze, is not counted (`scripts/compare_runs.py`
+refuses to pool it). The current `lab` prompt examples come from the same sessions as its
 evaluation set (`docs/detection-modes.md`); repeat that evaluation on new runs.
 
 ## 5. Test cases
@@ -134,6 +141,13 @@ dropped `detection`/`mitigation_requested` events, and the run was not interrupt
 (`stop_requested`).
 
 ## 6. Statistics and acceptance criteria
+
+`scripts/compare_runs.py` computes everything below from the Results tab's
+*Download results row (CSV)* files (one per run, or stacked): it keeps valid `held_out`
+runs (optionally only those after `--frozen-at`), groups them into cells (test case,
+forwarding, detector, response, traffic, attackers, rate), refuses a cell whose runs have
+different settings fingerprints, flags cells with fewer than 10 runs, and writes a
+Markdown report plus one summary row per cell (`--out`).
 
 * Continuous metrics (M5, N1, N4, S1–S4, R1, R2, T1, T2): mean and 95 % confidence interval
   (Student t) over runs, plus median and range.
