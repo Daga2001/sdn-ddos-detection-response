@@ -476,7 +476,7 @@ class EnterpriseDDoSController(app_manager.RyuApp):
 
         if not self._is_protected(row["ipv4_src"]):
             return True
-        if getattr(self, "mode", "llm") == "llm":
+        if getattr(self, "mode", "llm") in ("llm", "rule"):  # the flow-judging modes
             self.protected_flows_skipped = (
                 getattr(self, "protected_flows_skipped", 0) + 1
             )
@@ -531,7 +531,7 @@ class EnterpriseDDoSController(app_manager.RyuApp):
                 probability_value = float(probability)
                 row = rows[row_index]
                 row["prob_ddos"] = probability_value
-                if self._name_refused(row["ipv4_src"], "llm"):
+                if self._name_refused(row["ipv4_src"], getattr(self, "mode", "llm")):
                     continue  # the model's score stays on the row; nobody is named
                 row["label"] = 1
                 self.store.record_detection(
