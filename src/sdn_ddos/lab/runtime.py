@@ -170,6 +170,18 @@ class MininetRuntime:
         except queue.Full:
             self.dropped += 1
 
+    def poll_interval_seconds(self) -> str:
+        """The statistics poll this run's controller really uses.
+
+        The run's detection settings override the lab process's own environment
+        for the Ryu subprocess (see `start`), so the environment is only the answer
+        when the run carries no detection settings.
+        """
+
+        if self.detection is not None:
+            return controller_env_for(self.detection)["SDN_POLL_INTERVAL"]
+        return os.environ.get("SDN_POLL_INTERVAL", "5")
+
     def versions(self) -> dict[str, str]:
         from mininet.net import VERSION
 
@@ -180,7 +192,7 @@ class MininetRuntime:
             "mininet": VERSION,
             "ryu": package_version("ryu"),
             "repository_commit": repository_commit()["commit"],
-            "poll_interval_seconds": os.environ.get("SDN_POLL_INTERVAL", "5"),
+            "poll_interval_seconds": self.poll_interval_seconds(),
             "model_sha256": os.environ.get("DDOS_MODEL_SHA256") or "not_configured",
         }
         result["ovs"] = subprocess.check_output(
