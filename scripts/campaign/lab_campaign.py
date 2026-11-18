@@ -10,6 +10,14 @@ Runs on the VM, in the repository root, with the lab up:
   PYTHONPATH=src python3 scripts/campaign/lab_campaign.py --group L    # by group letter
   PYTHONPATH=src python3 scripts/campaign/lab_campaign.py --all
 
+The thesis campaign (groups TP, TC, TH; docs/thesis-campaign.md) runs unattended in
+randomized rounds and keeps each run's full record for the Results-tab row:
+
+  PYTHONPATH=src python3 scripts/campaign/lab_campaign.py --group TP --poll 0.5,1,5 \
+      --rounds 3 --seed 1 --records records/pilot --out pilot.jsonl
+  PYTHONPATH=src python3 scripts/campaign/lab_campaign.py --group TH --poll 1 \
+      --rounds 10 --seed 2026 --records records/held_out --out held_out.jsonl
+
 Every scenario is the same request the workspace sends (topology + experiment with its
 detection setup). The verdict is computed from the recorded events and, independently,
 from the controller's own database rows, so a lost telemetry event cannot hide a result.
@@ -19,7 +27,9 @@ Results are appended to campaign_results.jsonl and a summary table is printed.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
+import random
 import re
 import subprocess
 import sys
@@ -467,6 +477,8 @@ def request_body(scenario: Scenario, topology: dict[str, Any]) -> dict[str, Any]
         "recovery": scenario.recovery,
         "mitigation": scenario.mitigation,
         "confirm_isolated_lab": True,
+        "purpose": scenario.purpose,
+        "scenario": scenario.case,
     }
     if scenario.detection is not None:
         experiment["detection"] = scenario.detection
@@ -521,7 +533,55 @@ def expected_env(scenario: Scenario) -> dict[str, str]:
     return want
 
 
-def run_scenario(api: Api, scenario: Scenario, out: Path) -> dict[str, Any]:
+def with_poll(scenario: Scenario, seconds: float) -> Scenario:
+    """A TP/TC/TH scenario at one polling interval (the pilot compares several)."""
+    detection = dict(scenario.detection or {})
+    detection["poll_seconds"] = seconds
+    # Pilot runs at different intervals are different cells; the label says which.
+    case = (
+        f"{scenario.case}-poll{seconds:g}"
+        if scenario.purpose == "pilot"
+        else scenario.case
+    )
+    return dataclasses.replace(
+        scenario, id=f"{scenario.id}@{seconds:g}", detection=detection, case=case
+    )
+
+
+def plan(
+    chosen: list[Scenario], repeat: int, rounds: int, seed: Optional[int]
+) -> list[Scenario]:
+    """The order of the runs.
+
+    `rounds` runs every chosen scenario once per round, in an order shuffled again
+    for each round (a randomized complete block design): if the campaign stops early,
+    every scenario still has the same number of runs, and slow drifts of the machine
+    (temperature, a background update) spread over all of them instead of one.
+    """
+    if rounds <= 0:
+        return [s for s in chosen for _ in range(max(1, repeat))]
+    rng = random.Random(seed)
+    order: list[Scenario] = []
+    for _ in range(rounds):
+        block = list(chosen)
+        rng.shuffle(block)
+        order.extend(block)
+    return order
+
+
+def save_record(
+    directory: Path, run_id: str, record: Any, events: list[dict[str, Any]]
+) -> None:
+    """The run and every event, as the Results tab reads them (web/scripts/result_rows.ts)."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{run_id}.json").write_text(
+        json.dumps({"run": record, "events": events}, default=str), encoding="utf-8"
+    )
+
+
+def run_scenario(
+    api: Api, scenario: Scenario, out: Path, records: Optional[Path] = None
+) -> dict[str, Any]:
     topology = load_topology(api, scenario)
     body = request_body(scenario, topology)
     result: dict[str, Any] = {
@@ -608,6 +668,8 @@ def run_scenario(api: Api, scenario: Scenario, out: Path) -> dict[str, Any]:
     time.sleep(2)
     _, record = api.raw("GET", f"/api/runs/{run_id}")
     events = collect_events(api, run_id)
+    if records is not None:
+        save_record(records, run_id, record, events)
     db = db_rows(run_id)
     metrics = analyse(scenario, topology, events, db, rules)
     result["metrics"] = metrics
@@ -774,6 +836,26 @@ def main() -> int:
     parser.add_argument(
         "--repeat", type=int, default=1, help="run every selected scenario N times"
     )
+    parser.add_argument(
+        "--rounds",
+        type=int,
+        default=0,
+        help="run every selected scenario once per round, in a new random order each round",
+    )
+    parser.add_argument("--seed", type=int, help="seed of the random order (--rounds)")
+    parser.add_argument(
+        "--poll",
+        help="polling interval(s) in seconds for TP/TC/TH scenarios, e.g. 1 or 0.5,1,5",
+    )
+    parser.add_argument(
+        "--records",
+        help="directory where the full record (run + events) of every run is saved",
+    )
+    parser.add_argument(
+        "--dry-plan",
+        action="store_true",
+        help="print the order and the estimated time, run nothing",
+    )
     parser.add_argument("--out", default="campaign_results.jsonl")
     args = parser.parse_args()
     if args.list:
@@ -792,13 +874,40 @@ def main() -> int:
     ]
     if not chosen:
         raise SystemExit("no scenario selected; use ids, --group or --all (see --list)")
+    if any(s.needs_poll for s in chosen):
+        if not args.poll:
+            raise SystemExit(
+                "TP, TC and TH scenarios need --poll (the interval the pilot chose)"
+            )
+        polls = [float(value) for value in args.poll.split(",") if value.strip()]
+        if any(not 0.5 <= value <= 60 for value in polls):
+            raise SystemExit("--poll values must be between 0.5 and 60 s")
+        chosen = [
+            with_poll(s, value) if s.needs_poll else s
+            for s in chosen
+            for value in (polls if s.needs_poll else [0.0])
+        ]
+    order = plan(chosen, args.repeat, args.rounds, args.seed)
+    # Setup and teardown take about a minute per run on the lab VM; measure yours.
+    seconds = sum(s.baseline + s.duration + s.recovery + 60 for s in order)
+    print(
+        f"{len(order)} runs, about {seconds / 3600:.1f} h (60 s of setup per run assumed)",
+        flush=True,
+    )
+    if args.dry_plan:
+        for index, scenario in enumerate(order, 1):
+            print(f"{index:>4} {scenario.id:<16} {scenario.title}")
+        return 0
     api = Api()
     api.login()
     out = Path(args.out)
-    for scenario in [s for s in chosen for _ in range(max(1, args.repeat))]:
-        print(f"\n=== {scenario.id}: {scenario.title}", flush=True)
+    records = Path(args.records) if args.records else None
+    for index, scenario in enumerate(order, 1):
+        print(
+            f"\n=== [{index}/{len(order)}] {scenario.id}: {scenario.title}", flush=True
+        )
         try:
-            result = run_scenario(api, scenario, out)
+            result = run_scenario(api, scenario, out, records)
         except Exception as error:
             result = {
                 "id": scenario.id,

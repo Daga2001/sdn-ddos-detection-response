@@ -29,7 +29,13 @@ MAX_VICTIMS = 8
 MAX_GENERATORS = 16
 
 
-DetectionMode = Literal["llm", "entropy", "off"]
+DetectionMode = Literal["llm", "rule", "entropy", "off"]
+# Why a run was made. Prompt examples and thresholds are tuned on `calibration`
+# runs; reported numbers come only from `held_out` runs recorded after the settings
+# were frozen (Arp et al. 2022, "data snooping"). `pilot` runs choose a setting such
+# as the poll interval; `exploration` is anything else and is never reported.
+RunPurpose = Literal["exploration", "pilot", "calibration", "held_out"]
+SCENARIO_LABEL = r"^[A-Za-z0-9_.-]{0,40}$"
 ResponsePolicy = Literal["block", "rate_limit", "escalate"]
 Forwarding = Literal["per_port", "port_free"]
 MODEL_NAME = r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$"
@@ -142,6 +148,9 @@ class DetectionConfig(StrictModel):
     # also how soon a flood can be seen: both detectors work from those polls.
     poll_seconds: float = Field(default=5.0, ge=0.5, le=60)
     threshold: float = Field(default=0.8, ge=0, le=1)
+    # The packet-rate rule (mode "rule"): a judged flow at or above this many
+    # packets/s is an attack. 50 is the lab prompt's attack threshold.
+    rule_pktrate: float = Field(default=50.0, gt=0, le=1_000_000)
     entropy: EntropyParams = Field(default_factory=EntropyParams)
     response: ResponseParams = Field(default_factory=ResponseParams)
 
@@ -157,6 +166,9 @@ class Experiment(StrictModel):
     mitigation: bool = False
     confirm_isolated_lab: bool = False
     detection: Optional[DetectionConfig] = None
+    purpose: RunPurpose = "exploration"
+    # Test case the run belongs to (e.g. TC-2), so runs can be grouped into cells.
+    scenario: str = Field(default="", pattern=SCENARIO_LABEL)
 
 
 class StartRequest(StrictModel):
@@ -256,7 +268,8 @@ def validate_experiment(topology: Topology, experiment: Experiment) -> None:
         experiment.detection is not None and experiment.detection.mode == "off"
     ):
         raise ValueError(
-            "mitigation needs a detector: choose an LLM or entropy detection, "
+            "mitigation needs a detector: choose the LLM, the packet-rate rule "
+            "or entropy, "
             "or turn mitigation off"
         )
     if len(attackers) * len(victims) > MAX_GENERATORS:

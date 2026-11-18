@@ -3,7 +3,13 @@ import type { ReactNode } from "react";
 import { Field, CheckField, Hint } from "./Field";
 import { HostPicker } from "./HostPicker";
 import { legitimateClients, trafficKinds } from "./types";
-import type { Topology, Experiment, Task, TrafficKind } from "./types";
+import type {
+  Topology,
+  Experiment,
+  RunPurpose,
+  Task,
+  TrafficKind,
+} from "./types";
 
 const numberFields = {
   rate: {
@@ -242,6 +248,44 @@ export function ExperimentPanel({
               </Field>
             ),
           )}
+        </div>
+        <div className="field-pair">
+          <Field
+            label="Run purpose"
+            hint="Calibration runs tune the prompt examples and thresholds; held-out runs, recorded after those settings are frozen, are the only ones reported. Pilot runs choose a setting such as the poll interval. Exploration runs are never reported."
+          >
+            <select
+              value={experiment.purpose}
+              onChange={(e) =>
+                setExperiment({
+                  ...experiment,
+                  purpose: e.target.value as RunPurpose,
+                })
+              }
+            >
+              <option value="exploration">Exploration</option>
+              <option value="pilot">Pilot</option>
+              <option value="calibration">Calibration</option>
+              <option value="held_out">Held-out (reported)</option>
+            </select>
+          </Field>
+          <Field
+            label="Test case"
+            hint="Label of the test case this run belongs to, e.g. TC-2, so runs can be grouped. Letters, digits, '.', '_' and '-', up to 40."
+          >
+            <input
+              type="text"
+              maxLength={40}
+              pattern="[A-Za-z0-9_.\-]*"
+              value={experiment.scenario}
+              onChange={(e) =>
+                setExperiment({
+                  ...experiment,
+                  scenario: e.target.value.replace(/[^A-Za-z0-9_.-]/g, ""),
+                })
+              }
+            />
+          </Field>
         </div>
         <CheckField
           className="confirmation"

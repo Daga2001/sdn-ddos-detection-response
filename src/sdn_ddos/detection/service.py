@@ -1,9 +1,10 @@
-"""One container, two detectors, never mixed: the DDoS detection service.
+"""One container, three detectors, never mixed: the DDoS detection service.
 
-Hosts both mechanisms behind a single authenticated HTTP API so the lab's
+Hosts the mechanisms behind a single authenticated HTTP API so the lab's
 runner can reach them with the contract it already speaks:
 
-    POST /predict          LLM detector (same contract as detection.api)
+    POST /predict          LLM detector (same contract as detection.api), or the
+                           packet-rate rule that is its comparison arm (rule.py)
     POST /entropy/observe  entropy detector (one adaptive state per run)
     GET  /health           unauthenticated readiness probe used by the lab
     GET  /config, PUT /config, GET /models   choose the active mode/LLM
@@ -11,12 +12,13 @@ runner can reach them with the contract it already speaks:
 
 Only the *active* mode answers; the other detector's route returns 409. The
 service is stateless with respect to storage: the controller records decisions.
-Detector logic is reused from llm_api.py and entropy.py without changes.
+Detector logic is reused from llm_api.py, rule.py and entropy.py without changes.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import logging
 import os
 import secrets
@@ -40,8 +42,16 @@ from sdn_ddos.detection.llm_api import (
     PredictResponse,
     judge_sample,
 )
+from sdn_ddos.detection.rule import (
+    MAX_RULE_PKTRATE,
+    judge_by_rate,
+    rule_threshold_from_env,
+)
 
-Mode = Literal["llm", "entropy", "off"]
+Mode = Literal["llm", "rule", "entropy", "off"]
+MODES = ("llm", "rule", "entropy", "off")
+# Modes that judge the controller's flow samples through POST /predict.
+FLOW_MODES = ("llm", "rule")
 Policy = Literal["block", "rate_limit", "escalate"]
 LOGGER = logging.getLogger(__name__)
 HEALTH_CACHE_SECONDS = 5.0
@@ -147,6 +157,7 @@ class ConfigUpdate(BaseModel):
     response: Optional[Policy] = None
     dry_run: Optional[bool] = None
     entropy: Optional[EntropyUpdate] = None
+    rule_pktrate: Optional[float] = Field(default=None, gt=0, le=MAX_RULE_PKTRATE)
 
 
 class DetectorService:
@@ -159,12 +170,13 @@ class DetectorService:
         http: Optional[requests.Session] = None,
         warm: bool = False,
     ) -> None:
-        if mode not in ("llm", "entropy", "off"):
-            raise ValueError(f"mode must be llm, entropy or off, got {mode!r}")
+        if mode not in MODES:
+            raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
         self.settings = settings
         self.mode: str = mode
         self.model: str = settings.model
         self.prompt: str = settings.prompt_profile
+        self.rule_pktrate: float = rule_threshold_from_env()
         policy = os.environ.get("SDN_RESPONSE_POLICY", "block").strip().lower()
         if policy not in ("block", "rate_limit", "escalate"):
             raise ValueError(f"SDN_RESPONSE_POLICY is not valid: {policy!r}")
@@ -240,6 +252,43 @@ class DetectorService:
         return self.settings.model_copy(
             update={"model": self.model, "prompt_profile": self.prompt}
         )
+
+    def provenance(self, timeout: float = 1.0) -> Dict[str, Any]:
+        """What a run must record to be reproduced: the exact prompt text and, with
+        the LLM, the Ollama version and the model's digest and quantization."""
+
+        result: Dict[str, Any] = {
+            "prompt_sha256": hashlib.sha256(
+                PROMPTS.get(self.prompt, "").encode("utf-8")
+            ).hexdigest()
+        }
+        if self.mode != "llm":
+            return result
+        try:
+            version = self.http.get(
+                f"{self.settings.base_url}/api/version", timeout=timeout
+            )
+            version.raise_for_status()
+            result["ollama_version"] = str(version.json().get("version", "unknown"))
+        except (requests.RequestException, KeyError, ValueError, AttributeError):
+            result["ollama_version"] = "unknown"
+        try:
+            tags = self.http.get(f"{self.settings.base_url}/api/tags", timeout=timeout)
+            tags.raise_for_status()
+            for item in tags.json().get("models", []):
+                if item.get("name") == self.model:
+                    details = item.get("details") or {}
+                    result["model_details"] = {
+                        "digest": item.get("digest", "unknown"),
+                        "quantization_level": details.get(
+                            "quantization_level", "unknown"
+                        ),
+                        "parameter_size": details.get("parameter_size", "unknown"),
+                        "format": details.get("format", "unknown"),
+                    }
+        except (requests.RequestException, KeyError, ValueError, AttributeError):
+            pass
+        return result
 
     def installed_models(self, timeout: float) -> List[str]:
         response = self.http.get(f"{self.settings.base_url}/api/tags", timeout=timeout)
@@ -336,11 +385,12 @@ def create_app(
         if x_api_key is None or not secrets.compare_digest(x_api_key, resolved.api_key):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "unauthorized")
 
-    def require_mode(expected: str) -> None:
-        if service.mode != expected:
+    def require_mode(*expected: str) -> None:
+        if service.mode not in expected:
+            wanted = " or ".join(repr(mode) for mode in expected)
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
-                f"detection mode is {service.mode!r}; {expected!r} is not active",
+                f"detection mode is {service.mode!r}; {wanted} is not active",
             )
 
     @application.get("/health")
@@ -357,11 +407,13 @@ def create_app(
             "model": service.model,
             "prompt": service.prompt,
             "prompts": sorted(PROMPTS),
+            "rule_pktrate": service.rule_pktrate,
             "response": service.response,
             "dry_run": service.dry_run,
             "ollama_url": resolved.base_url,
             "entropy_runs": len(service._runs),
             "entropy": service.entropy_settings(),
+            **service.provenance(),
         }
 
     @application.put("/config")
@@ -395,6 +447,8 @@ def create_app(
             service.response = update.response
         if update.dry_run is not None:
             service.dry_run = update.dry_run
+        if update.rule_pktrate is not None:
+            service.rule_pktrate = update.rule_pktrate
         if update.entropy is not None:
             # A complete set replaces the previous overrides; fields left out fall
             # back to the environment defaults.
@@ -420,6 +474,7 @@ def create_app(
             "prompt": service.prompt,
             "response": service.response,
             "dry_run": service.dry_run,
+            "rule_pktrate": service.rule_pktrate,
         }
 
     @application.get("/models")
@@ -448,17 +503,23 @@ def create_app(
         x_api_key: Optional[str] = Header(default=None, alias="X-Api-Key"),
     ) -> PredictResponse:
         authorize(x_api_key)
-        require_mode("llm")
+        require_mode(*FLOW_MODES)
         if not payload.samples:
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
                 "samples must contain at least 1 item",
             )
-        llm = service.llm_settings()
         started = time.thread_time()
-        predictions = [
-            judge_sample(sample, llm, service.http) for sample in payload.samples
-        ]
+        if service.mode == "rule":
+            threshold = service.rule_pktrate
+            predictions = [
+                judge_by_rate(sample, threshold) for sample in payload.samples
+            ]
+        else:
+            llm = service.llm_settings()
+            predictions = [
+                judge_sample(sample, llm, service.http) for sample in payload.samples
+            ]
         service.count_decision(time.thread_time() - started, len(payload.samples))
         return PredictResponse(predictions=predictions)
 
