@@ -67,7 +67,9 @@ bash scripts/last_run_report.sh [run_id]   # phases, who was flagged, decisions
 * Decisions are written by the controller to `detection_decisions` in the lab
   PostgreSQL (`postgres` container, no Neon). Fresh databases get the table
   from `database/schema.sql`; apply
-  `database/migrations/001_detection_decisions.sql` to a database created before.
+  `database/migrations/001_detection_decisions.sql` to a database created before. Then apply
+  `database/migrations/003_rule_decisions.sql`, which lets the packet-rate rule arm
+  log its decisions as detector `rule`.
 * Safe lab defaults: prompt `lab` and `SDN_RESPONSE_DRY_RUN=true`, so a mitigated
   run records what it *would* do and enforces nothing. `detector.sh status` then
   shows `"prompt": "lab"` and `"dry_run": true`. Enable enforcement explicitly

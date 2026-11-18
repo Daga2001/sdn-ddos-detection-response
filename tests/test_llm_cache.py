@@ -202,6 +202,49 @@ def test_every_model_call_is_timed_and_cached_verdicts_are_counted_apart(
     assert controller.decisions.rows[0]["latency_ms"] == pytest.approx(400.0)
 
 
+def test_the_rule_arm_costs_and_logs_as_the_rule_with_the_detector_usage(
+    controller: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller.mode = "rule"
+    controller.settings = SimpleNamespace(
+        detection_threshold=0.8, inference_api_key="secret"
+    )
+    controller._detector_base = "http://detector:8000"
+    controller.llm_skipped = 0
+    clock = iter([10.0, 10.5, 20.0, 22.0])
+    monkeypatch.setattr(app_modes.time, "monotonic", lambda: next(clock))
+    cpu = iter([1.0, 2.0])
+    monkeypatch.setattr(
+        app_modes,
+        "fetch_usage",
+        lambda base, key: {"cpu_seconds": next(cpu), "rss_bytes": 1048576.0},
+    )
+    controller._predict([sample(300.0, 500), sample(2.0, 20)])
+    controller._sample_usage()
+    controller._sample_usage()
+    costs = [
+        data for kind, data in controller.telemetry.items if kind == "decision_cost"
+    ]
+    assert [c["detector"] for c in costs] == ["rule"]
+    assert {row["detector"] for row in controller.decisions.rows} == {"rule"}
+    row = controller._extra_resources()
+    assert row["detector"] == "rule" and row["decisions_total"] == 2
+    assert row["detector_rss_bytes"] == 1048576
+    assert row["detector_cpu_percent"] == 50.0
+
+
+def test_the_detection_mode_comes_from_the_detector_service_rule_included(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SDN_DETECTION_MODE", "entropy")  # the service must win
+    for served in app_modes.MODES:
+        assert app_modes.detection_mode({"mode": served}) == served
+    assert app_modes.detection_mode(None) == "entropy"  # no service: the environment
+    monkeypatch.setenv("SDN_DETECTION_MODE", "nonsense")
+    with pytest.raises(ValueError):
+        app_modes.detection_mode(None)
+
+
 def test_a_failed_model_call_still_costs_its_time(
     controller: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
