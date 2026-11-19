@@ -1,4 +1,4 @@
-"""The thesis campaign (TP/TC/TH): requests the lab accepts, in balanced rounds."""
+"""The thesis campaign (TH): requests the lab accepts, in balanced rounds."""
 
 from __future__ import annotations
 
@@ -83,3 +83,31 @@ def test_phases_fit_the_fast_entropy_warm_up() -> None:
         if (s.detection or {}).get("mode") == "entropy":
             e = s.detection["entropy"]
             assert e["window_seconds"] * e["warmup_windows"] + 40 <= s.baseline
+
+
+def test_runner_container_override_and_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lab_campaign.runner_container.cache_clear()
+    monkeypatch.setenv("SDN_LAB_RUNNER_CONTAINER", "my-runner")
+    assert lab_campaign.runner_container() == "my-runner"
+
+    lab_campaign.runner_container.cache_clear()
+    monkeypatch.delenv("SDN_LAB_RUNNER_CONTAINER")
+
+    def no_docker(*_args: object, **_kwargs: object) -> object:
+        raise OSError("docker not installed")
+
+    monkeypatch.setattr(lab_campaign.subprocess, "run", no_docker)
+    # The current Compose project, never the retired sdn-lab one.
+    assert lab_campaign.runner_container() == "sdn-ddos-detection-response-runner-1"
+    lab_campaign.runner_container.cache_clear()
+
+
+def test_campaign_refuses_to_start_without_the_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(lab_campaign, "runner", lambda *_a, **_k: "")
+    monkeypatch.setattr(sys, "argv", ["lab_campaign.py", "TH1-none", "--poll", "1"])
+    with pytest.raises(SystemExit, match="cannot reach the lab runner"):
+        lab_campaign.main()
