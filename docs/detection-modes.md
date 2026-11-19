@@ -454,6 +454,44 @@ judged in the background, see above, so a slow model delays detections, not the 
 The prompt is in `llm_api.py` (`PROMPT_TEMPLATE`); compare models on the same
 samples with `scripts/compare_llms.py`.
 
+### Cloud backend (optional)
+
+When Ollama is not available, the detector can send the same prompt to a hosted copy
+of the model through an OpenAI-compatible Chat Completions API. Ollama remains the
+default, and the thesis runs use Ollama only.
+
+```bash
+# .env (git-ignored; never commit keys)
+SDN_LLM_BACKEND=cloud
+SDN_LLM_CLOUD_URL=https://openrouter.ai/api/v1          # primary
+SDN_LLM_CLOUD_MODEL=meta-llama/llama-3.2-3b-instruct
+SDN_LLM_CLOUD_KEY=<OpenRouter key>
+SDN_LLM_CLOUD_PROVIDER=                                 # optional: pin one OpenRouter provider
+SDN_LLM_CLOUD_FALLBACK_URL=https://api.groq.com/openai/v1
+SDN_LLM_CLOUD_FALLBACK_MODEL=                           # empty = no fallback
+SDN_LLM_CLOUD_FALLBACK_KEY=<Groq key>
+docker compose up -d detector
+```
+
+How it behaves:
+
+* **Same request as Ollama:** the same prompt, `temperature` 0, `seed` 42, a JSON answer
+  (`response_format: json_object`). A hosted service may not honour the seed, and its
+  hardware and quantization are unknown.
+* **Fallback:** the fallback answers only when the primary fails. Groq no longer
+  serves Llama 3.2 3B, so a Groq fallback answers with *another model*, which must be
+  named explicitly in `SDN_LLM_CLOUD_FALLBACK_MODEL`. `GET /usage` counts which
+  endpoint and model answered (`cloud_answers`) and how many judgments failed. A
+  failed judgment is "not an attack", as with Ollama.
+* **Never pooled with Ollama runs:** in cloud mode the detector accepts only the
+  configured cloud model names, so a run that asks for `llama3.2:3b` (every thesis
+  scenario) is refused. Cloud runs therefore carry another model name and another
+  settings fingerprint. Each run also records `detector_llm_backend` and
+  `detector_cloud_endpoints` (without keys).
+* **Cost is not comparable:** the time per decision includes the internet round trip,
+  and the model's compute happens on the provider's hardware. Do not compare it with
+  the Ollama cost figures.
+
 ## Robustness fixes over the baseline controller
 
 Found while attacking the lab (they only live in the subclass):

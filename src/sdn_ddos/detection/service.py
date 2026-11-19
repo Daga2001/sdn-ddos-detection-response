@@ -198,11 +198,25 @@ class DetectorService:
         self._decision_cpu = 0.0
         self._decision_calls = 0
         self._cost_lock = threading.Lock()
+        # Cloud backend only: which endpoint and model answered ("name:model"), and
+        # how many judgments failed, since the service started.
+        self._cloud_answers: Dict[str, int] = {}
 
-    def count_decision(self, cpu_seconds: float, decisions: int) -> None:
+    def count_decision(
+        self,
+        cpu_seconds: float,
+        decisions: int,
+        answers: Optional[Dict[str, int]] = None,
+    ) -> None:
         with self._cost_lock:
             self._decision_cpu += max(0.0, cpu_seconds)
             self._decision_calls += decisions
+            for key, count in (answers or {}).items():
+                self._cloud_answers[key] = self._cloud_answers.get(key, 0) + count
+
+    @property
+    def is_cloud(self) -> bool:
+        return self.settings.backend == "cloud"
 
     def usage(self) -> Dict[str, Any]:
         """CPU seconds used so far and resident memory of this service process.
@@ -220,11 +234,15 @@ class DetectorService:
             "rss_bytes": int(self._process.memory_info().rss),
             "decision_cpu_seconds": round(self._decision_cpu, 6),
             "decision_calls": self._decision_calls,
+            "llm_backend": self.settings.backend,
+            "cloud_answers": dict(self._cloud_answers),
         }
 
     def warm_model(self) -> bool:
         """Load the model into Ollama's memory; a cold load can exceed call timeouts."""
 
+        if self.is_cloud:  # a hosted model has nothing to load
+            return True
         try:
             response = self.http.post(
                 f"{self.settings.base_url}/api/generate",
@@ -240,7 +258,7 @@ class DetectorService:
     def maybe_warm(self, force: bool = False) -> None:
         """Warm the active LLM in the background when it may have been unloaded."""
 
-        if not (self.warm_enabled and self.mode == "llm"):
+        if not (self.warm_enabled and self.mode == "llm") or self.is_cloud:
             return
         now = time.monotonic()
         if not force and now - self._last_warm < WARM_INTERVAL_SECONDS:
@@ -263,6 +281,13 @@ class DetectorService:
             ).hexdigest()
         }
         if self.mode != "llm":
+            return result
+        result["llm_backend"] = self.settings.backend
+        if self.is_cloud:
+            # Endpoints without their keys; a hosted model has no local digest.
+            result["cloud_endpoints"] = [
+                endpoint.public() for endpoint in self.settings.cloud_order()
+            ]
             return result
         try:
             version = self.http.get(
@@ -291,6 +316,10 @@ class DetectorService:
         return result
 
     def installed_models(self, timeout: float) -> List[str]:
+        if self.is_cloud:
+            # Only the configured cloud models; the Ollama tag is refused, so a run
+            # cannot silently judge with the cloud under the local model's name.
+            return self.settings.cloud_models()
         response = self.http.get(f"{self.settings.base_url}/api/tags", timeout=timeout)
         response.raise_for_status()
         return [item["name"] for item in response.json().get("models", [])]
@@ -343,15 +372,19 @@ class DetectorService:
             backend_ok = True
         if model_loaded:
             self.maybe_warm()
-        result = {
+        result: Dict[str, Any] = {
             "status": "ready" if backend_ok and authenticated else "not_ready",
             "mode": self.mode,
             "model": self.model,
             "model_loaded": model_loaded,
             "authentication_configured": authenticated,
-            "backend": "ollama" if self.mode == "llm" else self.mode,
+            "backend": self.settings.backend if self.mode == "llm" else self.mode,
             "ollama_url": self.settings.base_url,
         }
+        if self.is_cloud and self.mode == "llm":
+            result["cloud_endpoints"] = [
+                endpoint.public() for endpoint in self.settings.cloud_order()
+            ]
         self._health, self._health_at = result, now
         return result
 
@@ -517,9 +550,15 @@ def create_app(
             ]
         else:
             llm = service.llm_settings()
+            answers: Dict[str, int] = {}
             predictions = [
-                judge_sample(sample, llm, service.http) for sample in payload.samples
+                judge_sample(sample, llm, service.http, answers)
+                for sample in payload.samples
             ]
+            service.count_decision(
+                time.thread_time() - started, len(payload.samples), answers
+            )
+            return PredictResponse(predictions=predictions)
         service.count_decision(time.thread_time() - started, len(payload.samples))
         return PredictResponse(predictions=predictions)
 

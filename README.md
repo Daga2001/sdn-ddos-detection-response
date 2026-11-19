@@ -208,6 +208,7 @@ entry here, its test, and the thesis report.
 | 11 | Wilson intervals for proportions, Mann–Whitney U for comparisons | Small samples, no normality assumed (Wilson 1927; Brown et al. 2001) | `src/sdn_ddos/analysis/compare.py` |
 | 12 | TC-1 emulates a hardware flow table of 1 500 rules (`flow_limit`, `overflow_policy=refuse`) | Open vSwitch keeps rules in RAM with no small limit; 1 500 is the HP ProCurve 5406zl table measured by Kuźniar et al. (PAM 2015) | `lab/runtime.py` (`flow_limit_command`) |
 | 13 | Thesis campaign phases 75/60/60 s with the fast-reaction entropy preset (1 s windows, 30 warm-up) and 1 s polling | Fits 180 runs in one day; warm-up 30 s + 40 s margin; 1 s polling kept the service at 100 % in development (26–37 % at 5 s) | `scripts/campaign/scenarios.py`; `docs/thesis-campaign.md` |
+| 14 | Optional cloud LLM backend (OpenAI-compatible; OpenRouter primary, explicit-model fallback), Ollama stays the default and the only thesis backend | Lets the lab run without a local GPU; cloud runs use another model name, so they get another settings fingerprint and are never pooled with Ollama runs; their cost includes the internet round trip | `detection/llm_api.py` (`query_cloud_chain`); `docs/detection-modes.md` |
 
 ## Repository map
 
