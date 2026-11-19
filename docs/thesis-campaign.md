@@ -19,7 +19,7 @@ measurement it comes from. Where no standard prescribes a value, it says so.
 | Calibration `TC` | 12 runs, 6 on TC-3 and 6 on TC-5 (`records/calibration`). No setting changed afterwards. |
 | Freeze | 2026-11-18T14:11:20Z, commit `fee8ae6` (branch `campana-18nov`, PR #39) |
 | Held-out `TH` | 170 runs, 10 rounds. Seeds 2026 (rounds 1–4, the last completed with seed 2030), 2031, 2032 and 2033. 4 runs failed (TH2-llm, TH4-llm, TH5-llm, TH5-rule). |
-| Completion | one extra round of those four cells, and TC-1 (section 2b) |
+| Completion | one extra round of those four cells, and TC-1, from `main` (section 2b) |
 
 ## 1. Order of work and time
 
@@ -95,24 +95,28 @@ place by hand: the next round gives the cell its next run. Report how many were 
 
 ## 2b. Completing the campaign (after the 170 runs)
 
-1. **Extra round** of the four cells with 9 valid runs, from branch `campana-18nov`
-   (commit `fee8ae6`, the code of the 170 runs):
+Both additions run from `main` (merge of `campana-18nov`, PR #40). On `main`, the
+cells of the 170 runs give the same settings fingerprints and phases as recorded
+(checked for every cell of the extra round). The code that differs from `fee8ae6` is
+off for these runs: the optional cloud backend and the flow-table limit, which only
+TC-1 uses. The lab bakes the code into its images, so rebuild them first:
 
-   ```bash
-   PYTHONPATH=src python3 scripts/campaign/lab_campaign.py --poll 1 --rounds 1 --seed 2034 \
-     --records records/held_out_extra --out held_out_extra.jsonl \
-     TH2-llm TH4-llm TH5-llm TH5-rule
-   ```
+```bash
+git checkout main && git pull
+docker compose up -d --build
+set -a; . ./.env; set +a; export SDN_GIT_COMMIT=$(git rev-parse HEAD)
 
-2. **TC-1** (table 0 of every switch limited to 1 500 rules), 10 runs, from `main`. The
-   table limit exists only on `main`; the cells of the 170 runs give the same settings
-   fingerprints there, and TH1-none has the same phases as TH2-none (180/120/120 s):
+# 1. extra round of the four cells with 9 valid runs (about 35 min)
+PYTHONPATH=src python3 scripts/campaign/lab_campaign.py --poll 1 --rounds 1 --seed 2034 \
+  --records records/held_out_extra --out held_out_extra.jsonl \
+  TH2-llm TH4-llm TH5-llm TH5-rule
 
-   ```bash
-   git checkout main && git pull
-   PYTHONPATH=src python3 scripts/campaign/lab_campaign.py --poll 1 --rounds 10 --seed 2035 \
-     --records records/held_out_tc1 --out held_out_tc1.jsonl TH1-none
-   ```
+# 2. TC-1: table 0 of every switch limited to 1 500 rules, 10 runs (about 80 min)
+PYTHONPATH=src python3 scripts/campaign/lab_campaign.py --poll 1 --rounds 10 --seed 2035 \
+  --records records/held_out_tc1 --out held_out_tc1.jsonl TH1-none
+```
+
+The report states that these 20 runs used the commit of `main`, not `fee8ae6`.
 
 ## 3. Design and its basis
 
