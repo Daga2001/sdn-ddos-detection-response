@@ -25,7 +25,7 @@ import json
 import logging
 import os
 import secrets
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import requests
 from fastapi import FastAPI, Header, HTTPException, Request, status
@@ -65,6 +65,67 @@ class PredictResponse(BaseModel):
     predictions: List[PredictItem]
 
 
+# Optional cloud backend (SDN_LLM_BACKEND=cloud): the same prompt sent to a hosted
+# copy of the model through an OpenAI-compatible Chat Completions API. Ollama stays
+# the default; the thesis runs use Ollama only.
+CLOUD_DEFAULT_URL = "https://openrouter.ai/api/v1"
+CLOUD_DEFAULT_MODEL = "meta-llama/llama-3.2-3b-instruct"
+CLOUD_FALLBACK_DEFAULT_URL = "https://api.groq.com/openai/v1"
+BACKENDS = ("ollama", "cloud")
+
+
+class CloudEndpoint(BaseModel):
+    """One OpenAI-compatible service. The key is never reported or logged."""
+
+    name: str
+    base_url: str
+    model: str
+    api_key: str = Field(default="", repr=False)
+    # OpenRouter only: pin one upstream provider (e.g. "parasail") so every call is
+    # served by the same deployment; empty lets OpenRouter route the call.
+    provider: str = ""
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.base_url and self.model and self.api_key)
+
+    def public(self) -> Dict[str, str]:
+        return {
+            "name": self.name,
+            "base_url": self.base_url,
+            "model": self.model,
+            "provider": self.provider,
+        }
+
+
+def cloud_endpoints_from_env() -> List[CloudEndpoint]:
+    """Primary (OpenRouter by default) and an optional fallback, in that order.
+
+    The fallback has no default model: Groq, its default URL, no longer serves
+    Llama 3.2 3B, so a fallback always names its model explicitly and answers only
+    when the primary fails (each such answer is counted and logged).
+    """
+
+    endpoints = [
+        CloudEndpoint(
+            name="primary",
+            base_url=os.environ.get("SDN_LLM_CLOUD_URL", CLOUD_DEFAULT_URL).rstrip("/"),
+            model=os.environ.get("SDN_LLM_CLOUD_MODEL", CLOUD_DEFAULT_MODEL),
+            api_key=os.environ.get("SDN_LLM_CLOUD_KEY", ""),
+            provider=os.environ.get("SDN_LLM_CLOUD_PROVIDER", ""),
+        ),
+        CloudEndpoint(
+            name="fallback",
+            base_url=os.environ.get(
+                "SDN_LLM_CLOUD_FALLBACK_URL", CLOUD_FALLBACK_DEFAULT_URL
+            ).rstrip("/"),
+            model=os.environ.get("SDN_LLM_CLOUD_FALLBACK_MODEL", ""),
+            api_key=os.environ.get("SDN_LLM_CLOUD_FALLBACK_KEY", ""),
+        ),
+    ]
+    return [endpoint for endpoint in endpoints if endpoint.configured]
+
+
 class OllamaSettings(BaseModel):
     """Where to reach the LLM and how long to wait for it."""
 
@@ -74,18 +135,42 @@ class OllamaSettings(BaseModel):
     api_key: str = ""
     # Which prompt calibration to use (see PROMPTS): "insdn" is the dataset one.
     prompt_profile: str = "insdn"
+    backend: Literal["ollama", "cloud"] = "ollama"
+    cloud: List[CloudEndpoint] = Field(default_factory=list)
 
     @classmethod
     def from_env(cls) -> "OllamaSettings":
+        backend = os.environ.get("SDN_LLM_BACKEND", "ollama").strip().lower()
+        if backend not in BACKENDS:
+            raise ValueError(
+                f"SDN_LLM_BACKEND must be one of {BACKENDS}, got {backend!r}"
+            )
+        cloud = cloud_endpoints_from_env() if backend == "cloud" else []
+        model = os.environ.get("SDN_LLM_MODEL", "llama3.2:3b")
+        if backend == "cloud":
+            # The run's model must be a cloud model name, never the Ollama tag, so
+            # cloud runs get their own settings fingerprint.
+            model = cloud[0].model if cloud else CLOUD_DEFAULT_MODEL
         return cls(
             base_url=os.environ.get("SDN_LLM_OLLAMA_URL", "http://192.168.83.1:11434"),
-            model=os.environ.get("SDN_LLM_MODEL", "llama3.2:3b"),
+            model=model,
             timeout_seconds=float(os.environ.get("SDN_LLM_TIMEOUT_SECONDS", "10")),
             prompt_profile=os.environ.get("SDN_LLM_PROMPT", "insdn"),
             # Reuses the same key the controller already sends so no new
             # secret is needed in .env when switching services.
             api_key=os.environ.get("DDOS_API_KEY", ""),
+            backend=backend,  # type: ignore[arg-type]
+            cloud=cloud,
         )
+
+    def cloud_order(self) -> List[CloudEndpoint]:
+        """The endpoint serving the selected model first, the others after it."""
+
+        first = [e for e in self.cloud if e.model == self.model]
+        return first + [e for e in self.cloud if e.model != self.model]
+
+    def cloud_models(self) -> List[str]:
+        return list(dict.fromkeys(e.model for e in self.cloud))
 
 
 PROMPT_TEMPLATE = """Sos un clasificador de trafico de red. Decidis UNICAMENTE con la tasa de \
@@ -195,11 +280,103 @@ def _as_confidence(value: Any) -> float:
     return confidence
 
 
-def query_llm(
-    sample: PredictSample, settings: OllamaSettings, http: requests.Session
-) -> Tuple[bool, float]:
-    """One Ollama call. Returns (is_ddos, confidence); raises on any failure."""
+def _verdict_from_text(text: str) -> Tuple[bool, float]:
+    """Parse the JSON verdict; hosted models sometimes wrap it in a code fence."""
 
+    body = text.strip()
+    if body.startswith("```"):
+        body = body.strip("`").strip()
+        if body.lower().startswith("json"):
+            body = body[4:].strip()
+    verdict = json.loads(body)
+    return _as_bool(verdict["is_ddos"]), _as_confidence(verdict["confidence"])
+
+
+def query_cloud(
+    sample: PredictSample,
+    endpoint: CloudEndpoint,
+    settings: OllamaSettings,
+    http: requests.Session,
+) -> Tuple[bool, float]:
+    """One Chat Completions call to an OpenAI-compatible service."""
+
+    body: Dict[str, Any] = {
+        "model": endpoint.model,
+        "messages": [
+            {"role": "user", "content": build_prompt(sample, settings.prompt_profile)}
+        ],
+        # Same decoding as the Ollama call; a hosted service may still not honour
+        # the seed, which is one reason cloud runs are never pooled with Ollama runs.
+        "temperature": 0,
+        "seed": 42,
+        "max_tokens": 200,
+        "response_format": {"type": "json_object"},
+    }
+    if endpoint.provider:
+        body["provider"] = {"order": [endpoint.provider], "allow_fallbacks": False}
+    response = http.post(
+        f"{endpoint.base_url}/chat/completions",
+        json=body,
+        headers={"Authorization": f"Bearer {endpoint.api_key}"},
+        timeout=settings.timeout_seconds,
+    )
+    response.raise_for_status()
+    return _verdict_from_text(response.json()["choices"][0]["message"]["content"])
+
+
+CloudAnswers = Dict[str, int]
+
+
+def query_cloud_chain(
+    sample: PredictSample,
+    settings: OllamaSettings,
+    http: requests.Session,
+    answers: Optional[CloudAnswers] = None,
+) -> Tuple[bool, float]:
+    """Try the endpoints in order; count which one answered ("name:model")."""
+
+    endpoints = settings.cloud_order()
+    if not endpoints:
+        raise ValueError("cloud backend has no configured endpoint")
+    last: Optional[Exception] = None
+    for index, endpoint in enumerate(endpoints):
+        try:
+            verdict = query_cloud(sample, endpoint, settings, http)
+        except (
+            requests.RequestException,
+            KeyError,
+            IndexError,
+            ValueError,
+            TypeError,
+        ) as exc:
+            LOGGER.warning("cloud endpoint %s failed: %s", endpoint.name, exc)
+            last = exc
+            continue
+        if index > 0:
+            LOGGER.warning(
+                "verdict answered by %s (%s), not by %s",
+                endpoint.name,
+                endpoint.model,
+                endpoints[0].name,
+            )
+        if answers is not None:
+            key = f"{endpoint.name}:{endpoint.model}"
+            answers[key] = answers.get(key, 0) + 1
+        return verdict
+    assert last is not None
+    raise last
+
+
+def query_llm(
+    sample: PredictSample,
+    settings: OllamaSettings,
+    http: requests.Session,
+    answers: Optional[CloudAnswers] = None,
+) -> Tuple[bool, float]:
+    """One LLM call. Returns (is_ddos, confidence); raises on any failure."""
+
+    if settings.backend == "cloud":
+        return query_cloud_chain(sample, settings, http, answers)
     response = http.post(
         f"{settings.base_url}/api/generate",
         json={
@@ -229,24 +406,30 @@ def to_prediction(is_ddos: bool, confidence: float) -> PredictItem:
 
 
 def judge_sample(
-    sample: PredictSample, settings: OllamaSettings, http: requests.Session
+    sample: PredictSample,
+    settings: OllamaSettings,
+    http: requests.Session,
+    answers: Optional[CloudAnswers] = None,
 ) -> PredictItem:
-    """Ask Ollama for a verdict on one flow. Fails safe (not-DDoS) on any error.
+    """Ask the LLM for a verdict on one flow. Fails safe (not-DDoS) on any error.
 
     A parsing/network failure here must never be mistaken for "confirmed
     attack" -- the LLM has the final word only when it actually answers.
     """
 
     try:
-        is_ddos, confidence = query_llm(sample, settings, http)
+        is_ddos, confidence = query_llm(sample, settings, http, answers)
     except (
         requests.RequestException,
         KeyError,
+        IndexError,
         ValueError,
         TypeError,
         json.JSONDecodeError,
     ) as exc:
         LOGGER.error("LLM judgment failed, defaulting to not-DDoS: %s", exc)
+        if answers is not None:
+            answers["failed"] = answers.get("failed", 0) + 1
         return PredictItem(pred_label=0, prob_ddos=0.0)
     return to_prediction(is_ddos, confidence)
 
@@ -262,18 +445,21 @@ def create_app(settings: Optional[OllamaSettings] = None) -> FastAPI:
 
     @application.get("/health")
     def health() -> Dict[str, Any]:
-        try:
-            tags = http.get(f"{resolved.base_url}/api/tags", timeout=3)
-            tags.raise_for_status()
-            models = [m["name"] for m in tags.json().get("models", [])]
-            model_loaded = resolved.model in models
-        except (requests.RequestException, KeyError, ValueError):
-            model_loaded = False
+        if resolved.backend == "cloud":
+            model_loaded = resolved.model in resolved.cloud_models()
+        else:
+            try:
+                tags = http.get(f"{resolved.base_url}/api/tags", timeout=3)
+                tags.raise_for_status()
+                models = [m["name"] for m in tags.json().get("models", [])]
+                model_loaded = resolved.model in models
+            except (requests.RequestException, KeyError, ValueError):
+                model_loaded = False
         return {
             "status": "ready" if model_loaded and resolved.api_key else "not_ready",
             "model_loaded": model_loaded,
             "authentication_configured": bool(resolved.api_key),
-            "backend": "ollama",
+            "backend": resolved.backend,
             "model": resolved.model,
             "ollama_url": resolved.base_url,
         }
