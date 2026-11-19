@@ -138,6 +138,8 @@ export type Experiment = {
   purpose: RunPurpose;
   /** Test case the run belongs to (e.g. TC-2), to group runs into cells. */
   scenario: string;
+  /** Emulated hardware flow table (TC-1): rules per switch table; null = no limit. */
+  flow_table_limit: number | null;
 };
 export type RunPurpose = "exploration" | "pilot" | "calibration" | "held_out";
 
@@ -300,6 +302,7 @@ export const emptyExperiment: Experiment = {
   detection: null,
   purpose: "exploration",
   scenario: "",
+  flow_table_limit: null,
 };
 
 /**

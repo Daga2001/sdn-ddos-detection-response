@@ -1,192 +1,122 @@
 # Final campaign of the thesis
 
-This is the procedure for the runs reported in the final report (chapters 3 and 4).
-It runs unattended: `scripts/campaign/lab_campaign.py` sends exactly the request the
-workspace sends, waits for each run, and keeps its full record. Nothing has to be typed
-into the forms during the campaign; the table at the end says what each form field is
-set to, for a run started by hand.
+The runs reported in chapter 4 of the final report. `scripts/campaign/lab_campaign.py`
+sends exactly the request the workspace sends, waits for each run and keeps its full
+record; nobody has to touch the forms. This guide can be handed to a person or a QA agent.
 
-Every value below has a reason. The **Basis** column names the standard or the
-measurement it comes from. Where no standard prescribes a value, it says so.
+Every value has a reason; the **Basis** column says which. Where no standard prescribes
+a value, it says so.
 
-## 1. Order of work and time
+## 1. What runs
 
-| Step | Group | Runs | Machine time | Purpose |
+18 cells × 10 held-out runs = **180 runs**, about **12.8 h** if setup and teardown take
+60 s per run (measure it in step 2; `--dry-plan` prints the estimate).
+
+| Batch | Cells (scenario ids) | Runs | Time | Answers |
 |---|---|---|---|---|
-| 0 | smoke | 2 | 20 min | the lab, Ollama and the scripts work on the VM |
-| 1 | `TP` pilot | 27 | 3.6 h | choose the polling interval (0.5, 1 or 5 s) |
-| 2 | `TC` calibration | 12 | 1.9 h | check the frozen LLM and entropy settings at that interval |
-| 3 | freeze | – | – | record date, commit and settings fingerprints |
-| 4 | `TH` held-out | 170 | 24.7 h | the reported runs: 17 cells × 10 rounds |
-| 5 | analysis | – | 1 h | rows, statistics, tables of chapter 4 |
+| 1 | `TH1-none` `TH2-none` `TH2pf-none` `TH3-none` `TH3-rule` `TH3-entropy` `TH3-llm` | 70 | ~5.0 h | SO1 (H1) and SO3 (H2–H4) on one case |
+| 2 | `TH4-none` `TH4-rule` `TH4-entropy` `TH4-llm` `TH5-none` `TH5-rule` `TH5-entropy` `TH5-llm` | 80 | ~5.7 h | two victims; low rate (H3) |
+| 3 | `TH2-rule` `TH2-entropy` `TH2-llm` | 30 | ~2.1 h | detectors under per-port saturation |
 
-The times assume 60 s of setup and teardown per run; `--dry-plan` prints the estimate,
-and the `wall_s` field of the output shows the real value. A run cannot go faster than
-its phases: the emulation runs in real time.
+Run the batches in this order. Each batch is complete on its own (10 runs per cell), so
+if the day ends after batch 1 or 2, the finished batches are reportable and the rest is
+future work. Do not stop a batch in the middle.
 
-## 2. Commands
-
-On the VM, in the repository root, with the lab up (`make lab-up`) and the model pulled
-(`ollama pull llama3.2:3b` on the host):
+## 2. Commands (on the lab VM, repository root)
 
 ```bash
-git pull && make lab-up
+git pull && make lab-up                         # lab up; ollama pull llama3.2:3b on the host
 set -a; . ./.env; set +a
-export SDN_GIT_COMMIT=$(git rev-parse HEAD)   # recorded with every run
+export SDN_GIT_COMMIT=$(git rev-parse HEAD)
 
-# 0. smoke test: one LLM run and one rule run, no randomization
-PYTHONPATH=src python3 scripts/campaign/lab_campaign.py TP3-llm TP3-rule --poll 1 \
+# smoke test: one TC-1 and one LLM run; check both finish "completed" and note wall_s
+PYTHONPATH=src python3 scripts/campaign/lab_campaign.py TH1-none TH3-llm --poll 1 \
     --records records/smoke --out smoke.jsonl
 
-# 1. pilot: 3 detectors x 3 intervals x 3 rounds, random order inside each round
-PYTHONPATH=src python3 scripts/campaign/lab_campaign.py --group TP --poll 0.5,1,5 \
-    --rounds 3 --seed 1 --records records/pilot --out pilot.jsonl
-
-# rows of the Results tab, then the statistics (pilot runs only)
-(cd web && node --experimental-strip-types scripts/result_rows.ts ../records/pilot/*.json) > pilot_rows.csv
-python3 scripts/compare_runs.py pilot_rows.csv --purpose pilot --out pilot_report.md
-```
-
-Choose the interval with the rule of section 4, then (`P` = the chosen interval):
-
-```bash
-# 2. calibration (LLM and entropy on TC-3 and TC-5)
-PYTHONPATH=src python3 scripts/campaign/lab_campaign.py --group TC --poll P \
-    --rounds 3 --seed 7 --records records/calibration --out calibration.jsonl
-
-# 3. freeze: write down the date and time, the commit and the fingerprints
+# freeze: write the date-time and commit into the report (3.5.4)
 date -Iseconds; git rev-parse HEAD
 
-# 4. held-out campaign (about 25 h; run it inside tmux so it survives a closed terminal)
-tmux new -s campaign
-PYTHONPATH=src python3 scripts/campaign/lab_campaign.py --group TH --poll P \
-    --rounds 10 --seed 2026 --records records/held_out --out held_out.jsonl
+# batch 1 (use tmux so a closed terminal does not stop it)
+PYTHONPATH=src python3 scripts/campaign/lab_campaign.py --poll 1 --rounds 10 --seed 2026 \
+    --records records/held_out --out held_out.jsonl \
+    TH1-none TH2-none TH2pf-none TH3-none TH3-rule TH3-entropy TH3-llm
+# batch 2 (seed 2027) and batch 3 (seed 2028): same command with their ids
 
-# 5. analysis
+# results: one row per run, then the statistics
 (cd web && node --experimental-strip-types scripts/result_rows.ts ../records/held_out/*.json) > held_out_rows.csv
 python3 scripts/compare_runs.py held_out_rows.csv --frozen-at <freeze time> --out held_out_report.md
 ```
 
-Without Node on the VM, step 5 runs in the web image's base:
-`docker run --rm -v "$PWD":/w -w /w/web node:24-bookworm-slim node --experimental-strip-types scripts/result_rows.ts ../records/held_out/*.json > held_out_rows.csv`.
+Without Node on the VM: `docker run --rm -v "$PWD":/w -w /w/web node:24-bookworm-slim node --experimental-strip-types scripts/result_rows.ts ../records/held_out/*.json > held_out_rows.csv`.
 
-**If the campaign stops** (power cut, VM restart): every finished run is already in
-`records/` and `held_out.jsonl`. Count the finished rounds, and start again with the
-same command and a new `--seed`, with `--rounds` set to the rounds still missing. Because
-every round holds every cell once, the cells stay balanced.
+**Send back for the report:** `held_out_rows.csv`, `held_out_report.md`, `held_out.jsonl`,
+`smoke.jsonl`, the freeze lines, and the `versions` event of one run (report Appendix B).
 
-**A run is not counted** when its row says `valid = no` (`validity_notes` says why);
-`compare_runs.py` drops it and lists it. Do not delete it and do not re-run it in its
-place by hand: the next round gives the cell its next run. Report how many were dropped.
+**A run marked `valid = no`** is dropped by `compare_runs.py` and listed; do not re-run it
+by hand. Report how many were dropped. **If a batch stops** (power cut), re-run it with
+`--rounds` = the rounds still missing and a new seed.
 
 ## 3. Design and its basis
 
 | Decision | Value | Basis |
 |---|---|---|
-| Repetitions per cell | 10 held-out runs | RFC 8456 §4.7: a test SHOULD be repeated at least 10 times. `compare_runs.py` flags cells with fewer. |
-| Order of runs | randomized complete blocks: each round runs every cell once, in a new random order (seeded) | Randomization and blocking against drifts of the machine: NIST/SEMATECH e-Handbook of Statistical Methods §5.3.3.2; Jain (1991), experimental design. The seed makes the order reproducible. |
-| Without and with attack in each run | baseline, attack, recovery phases | RFC 8456 §5.3.2 measures without and with load; NIST SP 800-115 asks for planned, documented tests. |
-| Arms | no defense, packet-rate rule, entropy, LLM | The no-defense arm is the reference for H4; the rule is the baseline that the LLM's prompt describes (Arp et al. 2022: an appropriate baseline). |
-| Calibration separated from held-out | settings frozen before the held-out runs; only `held_out` runs reported; one settings fingerprint per cell | Arp et al. 2022 (data snooping). `compare_runs.py --frozen-at` refuses runs before the freeze. |
-| Proportions | DR and FAR pooled over the runs of a cell, Wilson 95 % interval | Wilson (1927); Brown, Cai and DasGupta (2001) recommend it over the normal interval for small n. |
-| Continuous metrics | mean with Student-t 95 % interval, median and range | Jain (1991), ch. 13. |
-| Comparisons | two-sided Mann–Whitney U, rank-biserial effect size | Non-parametric: no normality assumed with 10 runs per cell. |
-| Phase durations | baseline 180 s, attack 120 s (TC-5: 300 s), recovery 120 s | No standard prescribes them. Baseline: entropy warm-up 16 windows × 5 s = 80 s plus margin; the service baseline needs ≥ 10 checks. Recovery needs 10 answered checks in a row. TC-5 is longer because a low rate takes longer to accumulate evidence. |
-| Polling interval | chosen by the pilot (rule below) | Development runs: availability during a 3-attacker flood 26–37 % at 5 s, 100 % at 1 s (report, Appendix C). |
-| Response | block, after 2 detections within 30 s, 300 s, never the five servers, real (not dry run) | See section 5. |
+| Repetitions | 10 held-out runs per cell | RFC 8456 §4.7 (SHOULD ≥ 10). `compare_runs.py` flags cells with fewer. |
+| Order | randomized complete blocks: each round runs every cell of the batch once, new random order per round, recorded seed | NIST/SEMATECH e-Handbook §5.3.3.2; Jain (1991). |
+| Phases | baseline, attack, recovery in every run | RFC 8456 §5.3.2 (without and with load); NIST SP 800-115 (planned, documented tests). |
+| Arms | no defense, packet-rate rule, entropy, LLM | no defense = reference (H4); the rule = the LLM prompt's own decision rule (Arp et al. 2022, appropriate baseline). |
+| Frozen settings, one fingerprint per cell | no pilot or calibration runs: polling and detector settings come from development measurements | Arp et al. 2022 (data snooping). |
+| Polling | 1 s for every arm | Development: availability during a 3-attacker flood 100 % at 1 s, 37 % at 2 s, 26–37 % at 5 s (report Appendix C). |
+| Durations | baseline 75 s, attack 60 s, recovery 60 s (all cases) | No standard prescribes them. Baseline = 30 s entropy warm-up + the 40 s margin used by the lab's campaigns + 5 s; attack = detection ≤ 10 s, two confirmations, 50 more website checks; recovery = the controller's 60 s idle timeout, so per-port rules of the flood can expire within the run. |
+| Entropy | fast-reaction preset: 1 s windows, normalised Shannon entropy, k-sigma EWMA band (k = 2.5, α = 0.2), 30 warm-up windows, 2 windows to alarm | Makes the warm-up fit the 75 s baseline. Normalised entropy as in Ding et al. (2022). |
+| LLM | `llama3.2:3b`, prompt `lab`, 5 samples per poll, threshold 0.8 | 5 ≥ the largest number of attackers (4). Threshold fixed in advance (not tuned on reported runs). |
+| Rule | 50 pkt/s, 5 samples per poll | the prompt's attack threshold. |
+| TC-1 table limit | 1 500 rules in table 0 of every switch, refuse when full | Open vSwitch has no small default limit; 1 500 = HP ProCurve 5406zl hardware table (Kuźniar et al., PAM 2015). |
+| Statistics | Wilson 95 % intervals for DR and FAR; mean, Student-t 95 % interval, median for times; Mann–Whitney U and rank-biserial r | Wilson (1927); Brown, Cai, DasGupta (2001); Mann & Whitney (1947). |
 
-## 4. Pilot rule (stated before the pilot)
+## 4. Acceptance criteria (outcomes, not settings)
 
-Among 0.5, 1 and 5 s, choose the **largest** interval at which, in all pilot runs,
-every detector (rule, entropy, LLM) names its first attacker within 10 s and the website
-availability during the attack is at least 90 %. Larger is preferred because every poll
-costs controller CPU. If no interval meets both, choose the one with the highest median
-availability and report that the criterion was not met.
+| Criterion | Meaning | Column |
+|---|---|---|
+| DR ≥ 95 % | of every 100 attackers (once per run), at least 95 are named during the attack | `tp`, `fn` → `detection_rate_pct` |
+| FAR ≤ 5 % | of every 100 legitimate hosts (once per run), at most 5 are wrongly named | `fp`, `tn` → `false_alarm_rate_pct` |
+| Detection ≤ 10 s | mean time from attack start to first naming of an attacker | `mean_detection_s` |
+| Availability ≥ 90 % | during the attack, ≥ 90 of every 100 website checks succeed, and more than without defense | `availability_attack_pct` |
 
-## 5. Acceptance criteria
+## 5. Response: values and what would happen otherwise
 
-Agreed with the directors before the held-out runs. They are **outcomes**, not settings:
-the lab measures them, the operator cannot set them. Each is read from a column of the
-Results-tab row (`held_out_rows.csv`) and summarized per cell by `compare_runs.py`.
+* **Block**, not rate limit: a 50 pkt/s limit would leave TC-5 (30 pkt/s) untouched.
+* **2 detections within 30 s**: one detection blocked two legitimate clients in
+  development; the count-in-a-window design is Snort's `detection_filter`, Suricata's
+  `threshold`, fail2ban's `maxretry`/`findtime`. With independent per-poll error *p* and
+  1 s polling, a false block needs two namings in 30 s: ≈ 435 *p*² instead of
+  1 − (1 − *p*)³⁰ (4 % instead of 26 % for *p* = 1 %). Cost: one more poll.
+* **300 s**: longer than every attack, so an attacker is not released mid-attack.
+* **Never the servers** (10.0.0.1–10.0.0.5): a victim's replies have the flood's rate;
+  blocking it would be a self-inflicted denial of service.
+* **Not a dry run**: a dry run cannot show the effect on availability.
 
-| Criterion | Meaning in plain words | Column | Measurable here? |
-|---|---|---|---|
-| DR ≥ 95 % | Of every 100 attackers (counted once per run), at least 95 are named by the detector at least once during the attack. | `tp`, `fn` per row → `detection_rate_pct` in the report | Yes. 2–4 attackers × 10 runs = 20–40 attackers per cell, so the Wilson interval is wide; report it. |
-| FAR ≤ 5 % | Of every 100 legitimate hosts (counted once per run), at most 5 are wrongly named. | `fp`, `tn` per row → `false_alarm_rate_pct` in the report | Yes, about 20 legitimate hosts × 10 runs = 200 per cell. Only with the light lab traffic (no flash crowd): a stated limitation. |
-| Detection ≤ 10 s | On average, an attacker is named at most 10 s after the attack starts. | `mean_detection_s` | Yes. It cannot be below about two polling intervals (a rate needs two polls). |
-| Availability ≥ 90 % | During the attack, at least 90 of every 100 website checks succeed, and more than without defense. | `availability_attack_pct` | Yes, 1 check per second. |
-
-Recovery time is reported but has no acceptance criterion.
-
-## 6. Response: why these values, and what would happen otherwise
-
-* **Block** (not rate limit): a 50 pkt/s limit would leave TC-5 (30 pkt/s) untouched and
-  still let 50 SYN/s per source through. Escalation adds 20 s of rate limiting before the
-  block. The same policy is used for every detector, so the policy is not a factor.
-* **2 detections within 30 s**: in development, acting on the first detection blocked two
-  legitimate clients after a single false alarm (report, Appendix C). The same count-in-a-
-  window design is used by Snort's `detection_filter`, Suricata's `threshold` and
-  fail2ban's `maxretry`/`findtime`. If a legitimate host were wrongly named in a poll with
-  probability *p*, independently, with 1 s polling, the chance of two namings in 30 s is
-  about 435 *p*² instead of 1 − (1 − *p*)³⁰ (for *p* = 1 %: 4 % instead of 26 %). The
-  independence is an assumption: a host that is misjudged in every poll is still blocked.
-  The cost is one more poll before the block (about 1 s at 1 s polling). Three detections
-  would add another poll for a smaller gain; a 10 s window could miss attackers that the
-  sample budget does not judge in every poll.
-* **300 s**: longer than every attack (120 s, 300 s), so an attacker is not released in
-  the middle of it. A wrongly blocked host loses the service for up to 300 s, which is why
-  the confirmation exists. fail2ban's default ban is 10 minutes.
-* **Never the servers** (10.0.0.1–10.0.0.5): a victim's replies to a flood have the
-  flood's rate, so a per-flow detector can name the victim; blocking it would be a
-  self-inflicted denial of service (seen with entropy in development, Appendix C).
-* **Real, not dry run**: a dry run only records, so it cannot show the effect on
-  availability.
-
-## 7. What each form field is set to
-
-For a run started by hand from the workspace (for example to look at one cell). The
-campaign sets the same values through the API.
+## 6. Form fields, for a run started by hand
 
 | Form (label) | API field | Value |
 |---|---|---|
-| Topology | `topology` | load `scripts/campaign/topologia_universidad.json` |
-| Forwarding | `forwarding` | Per-port for TC-2; Port-free for TC-2pf, TC-3, TC-4, TC-5 |
-| Attackers | `attackers` | TC-2/TC-2pf/TC-5: h_wifi1, h_lab1. TC-3: h_wifi1, h_lab1, h_prof1. TC-4: h_wifi1, h_wifi2, h_lab1, h_lab2 |
-| Victims / HTTP service | `victims` | h_web; TC-4: h_web and h_files |
-| Traffic kind | `traffic` | SYN; TC-3 and TC-4: SYN and UDP (spread over the attackers in order) |
-| Rate · packets/s | `rate` | 1000 per attack flow; TC-5: 30 |
-| Baseline · seconds | `baseline` | 180 |
-| Attack · seconds | `duration` | 120; TC-5: 300 |
-| Recovery · seconds | `recovery` | 120 |
-| Run purpose | `purpose` | Pilot / Calibration / Held-out (reported) |
-| Test case | `scenario` | TC-2, TC-2pf, TC-3, TC-4, TC-5 (pilot: TC-3-poll0.5 etc.) |
-| I confirm these hosts belong to my isolated lab. | `confirm_isolated_lab` | checked |
+| Topology | `topology` | `scripts/campaign/topologia_universidad.json` |
+| Forwarding | `forwarding` | Per-port for TC-1 and TC-2; Port-free otherwise |
+| Attackers | `attackers` | TC-1/TC-2/TC-2pf/TC-5: h_wifi1, h_lab1. TC-3: h_wifi1, h_lab1, h_prof1. TC-4: h_wifi1, h_wifi2, h_lab1, h_lab2 |
+| Victims / HTTP service | `victims` | h_web; TC-4: h_web, h_files |
+| Traffic kind | `traffic` | SYN; TC-3, TC-4: SYN and UDP |
+| Rate · packets/s | `rate` | 1000; TC-5: 30 |
+| Baseline / Attack / Recovery · seconds | | 75 / 60 / 60 |
+| Run purpose | `purpose` | Held-out (reported) |
+| Test case | `scenario` | TC-1, TC-2, TC-2pf, TC-3, TC-4, TC-5 |
+| Flow-table limit · rules | `flow_table_limit` | 1500 for TC-1; empty otherwise |
 | Detector | `detection.mode` | Off / Packet-rate rule / Entropy / LLM |
-| Poll every · s | `detection.poll_seconds` | the interval chosen by the pilot |
-| Model | `detection.model` | llama3.2:3b (LLM) |
-| Prompt profile | `detection.prompt` | lab |
-| Samples per poll | `detection.llm_max_samples` | 5 (LLM and rule): at least the largest number of attackers (4) |
-| Attack probability ≥ | `detection.threshold` | 0.8 (LLM) |
-| Attack at ≥ pkt/s | `detection.rule_pktrate` | 50 (rule): the prompt's attack threshold |
-| Entropy presets | `detection.entropy` | defaults (original preset: Shannon, k = 2.5, α = 0.2, 5 s windows, 16 warm-up windows, 2 consecutive windows) |
-| Apply a response to detected attackers | `mitigation` | on, except the no-defense arm |
-| Policy | `detection.response.policy` | Block |
-| Detections needed | `detection.response.confirm_hits` | 2 |
-| Within · s | `detection.response.confirm_seconds` | 30 |
-| Block lasts · s | `detection.response.block_seconds` | 300 |
-| Never act on · addresses | `detection.response.protected` | 10.0.0.1, 10.0.0.2, 10.0.0.3, 10.0.0.4, 10.0.0.5 |
-| Simulation only (dry run) | `detection.response.dry_run` | off |
-
-## References
-
-* RFC 8456, Benchmarking Methodology for SDN Controller Performance (2018), §4.7, §5.3.2.
-* NIST SP 800-115, Technical Guide to Information Security Testing and Assessment (2008).
-* NIST/SEMATECH e-Handbook of Statistical Methods, §5.3.3.2 Randomized block designs,
-  https://www.itl.nist.gov/div898/handbook/pri/section3/pri332.htm
-* R. Jain, The Art of Computer Systems Performance Analysis, Wiley, 1991.
-* D. Arp et al., Dos and Don'ts of Machine Learning in Computer Security, USENIX Security 2022.
-* E. B. Wilson, Probable inference, the law of succession, and statistical inference, JASA 1927;
-  L. D. Brown, T. T. Cai, A. DasGupta, Interval estimation for a binomial proportion, Stat. Sci. 2001.
-* Snort 2.9 manual, `detection_filter`; Suricata user guide, thresholding; fail2ban `jail.conf`
-  (`maxretry`, `findtime`, `bantime`).
-* hping3(8): the source port is increased for each packet unless `--keep` is given.
+| Poll every · s | `poll_seconds` | 1 |
+| Model; Prompt profile | | llama3.2:3b; lab |
+| Samples per poll | `llm_max_samples` | 5 |
+| Attack probability ≥ | `threshold` | 0.8 |
+| Attack at ≥ pkt/s | `rule_pktrate` | 50 |
+| Entropy | `entropy` | window 1 s, warm-up 30, consecutive 2, measure norm, rest default |
+| Apply a response to detected attackers | `mitigation` | on, except no defense |
+| Policy; Detections needed; Within · s; Block lasts · s | | Block; 2; 30; 300 |
+| Never act on · addresses | `protected` | 10.0.0.1–10.0.0.5 |
+| Simulation only (dry run) | `dry_run` | off |
