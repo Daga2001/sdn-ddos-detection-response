@@ -18,7 +18,7 @@ from scenarios import SCENARIOS  # noqa: E402
 
 from sdn_ddos.lab.contracts import StartRequest, validate_experiment  # noqa: E402
 
-THESIS = [s for s in SCENARIOS if s.group in {"TP", "TC", "TH"}]
+THESIS = [s for s in SCENARIOS if s.group == "TH"]
 TOPOLOGY = json.loads(
     (ROOT / "scripts" / "campaign" / "topologia_universidad.json").read_text("utf-8")
 )
@@ -32,7 +32,7 @@ def test_every_cell_of_the_design_exists() -> None:
         (case, mode)
         for case in ("TC-2", "TC-3", "TC-4", "TC-5")
         for mode in ("off", "rule", "entropy", "llm")
-    } | {("TC-2pf", "off")}
+    } | {("TC-2pf", "off"), ("TC-1", "off")}
 
 
 @pytest.mark.parametrize("scenario", THESIS, ids=[s.id for s in THESIS])
@@ -59,17 +59,27 @@ def test_the_lab_accepts_every_thesis_request(scenario) -> None:
 def test_rounds_are_balanced_and_reproducible() -> None:
     chosen = [s for s in THESIS if s.group == "TH"]
     order = lab_campaign.plan(chosen, repeat=1, rounds=10, seed=2026)
-    assert len(order) == 170
+    assert len(order) == 180
     assert set(Counter(s.id for s in order).values()) == {10}
-    for start in range(0, 170, 17):  # every round holds every cell once
-        assert {s.id for s in order[start : start + 17]} == {s.id for s in chosen}
+    for start in range(0, 180, 18):  # every round holds every cell once
+        assert {s.id for s in order[start : start + 18]} == {s.id for s in chosen}
     again = lab_campaign.plan(chosen, repeat=1, rounds=10, seed=2026)
     assert [s.id for s in order] == [s.id for s in again]
-    assert [s.id for s in order[:17]] != [s.id for s in chosen]
+    assert [s.id for s in order[:18]] != [s.id for s in chosen]
 
 
-def test_pilot_cells_are_labelled_by_interval() -> None:
-    pilot = next(s for s in THESIS if s.group == "TP")
-    assert lab_campaign.with_poll(pilot, 0.5).case == "TC-3-poll0.5"
-    held = next(s for s in THESIS if s.group == "TH")
-    assert lab_campaign.with_poll(held, 0.5).case == held.case
+def test_tc1_limits_the_table_and_only_tc1() -> None:
+    by_case = {s.case: s for s in THESIS}
+    body = lab_campaign.request_body(
+        lab_campaign.with_poll(by_case["TC-1"], 1.0), TOPOLOGY
+    )
+    assert StartRequest.model_validate(body).experiment.flow_table_limit == 1500
+    assert all(s.flow_table_limit is None for s in THESIS if s.case != "TC-1")
+
+
+def test_phases_fit_the_fast_entropy_warm_up() -> None:
+    for s in THESIS:
+        assert (s.baseline, s.duration, s.recovery) == (75, 60, 60)
+        if (s.detection or {}).get("mode") == "entropy":
+            e = s.detection["entropy"]
+            assert e["window_seconds"] * e["warmup_windows"] + 40 <= s.baseline

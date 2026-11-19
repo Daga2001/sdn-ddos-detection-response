@@ -28,6 +28,7 @@ The proposal and implementation are intentionally tracked separately. Update `do
 3. Add or update unit tests before changing security-sensitive behavior.
 4. Run `make check`. Use a privileged Mininet smoke test only in the isolated VM.
 5. Update README/docs, `.env.example`, and the model card when interfaces or experiment assumptions change.
+6. Every enhancement that adds or changes an important design decision (anything that changes what an experiment measures, a default, a threshold, a duration, a unit, a standard followed, or a safety boundary) must add or update its row in the "Key design decisions" table of `README.md`: the decision, why, and the evidence or source (file, measurement, standard or paper). Explain it in code comments next to the value, and keep the thesis report consistent.
 
 ## Interface rules
 
@@ -44,4 +45,4 @@ Tests must cover happy paths and failure paths: invalid configuration, missing m
 
 ## Definition of done
 
-A change is ready only when it has focused tests, updated documentation, no new secrets or generated artifacts, passing `make check`, and an accurate note in the current-status/roadmap documentation. Before merge, conduct the five-axis review described by the code-review-and-quality skill.
+A change is ready only when it has focused tests, updated documentation, its design decisions recorded in the README table, no new secrets or generated artifacts, passing `make check`, and an accurate note in the current-status/roadmap documentation. Before merge, conduct the five-axis review described by the code-review-and-quality skill.

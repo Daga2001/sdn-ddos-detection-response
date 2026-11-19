@@ -335,6 +335,8 @@ class LabManager:
             extra: dict[str, Any] = {}
             if request.experiment and request.experiment.detection is not None:
                 extra["detection"] = request.experiment.detection
+            if request.experiment and request.experiment.flow_table_limit is not None:
+                extra["flow_table_limit"] = request.experiment.flow_table_limit
             self.runtime = self.runtime_factory(
                 request.topology,
                 self.run_id,

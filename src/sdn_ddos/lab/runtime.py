@@ -109,6 +109,24 @@ def widen_dgram_queue(length: int = DGRAM_QUEUE) -> int:
         return 0
 
 
+def flow_limit_command(bridge: str, limit: int) -> list[str]:
+    """ovs-vsctl command: table 0 of `bridge` refuses rules beyond `limit`."""
+    return [
+        "ovs-vsctl",
+        "--",
+        "--id=@ft",
+        "create",
+        "Flow_Table",
+        f"flow_limit={int(limit)}",
+        "overflow_policy=refuse",
+        "--",
+        "set",
+        "Bridge",
+        bridge,
+        "flow_tables:0=@ft",
+    ]
+
+
 class MininetRuntime:
     def __init__(
         self,
@@ -119,7 +137,9 @@ class MininetRuntime:
         detection: Optional[DetectionConfig] = None,
         *,
         forwarding: str,
+        flow_table_limit: Optional[int] = None,
     ) -> None:
+        self.flow_table_limit = flow_table_limit
         self.topology = topology
         self.run_id = run_id
         self.emit = emit
@@ -258,7 +278,32 @@ class MininetRuntime:
             interface = created.intf1 if link.source in switch_names else created.intf2
             self.interfaces[link.id] = interface.name
         self.network.start()
+        if self.flow_table_limit is not None:
+            self.limit_flow_tables(self.flow_table_limit)
         self.enqueue("versions", self.versions())
+
+    def limit_flow_tables(self, limit: int) -> None:
+        """Emulate a hardware table: table 0 of every switch refuses rules past `limit`.
+
+        The table-miss entry counts as one rule. A refused FlowMod is answered with an
+        OpenFlow "table full" error, so the packet is forwarded once by the controller
+        and the next one raises another Packet-In.
+        """
+        for switch in self.topology.switches:
+            subprocess.run(
+                flow_limit_command(switch.name, limit),
+                check=True,
+                timeout=10,
+                capture_output=True,
+            )
+        self.enqueue(
+            "flow_table_limit",
+            {
+                "limit": limit,
+                "overflow_policy": "refuse",
+                "switches": [switch.name for switch in self.topology.switches],
+            },
+        )
 
     def _spawn(
         self,
