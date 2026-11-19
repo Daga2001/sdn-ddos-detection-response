@@ -33,6 +33,7 @@ def fetch_remote_config(
         return None
     if not isinstance(config, dict) or config.get("mode") not in (
         "llm",
+        "rule",
         "entropy",
         "off",
     ):

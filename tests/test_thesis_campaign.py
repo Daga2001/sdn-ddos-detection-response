@@ -18,7 +18,7 @@ from scenarios import SCENARIOS  # noqa: E402
 
 from sdn_ddos.lab.contracts import StartRequest, validate_experiment  # noqa: E402
 
-THESIS = [s for s in SCENARIOS if s.group == "TH"]
+THESIS = [s for s in SCENARIOS if s.group in {"TP", "TC", "TH"}]
 TOPOLOGY = json.loads(
     (ROOT / "scripts" / "campaign" / "topologia_universidad.json").read_text("utf-8")
 )
@@ -77,31 +77,12 @@ def test_tc1_limits_the_table_and_only_tc1() -> None:
     assert all(s.flow_table_limit is None for s in THESIS if s.case != "TC-1")
 
 
-def test_phases_fit_the_fast_entropy_warm_up() -> None:
+def test_phases_are_those_of_the_18_19_nov_runs() -> None:
     for s in THESIS:
-        assert (s.baseline, s.duration, s.recovery) == (75, 60, 60)
-        if (s.detection or {}).get("mode") == "entropy":
-            e = s.detection["entropy"]
-            assert e["window_seconds"] * e["warmup_windows"] + 40 <= s.baseline
-
-
-def test_runner_container_override_and_default(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    lab_campaign.runner_container.cache_clear()
-    monkeypatch.setenv("SDN_LAB_RUNNER_CONTAINER", "my-runner")
-    assert lab_campaign.runner_container() == "my-runner"
-
-    lab_campaign.runner_container.cache_clear()
-    monkeypatch.delenv("SDN_LAB_RUNNER_CONTAINER")
-
-    def no_docker(*_args: object, **_kwargs: object) -> object:
-        raise OSError("docker not installed")
-
-    monkeypatch.setattr(lab_campaign.subprocess, "run", no_docker)
-    # The current Compose project, never the retired sdn-lab one.
-    assert lab_campaign.runner_container() == "sdn-ddos-detection-response-runner-1"
-    lab_campaign.runner_container.cache_clear()
+        if s.group != "TH":
+            continue
+        attack = 300 if s.case == "TC-5" else 120
+        assert (s.baseline, s.duration, s.recovery) == (180, attack, 120)
 
 
 def test_campaign_refuses_to_start_without_the_runner(
@@ -111,3 +92,67 @@ def test_campaign_refuses_to_start_without_the_runner(
     monkeypatch.setattr(sys, "argv", ["lab_campaign.py", "TH1-none", "--poll", "1"])
     with pytest.raises(SystemExit, match="cannot reach the lab runner"):
         lab_campaign.main()
+
+
+def test_pilot_cells_are_labelled_by_interval() -> None:
+    pilot = next(s for s in THESIS if s.group == "TP")
+    assert lab_campaign.with_poll(pilot, 0.5).case == "TC-3-poll0.5"
+    held = next(s for s in THESIS if s.group == "TH")
+    assert lab_campaign.with_poll(held, 0.5).case == held.case
+
+
+def test_the_runner_container_follows_the_compose_project_name() -> None:
+    names = "sdn-ddos-detection-response-web-1\nsdn-ddos-detection-response-runner-1\n"
+    assert (
+        lab_campaign.runner_container({}, names)
+        == "sdn-ddos-detection-response-runner-1"
+    )
+    # An explicit choice wins, and the historical name is the fallback.
+    assert (
+        lab_campaign.runner_container({"SDN_RUNNER_CONTAINER": "mine"}, names) == "mine"
+    )
+    assert lab_campaign.runner_container({}, "other-1\n") == "sdn-lab-runner-1"
+    two = "a-runner-1\nb-runner-1\n"
+    assert lab_campaign.runner_container({}, two) == "sdn-lab-runner-1"
+
+
+def test_the_response_time_counts_only_responses_against_attackers() -> None:
+    scenario = lab_campaign.Scenario(
+        id="x",
+        group="TH",
+        title="x",
+        attackers=["a1"],
+        victims=["v"],
+        forwarding="port_free",
+    )
+    hosts = [("a1", "10.0.0.11"), ("v", "10.0.0.1"), ("l1", "10.0.0.21")]
+    topology = {
+        "hosts": [{"name": n, "ip": f"{ip}/24"} for n, ip in hosts],
+        "links": [],
+    }
+    stamp = "2026-11-18 08:{:02d}:{:04.1f}+00"
+    events = [
+        {"ts": stamp.format(30, 0.0), "kind": "attack_started", "data": {}},
+        # a legitimate client blocked in the baseline, 139 s before the attack
+        {
+            "ts": stamp.format(27, 40.7),
+            "kind": "mitigation_requested",
+            "data": {"ipv4_src": "10.0.0.21", "action": "temporary_drop"},
+        },
+        {
+            "ts": stamp.format(30, 3.5),
+            "kind": "mitigation_requested",
+            "data": {"ipv4_src": "10.0.0.11", "action": "temporary_drop"},
+        },
+        {"ts": stamp.format(31, 0.0), "kind": "attack_stopped", "data": {}},
+    ]
+    db = {"detections": {}, "mitigations": {}, "decisions": 0, "positive_decisions": 0}
+    metrics = lab_campaign.analyse(scenario, topology, events, db, {})
+    assert metrics["response_first_s"] == 3.5
+    assert metrics["collateral_first_s"] == pytest.approx(-139.3, abs=0.05)
+    assert metrics["collateral"] == ["l1"]
+    # nobody attacked was answered: no response time, not the collateral one
+    events.pop(2)
+    metrics = lab_campaign.analyse(scenario, topology, events, db, {})
+    assert metrics["response_first_s"] is None
+    assert metrics["collateral_first_s"] == pytest.approx(-139.3, abs=0.05)

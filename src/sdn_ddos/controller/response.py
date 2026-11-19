@@ -175,6 +175,21 @@ class ResponseManager:
                 self.enforcer.release(str(ip))
         return [str(ip) for ip in finished]
 
+    def is_protected(self, source: Optional[str]) -> bool:
+        """True for an address in `SDN_RESPONSE_PROTECTED`: the victims and any other
+        host that must never be named as an attacker or acted on. Both detectors and
+        the response go through this one test."""
+
+        if not source or not self.settings.protected:
+            return False
+        try:
+            address = ipaddress.ip_address(source)
+        except ValueError:
+            return False
+        return isinstance(address, ipaddress.IPv4Address) and any(
+            address in network for network in self.settings.protected
+        )
+
     def _eligible(self, source: Optional[str]) -> Optional[ipaddress.IPv4Address]:
         if not source:
             return None
@@ -186,7 +201,7 @@ class ResponseManager:
             return None
         if not any(address in network for network in self.allowed):
             return None
-        if any(address in network for network in self.settings.protected):
+        if self.is_protected(source):
             LOGGER.info("response skipped: %s is protected", address)
             return None
         return address

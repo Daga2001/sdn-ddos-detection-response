@@ -208,18 +208,30 @@ class BlockRegistry:
 
 
 ICMP_PROTOCOL = 1
+# How flow datasets record "no transport port" (ICMP, or a rule that does not match it).
+NO_PORT = 0
 
 
-def build_model_sample(row: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+def build_model_sample(
+    row: Mapping[str, Any], *, port_free: bool = False
+) -> Optional[Dict[str, Any]]:
     """Build a model sample only when every required feature is available.
 
     ICMP has no transport ports, so its flows carry no `l4_dst_port`; flow datasets
     record that as 0. Without it an ICMP flood never reached the model at all.
+
+    With `port_free` forwarding (`SDN_MATCH_L4_PORTS=false`) no rule matches the
+    layer-4 port, so every IPv4 flow, TCP and UDP included, arrives without one. The
+    entropy detector counts those flows, so the model must see them too: they get
+    `NO_PORT` as well. With per-port rules a TCP/UDP flow without a port is still
+    incomplete and is dropped, as before.
     """
 
     port = row.get("l4_dst_port")
-    if port is None and row.get("ip_proto") == ICMP_PROTOCOL:
-        port = 0
+    if port is None:
+        protocol = row.get("ip_proto")
+        if protocol == ICMP_PROTOCOL or (port_free and protocol is not None):
+            port = NO_PORT
     values = {**row, "l4_dst_port": port}
     if any(values.get(name) is None for name in FEATURE_ORDER):
         return None

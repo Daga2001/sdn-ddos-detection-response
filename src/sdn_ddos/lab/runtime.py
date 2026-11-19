@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 from collections import deque
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Optional
 
@@ -33,6 +34,7 @@ from sdn_ddos.lab.contracts import (
     legitimate_clients,
 )
 from sdn_ddos.lab.detection_settings import controller_env as controller_env_for
+from sdn_ddos.lab.detection_settings import protected_value
 from sdn_ddos.lab.events import RateCounters, utc_now
 from sdn_ddos.lab.measurements import (
     PingTracker,
@@ -138,6 +140,7 @@ class MininetRuntime:
         *,
         forwarding: str,
         flow_table_limit: Optional[int] = None,
+        protected_hosts: Sequence[str] = (),
     ) -> None:
         self.flow_table_limit = flow_table_limit
         self.topology = topology
@@ -146,6 +149,8 @@ class MininetRuntime:
         self.mitigation = mitigation
         self.detection = detection
         self.forwarding = forwarding
+        # Networks no detector may name and the response may not touch (the victims).
+        self.protected_hosts = tuple(protected_hosts)
         self.network: Any = None
         self.processes: list[ManagedProcess] = []
         self.controller: Optional[ManagedProcess] = None
@@ -185,6 +190,18 @@ class MininetRuntime:
         except queue.Full:
             self.dropped += 1
 
+    def poll_interval_seconds(self) -> str:
+        """The statistics poll this run's controller really uses.
+
+        The run's detection settings override the lab process's own environment
+        for the Ryu subprocess (see `start`), so the environment is only the answer
+        when the run carries no detection settings.
+        """
+
+        if self.detection is not None:
+            return controller_env_for(self.detection)["SDN_POLL_INTERVAL"]
+        return os.environ.get("SDN_POLL_INTERVAL", "5")
+
     def versions(self) -> dict[str, str]:
         from mininet.net import VERSION
 
@@ -195,7 +212,7 @@ class MininetRuntime:
             "mininet": VERSION,
             "ryu": package_version("ryu"),
             "repository_commit": repository_commit()["commit"],
-            "poll_interval_seconds": os.environ.get("SDN_POLL_INTERVAL", "5"),
+            "poll_interval_seconds": self.poll_interval_seconds(),
             "model_sha256": os.environ.get("DDOS_MODEL_SHA256") or "not_configured",
         }
         result["ovs"] = subprocess.check_output(
@@ -225,7 +242,13 @@ class MininetRuntime:
             SDN_MATCH_L4_PORTS=forwarding_flag(self.forwarding),
         )
         if self.detection is not None:
-            controller_env.update(controller_env_for(self.detection))
+            controller_env.update(
+                controller_env_for(self.detection, self.protected_hosts)
+            )
+        elif self.protected_hosts:
+            controller_env["SDN_RESPONSE_PROTECTED"] = protected_value(
+                self.protected_hosts
+            )
         self.controller = self._spawn(
             [
                 os.environ.get("SDN_RYU_MANAGER", "/opt/ryu/bin/ryu-manager"),

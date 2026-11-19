@@ -12,12 +12,15 @@ Groups
   R  response: rate limit / block / escalate, simulated and real, protected hosts, caps
   M  larger networks, many attackers/victims, no detector, no detection setup
   S  control flow: stop in the middle of an attack, a second start while running
-  TH thesis held-out campaign: TC-1 and TC-2pf (no defense) and TC-2 to TC-5 with
-     every arm (none, rule, entropy, LLM)
+  TP thesis pilot: the polling interval (0.5, 1, 5 s) on TC-3, every detector
+  TC thesis calibration: LLM threshold and entropy setting, on TC-3 and TC-5
+  TH thesis held-out campaign: TC-2 to TC-5, every arm (none, rule, entropy, LLM);
+     TC-1 and TC-2pf with no defense
 
-The TH group is the final campaign of the thesis (docs/thesis-campaign.md). Its polling
-interval is given on the command line (--poll 1); its runs carry the purpose held_out
-and their test case.
+The TP, TC and TH groups are the final campaign of the thesis (docs/thesis-campaign.md),
+run on 18-19 Nov 2026 exactly as defined here; TH1-none (TC-1) was added afterwards.
+Their polling interval is given on the command line (--poll), because the pilot
+chooses it; their runs carry a purpose (pilot, calibration, held_out) and a test case.
 """
 
 from __future__ import annotations
@@ -49,13 +52,13 @@ class Scenario:
     # Recorded with the run so the statistics can group runs into cells.
     purpose: str = "exploration"
     case: str = ""
-    # TH scenarios take the polling interval from --poll.
+    # TP/TC/TH scenarios take the polling interval from --poll (the pilot chooses it).
     needs_poll: bool = False
-    # Emulated hardware flow table (TC-1); None = no limit.
-    flow_table_limit: Optional[int] = None
     # Required. Entropy scenarios that used match_ports=False are port_free;
     # every other scenario is per_port. Empty is rejected, not a mode.
     forwarding: str = ""
+    # TC-1 only: table 0 of every switch refuses rules beyond this number.
+    flow_table_limit: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.forwarding not in {"per_port", "port_free"}:
@@ -2165,33 +2168,19 @@ SCENARIOS: list[Scenario] = [
     ),
 ]
 
-# ---- Thesis campaign (TH) ------------------------------------------------------------
+# ---- Thesis campaign (TP, TC, TH) ---------------------------------------------------
 # The test cases of the report (chapter 3, Table "Test cases"), with the hosts of the
-# university topology, run as held-out runs (docs/thesis-campaign.md). One response for
-# every detector: block a source after 2 detections within 30 s, for 300 s, never the
-# servers, applied for real.
+# university topology. One response for every detector: block a source after 2
+# detections within 30 s, for 300 s, never the servers, applied for real.
 SERVERS = ["10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4", "10.0.0.5"]
 THESIS_RESPONSE = response(
     "block", dry_run=False, confirm_hits=2, confirm_seconds=30, block_seconds=300,
     protected=SERVERS,
 )  # fmt: skip
-# Shortened so the campaign fits in one day (decision of 19 Nov 2026, report 3.4.4):
-# baseline = 30 s of entropy warm-up (30 windows of 1 s) + the 40 s margin the lab
-# campaigns use before an attack + 5 s; attack = detection within 10 s, two
-# confirmations and 50 more website checks; recovery = 60 s, the controller's idle
-# timeout, so per-port rules of the flood can expire inside the run.
-THESIS_PHASES = {"baseline": 75, "duration": 60, "recovery": 60}
-# The laboratory's fast-reaction entropy preset (1 s windows, normalised Shannon
-# entropy as in Ding et al. 2022, k-sigma EWMA band, 30 warm-up windows, 2 windows),
-# so the warm-up fits the shortened baseline. Polling is the same for every arm.
-FAST_ENTROPY = {
-    "window_seconds": 1,
-    "warmup_windows": 30,
-    "consecutive_windows": 2,
-    "measure": "norm",
-}
+THESIS_PHASES = {"baseline": 180, "duration": 120, "recovery": 120}
 # TC-1: table 0 of every switch holds at most 1 500 rules, the hardware table of an HP
-# ProCurve 5406zl measured by Kuzniar et al. (PAM 2015).
+# ProCurve 5406zl measured by Kuzniar et al. (PAM 2015). Added after the 18-19 Nov runs,
+# with the same phases, so it compares with TH2-none.
 TC1_TABLE_LIMIT = 1500
 THESIS_CASES: dict[str, dict[str, Any]] = {
     # The TC-2 flood against switches whose table fills up (no defense only).
@@ -2238,13 +2227,14 @@ THESIS_CASES: dict[str, dict[str, Any]] = {
         "forwarding": "port_free",
     },
     # 30 packets/s: the middle of the prompt's ambiguous band (10-50) and below the
-    # rule's threshold.
+    # rule's threshold; 300 s of attack.
     "TC-5": {
         "attackers": ["h_wifi1", "h_lab1"],
         "victims": ["h_web"],
         "traffic": ["syn"],
         "rate": 30,
         "forwarding": "port_free",
+        "duration": 300,
     },
 }
 
@@ -2257,7 +2247,7 @@ def thesis_arm(arm: str, respond: bool = True) -> tuple[Optional[dict[str, Any]]
     if arm == "rule":
         return rule(response=answer), respond
     if arm == "entropy":
-        return entropy(response=answer, **FAST_ENTROPY), respond
+        return entropy(response=answer), respond
     if arm == "llm":
         return llm(samples=5, threshold=0.8, response=answer), respond
     raise ValueError(arm)
@@ -2268,6 +2258,8 @@ def thesis_scenario(
 ) -> Scenario:
     spec = dict(THESIS_CASES[case])
     phases = dict(THESIS_PHASES)
+    if "duration" in spec:
+        phases["duration"] = spec.pop("duration")
     detection, mitigation = thesis_arm(arm)
     return Scenario(
         sid,
@@ -2300,12 +2292,31 @@ for _case in ("TC-2", "TC-3", "TC-4", "TC-5"):
                 f"{_case} held-out, arm {_arm}",
             )
         )  # fmt: skip
-for _case, _sid, _title in (
-    ("TC-1", "TH1-none", "TC-2 flood, table limited to 1 500 rules, no defense"),
-    ("TC-2pf", "TH2pf-none", "TC-2 flood with port-free rules, no defense"),
-):
-    SCENARIOS.append(
-        thesis_scenario(_sid, "TH", _case, "none", "held_out", f"{_title}, held-out")
+SCENARIOS.append(
+    thesis_scenario(
+        "TH2pf-none", "TH", "TC-2pf", "none", "held_out",
+        "TC-2 flood with port-free rules, held-out, no defense",
     )
+)  # fmt: skip
+SCENARIOS.append(
+    thesis_scenario(
+        "TH1-none", "TH", "TC-1", "none", "held_out",
+        "TC-2 flood, table limited to 1 500 rules, held-out, no defense",
+    )
+)  # fmt: skip
+for _arm in ARMS[1:]:
+    SCENARIOS.append(
+        thesis_scenario(
+            f"TP3-{_arm}", "TP", "TC-3", _arm, "pilot", f"TC-3 pilot, arm {_arm}"
+        )
+    )
+for _case in ("TC-3", "TC-5"):
+    for _arm in ("entropy", "llm"):
+        SCENARIOS.append(
+            thesis_scenario(
+                f"TC{_case[-1]}-{_arm}", "TC", _case, _arm, "calibration",
+                f"{_case} calibration, arm {_arm}",
+            )
+        )  # fmt: skip
 
 BY_ID = {s.id: s for s in SCENARIOS}

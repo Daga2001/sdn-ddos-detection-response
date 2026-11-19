@@ -16,6 +16,8 @@ from sdn_ddos.lab.detection_settings import (
     DetectorClient,
     controller_env,
     detector_update,
+    protected_value,
+    victim_addresses,
 )
 from sdn_ddos.lab.manager import LabManager
 from sdn_ddos.lab.topology import presets
@@ -441,3 +443,40 @@ def test_forwarding_is_not_an_entropy_setting():
     with pytest.raises(ValidationError):
         DetectionConfig(entropy={"match_ports": False})
     assert "SDN_MATCH_L4_PORTS" not in controller_env(DetectionConfig())
+
+
+def test_the_victims_are_protected_by_default_and_the_user_can_opt_out():
+    topology = presets()[2]
+    host = {h.name: h.ip.split("/")[0] for h in topology.hosts}
+    assert victim_addresses(topology, experiment()) == [f"{host['h2']}/32"]
+    assert victim_addresses(topology, experiment(detection=DetectionConfig())) == [
+        f"{host['h2']}/32"
+    ]
+    off = DetectionConfig(response={"protect_victims": False})
+    assert victim_addresses(topology, experiment(detection=off)) == []
+    assert DetectionConfig().response.protect_victims is True
+
+
+def test_protected_value_joins_the_users_list_and_the_victims_once_each():
+    assert protected_value(["10.0.0.5/32"], ["10.0.0.1/32", "10.0.0.5/32"]) == (
+        "10.0.0.5/32,10.0.0.1/32"
+    )
+    assert protected_value([], []) == ""
+    config = DetectionConfig(response={"protected": ["10.0.0.5"]})
+    env = controller_env(config, ["10.0.0.1/32"])
+    assert env["SDN_RESPONSE_PROTECTED"] == "10.0.0.5/32,10.0.0.1/32"
+    assert controller_env(config)["SDN_RESPONSE_PROTECTED"] == "10.0.0.5/32"
+
+
+def test_the_runtime_gets_the_victims_and_the_run_records_them(monkeypatch):
+    instant_run(monkeypatch)
+    manager = LabManager(MemoryRepository(), ExperimentRuntime, RecordingDetector())
+    request = start_request()
+    manager.start(request)
+    wait_for(manager, {"completed"})
+    expected = victim_addresses(request.topology, request.experiment)
+    assert expected and manager.runtime.protected_hosts == tuple(expected)
+    announced = [
+        e for e in manager.events(0)["events"] if e["kind"] == "detection_config"
+    ]
+    assert announced[0]["data"]["protected_hosts"] == expected

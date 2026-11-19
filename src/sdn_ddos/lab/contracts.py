@@ -115,6 +115,10 @@ class ResponseParams(StrictModel):
     confirm_hits: int = Field(default=1, ge=1, le=10)
     confirm_seconds: int = Field(default=30, ge=1, le=600)
     protected: list[str] = Field(default_factory=list, max_length=16)
+    # The experiment's victims join `protected`: a detector never names them as
+    # attackers and the response never touches them. Turn it off to see how often a
+    # detector would name them.
+    protect_victims: bool = True
 
     @field_validator("protected")
     @classmethod
