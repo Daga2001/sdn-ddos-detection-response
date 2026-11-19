@@ -286,6 +286,25 @@ export function ExperimentPanel({
               }
             />
           </Field>
+          <Field
+            label="Flow-table limit · rules"
+            hint="Emulates a hardware switch table (TC-1): each switch holds at most this many rules and refuses new ones. Empty: no limit, as Open vSwitch normally runs. 1500 is an HP ProCurve 5406zl (Kuzniar et al., PAM 2015)."
+          >
+            <input
+              type="number"
+              min={10}
+              max={1000000}
+              placeholder="no limit"
+              value={experiment.flow_table_limit ?? ""}
+              onChange={(e) =>
+                setExperiment({
+                  ...experiment,
+                  flow_table_limit:
+                    e.target.value === "" ? null : Number(e.target.value),
+                })
+              }
+            />
+          </Field>
         </div>
         <CheckField
           className="confirmation"

@@ -165,6 +165,12 @@ class Experiment(StrictModel):
     purpose: RunPurpose = "exploration"
     # Test case the run belongs to (e.g. TC-2), so runs can be grouped into cells.
     scenario: str = Field(default="", pattern=SCENARIO_LABEL)
+    # Emulated hardware flow table (TC-1). Open vSwitch keeps rules in RAM and has no
+    # small limit, so a full table never happens unless one is set. When set, table 0
+    # of every switch holds at most this many rules and refuses new ones when full
+    # (Flow_Table flow_limit, overflow_policy=refuse). Default: no limit. 1 500 is the
+    # hardware table of an HP ProCurve 5406zl measured by Kuzniar et al. (PAM 2015).
+    flow_table_limit: Optional[int] = Field(default=None, ge=10, le=1_000_000)
 
 
 class StartRequest(StrictModel):

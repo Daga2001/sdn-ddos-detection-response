@@ -10,11 +10,9 @@ Runs on the VM, in the repository root, with the lab up:
   PYTHONPATH=src python3 scripts/campaign/lab_campaign.py --group L    # by group letter
   PYTHONPATH=src python3 scripts/campaign/lab_campaign.py --all
 
-The thesis campaign (groups TP, TC, TH; docs/thesis-campaign.md) runs unattended in
+The thesis campaign (group TH; docs/thesis-campaign.md) runs unattended in
 randomized rounds and keeps each run's full record for the Results-tab row:
 
-  PYTHONPATH=src python3 scripts/campaign/lab_campaign.py --group TP --poll 0.5,1,5 \
-      --rounds 3 --seed 1 --records records/pilot --out pilot.jsonl
   PYTHONPATH=src python3 scripts/campaign/lab_campaign.py --group TH --poll 1 \
       --rounds 10 --seed 2026 --records records/held_out --out held_out.jsonl
 
@@ -479,6 +477,7 @@ def request_body(scenario: Scenario, topology: dict[str, Any]) -> dict[str, Any]
         "confirm_isolated_lab": True,
         "purpose": scenario.purpose,
         "scenario": scenario.case,
+        "flow_table_limit": scenario.flow_table_limit,
     }
     if scenario.detection is not None:
         experiment["detection"] = scenario.detection
@@ -534,7 +533,7 @@ def expected_env(scenario: Scenario) -> dict[str, str]:
 
 
 def with_poll(scenario: Scenario, seconds: float) -> Scenario:
-    """A TP/TC/TH scenario at one polling interval (the pilot compares several)."""
+    """A TH scenario at one polling interval."""
     detection = dict(scenario.detection or {})
     detection["poll_seconds"] = seconds
     # Pilot runs at different intervals are different cells; the label says which.
@@ -845,7 +844,7 @@ def main() -> int:
     parser.add_argument("--seed", type=int, help="seed of the random order (--rounds)")
     parser.add_argument(
         "--poll",
-        help="polling interval(s) in seconds for TP/TC/TH scenarios, e.g. 1 or 0.5,1,5",
+        help="polling interval(s) in seconds for TH scenarios, e.g. 1",
     )
     parser.add_argument(
         "--records",
@@ -876,9 +875,7 @@ def main() -> int:
         raise SystemExit("no scenario selected; use ids, --group or --all (see --list)")
     if any(s.needs_poll for s in chosen):
         if not args.poll:
-            raise SystemExit(
-                "TP, TC and TH scenarios need --poll (the interval the pilot chose)"
-            )
+            raise SystemExit("TH scenarios need --poll (1 s in the thesis campaign)")
         polls = [float(value) for value in args.poll.split(",") if value.strip()]
         if any(not 0.5 <= value <= 60 for value in polls):
             raise SystemExit("--poll values must be between 0.5 and 60 s")
