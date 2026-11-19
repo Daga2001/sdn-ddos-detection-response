@@ -10,7 +10,7 @@ a value, it says so.
 ## 1. What runs
 
 18 cells × 10 held-out runs = **180 runs**, about **12.8 h** if setup and teardown take
-60 s per run (measure it in step 2; `--dry-plan` prints the estimate).
+60 s per run (measure it with the smoke test of section 3; `--dry-plan` prints the estimate).
 
 | Batch | Cells (scenario ids) | Runs | Time | Answers |
 |---|---|---|---|---|
@@ -22,12 +22,43 @@ Run the batches in this order. Each batch is complete on its own (10 runs per ce
 if the day ends after batch 1 or 2, the finished batches are reportable and the rest is
 future work. Do not stop a batch in the middle.
 
-## 2. Commands (on the lab VM, repository root)
+## 2. Where it runs
+
+On the **lab VM described in the report** (section 3.3.1: VMware Workstation VM with
+4 virtual cores and 6 GB of RAM on the Ryzen 5 7600 / RTX 5060 computer; Ollama on that
+host's GPU). Two reasons:
+
+* **Safety.** The runner container is privileged and loads Open vSwitch networks into
+  the host kernel. The README forbids running it on a shared or production machine.
+* **Validity.** The report states the cost of every decision (CPU, memory, time) on
+  that hardware. Runs on another machine, or next to unrelated containers, measure
+  something else and cannot be pooled with the report's description.
+
+Before starting, check on that machine (a QA agent can do every check except the
+`sudo` line, which a person types):
+
+| Check | Command | Expected |
+|---|---|---|
+| No unrelated containers | `docker ps --format '{{.Names}}'` | only `sdn-ddos-detection-response-*` (or nothing yet) |
+| Disk and `/tmp` | `df -h / /tmp /var/lib/docker` | several GB free on each |
+| Open vSwitch kernel module | `sudo modprobe openvswitch` (person), then `make lab-doctor` | doctor passes |
+| Model on the host | `ollama list` on the host | `llama3.2:3b` present |
+
+## 3. Commands (on the lab VM, repository root)
 
 ```bash
-git pull && make lab-up                         # lab up; ollama pull llama3.2:3b on the host
+git pull
+test -f .env || cp .env.example .env
+make lab-setup                                  # local credentials (kept if present)
+docker compose up -d --wait postgres
+docker compose exec -T postgres psql -U sdn_user -d sdn_monitor \
+  -v ON_ERROR_STOP=1 < database/migrations/002_lab.sql   # safe to repeat
+make lab-doctor                                 # after `sudo modprobe openvswitch`
+docker compose up -d && curl -fsS http://localhost:8080/health   # {"status":"ready"}
 set -a; . ./.env; set +a
 export SDN_GIT_COMMIT=$(git rev-parse HEAD)
+# the runner refuses to start if it cannot reach the lab runner container
+# (sdn-ddos-detection-response-runner-1; override with SDN_LAB_RUNNER_CONTAINER)
 
 # smoke test: one TC-1 and one LLM run; check both finish "completed" and note wall_s
 PYTHONPATH=src python3 scripts/campaign/lab_campaign.py TH1-none TH3-llm --poll 1 \
@@ -56,7 +87,7 @@ Without Node on the VM: `docker run --rm -v "$PWD":/w -w /w/web node:24-bookworm
 by hand. Report how many were dropped. **If a batch stops** (power cut), re-run it with
 `--rounds` = the rounds still missing and a new seed.
 
-## 3. Design and its basis
+## 4. Design and its basis
 
 | Decision | Value | Basis |
 |---|---|---|
@@ -73,7 +104,7 @@ by hand. Report how many were dropped. **If a batch stops** (power cut), re-run 
 | TC-1 table limit | 1 500 rules in table 0 of every switch, refuse when full | Open vSwitch has no small default limit; 1 500 = HP ProCurve 5406zl hardware table (Kuźniar et al., PAM 2015). |
 | Statistics | Wilson 95 % intervals for DR and FAR; mean, Student-t 95 % interval, median for times; Mann–Whitney U and rank-biserial r | Wilson (1927); Brown, Cai, DasGupta (2001); Mann & Whitney (1947). |
 
-## 4. Acceptance criteria (outcomes, not settings)
+## 5. Acceptance criteria (outcomes, not settings)
 
 | Criterion | Meaning | Column |
 |---|---|---|
@@ -82,7 +113,7 @@ by hand. Report how many were dropped. **If a batch stops** (power cut), re-run 
 | Detection ≤ 10 s | mean time from attack start to first naming of an attacker | `mean_detection_s` |
 | Availability ≥ 90 % | during the attack, ≥ 90 of every 100 website checks succeed, and more than without defense | `availability_attack_pct` |
 
-## 5. Response: values and what would happen otherwise
+## 6. Response: values and what would happen otherwise
 
 * **Block**, not rate limit: a 50 pkt/s limit would leave TC-5 (30 pkt/s) untouched.
 * **2 detections within 30 s**: one detection blocked two legitimate clients in
@@ -95,7 +126,7 @@ by hand. Report how many were dropped. **If a batch stops** (power cut), re-run 
   blocking it would be a self-inflicted denial of service.
 * **Not a dry run**: a dry run cannot show the effect on availability.
 
-## 6. Form fields, for a run started by hand
+## 7. Form fields, for a run started by hand
 
 | Form (label) | API field | Value |
 |---|---|---|
