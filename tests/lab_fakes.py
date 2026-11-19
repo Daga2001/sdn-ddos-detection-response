@@ -58,9 +58,17 @@ class MemoryRepository:
 
 class FakeRuntime:
     def __init__(
-        self, topology, run_id, mitigation, emit, detection=None, forwarding="per_port"
+        self,
+        topology,
+        run_id,
+        mitigation,
+        emit,
+        detection=None,
+        forwarding="per_port",
+        protected_hosts=(),
     ):
         self.emit = emit
+        self.protected_hosts = tuple(protected_hosts)
         self.detection = detection
         self.forwarding = forwarding
         self.closed = False
