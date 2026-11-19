@@ -202,6 +202,49 @@ def test_every_model_call_is_timed_and_cached_verdicts_are_counted_apart(
     assert controller.decisions.rows[0]["latency_ms"] == pytest.approx(400.0)
 
 
+def test_the_rule_arm_costs_and_logs_as_the_rule_with_the_detector_usage(
+    controller: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller.mode = "rule"
+    controller.settings = SimpleNamespace(
+        detection_threshold=0.8, inference_api_key="secret"
+    )
+    controller._detector_base = "http://detector:8000"
+    controller.llm_skipped = 0
+    clock = iter([10.0, 10.5, 20.0, 22.0])
+    monkeypatch.setattr(app_modes.time, "monotonic", lambda: next(clock))
+    cpu = iter([1.0, 2.0])
+    monkeypatch.setattr(
+        app_modes,
+        "fetch_usage",
+        lambda base, key: {"cpu_seconds": next(cpu), "rss_bytes": 1048576.0},
+    )
+    controller._predict([sample(300.0, 500), sample(2.0, 20)])
+    controller._sample_usage()
+    controller._sample_usage()
+    costs = [
+        data for kind, data in controller.telemetry.items if kind == "decision_cost"
+    ]
+    assert [c["detector"] for c in costs] == ["rule"]
+    assert {row["detector"] for row in controller.decisions.rows} == {"rule"}
+    row = controller._extra_resources()
+    assert row["detector"] == "rule" and row["decisions_total"] == 2
+    assert row["detector_rss_bytes"] == 1048576
+    assert row["detector_cpu_percent"] == 50.0
+
+
+def test_the_detection_mode_comes_from_the_detector_service_rule_included(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SDN_DETECTION_MODE", "entropy")  # the service must win
+    for served in app_modes.MODES:
+        assert app_modes.detection_mode({"mode": served}) == served
+    assert app_modes.detection_mode(None) == "entropy"  # no service: the environment
+    monkeypatch.setenv("SDN_DETECTION_MODE", "nonsense")
+    with pytest.raises(ValueError):
+        app_modes.detection_mode(None)
+
+
 def test_a_failed_model_call_still_costs_its_time(
     controller: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -297,3 +340,89 @@ def test_an_error_in_the_extra_fields_is_reported_and_the_sample_kept(
         "where": "extra controller fields",
         "error": "RuntimeError('boom')",
     }
+
+
+def _flow_stat(proto: int, src: str, packets: int, age: int) -> Any:
+    match = {
+        "in_port": 1,
+        "eth_src": "00:00:00:00:00:01",
+        "eth_dst": "00:00:00:00:00:02",
+        "ipv4_src": src,
+        "ipv4_dst": "10.0.0.1",
+        "ip_proto": proto,
+    }
+    return SimpleNamespace(
+        priority=10,
+        cookie=0,
+        table_id=0,
+        match=match,
+        packet_count=packets,
+        byte_count=packets * 60,
+        duration_sec=age,
+        duration_nsec=0,
+    )
+
+
+def _batch(match_l4_ports: bool, protected: Any = None, mode: str = "llm") -> Any:
+    from sdn_ddos.controller.core import FlowRateTracker
+
+    controller = EnterpriseDDoSController.__new__(EnterpriseDDoSController)
+    controller.flow_rates = FlowRateTracker()
+    controller.match_l4_ports = match_l4_ports
+    controller.mode = mode
+    if protected is not None:
+        controller._is_protected = protected  # type: ignore[method-assign]
+    datapath = SimpleNamespace(id=1)
+    for packets, age in ((0, 0), (300, 1)):  # the first poll only sets the baseline
+        stats = [
+            _flow_stat(6, "10.0.0.11", packets, age),
+            _flow_stat(17, "10.0.0.31", packets, age),
+            _flow_stat(1, "10.0.0.2", packets, age),
+        ]
+        batch = controller._flow_batch(
+            SimpleNamespace(msg=SimpleNamespace(datapath=datapath, body=stats))
+        )
+    batch.controller = controller
+    return batch
+
+
+def test_port_free_flows_of_every_protocol_are_sent_to_the_model() -> None:
+    batch = _batch(match_l4_ports=False)
+    assert len(batch.rows) == 3
+    assert [s["ip_proto"] for s in batch.samples] == [6, 17, 1]
+    assert {s["l4_dst_port"] for s in batch.samples} == {0}
+    # The stored rows keep what the switch reported: no port.
+    assert {row["l4_dst_port"] for row in batch.rows} == {None}
+
+
+def test_per_port_rules_still_send_only_icmp_without_a_port() -> None:
+    batch = _batch(match_l4_ports=True)
+    assert [s["ip_proto"] for s in batch.samples] == [1]
+
+
+def test_a_protected_source_never_enters_the_models_samples_but_its_row_is_kept() -> (
+    None
+):
+    # The victim's replies to a flood must not use the poll's few model samples.
+    batch = _batch(False, protected=lambda ip: ip == "10.0.0.31")
+    assert [row["ipv4_src"] for row in batch.rows] == [
+        "10.0.0.11",
+        "10.0.0.31",
+        "10.0.0.2",
+    ]
+    assert [s["ip_proto"] for s in batch.samples] == [6, 1]
+    assert batch.sample_indexes == [0, 2]  # still pointing at the right rows
+    assert batch.controller.protected_flows_skipped == 1
+    assert batch.rows[1]["prob_ddos"] is None  # stored, never judged
+
+
+def test_without_protected_hosts_every_sample_is_kept_and_nothing_is_counted() -> None:
+    batch = _batch(False, protected=lambda ip: False)
+    assert len(batch.samples) == 3
+    assert getattr(batch.controller, "protected_flows_skipped", 0) == 0
+
+
+def test_the_skip_is_only_counted_for_the_llm() -> None:
+    batch = _batch(False, protected=lambda ip: True, mode="entropy")
+    assert batch.samples == []
+    assert getattr(batch.controller, "protected_flows_skipped", 0) == 0

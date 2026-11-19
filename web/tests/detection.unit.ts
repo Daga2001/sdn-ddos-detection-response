@@ -20,6 +20,7 @@ import {
   detectionFromService,
   emptyExperiment,
   normalizeDetection,
+  normalizeExperiment,
 } from "../src/types.ts";
 
 const topology: Topology = {
@@ -571,4 +572,29 @@ test("the margin and second-order thresholds are described with their own rule a
   assert.deepEqual(current.decide, ["pair"]);
   assert.equal(current.margin, 0.02);
   assert.equal(current.rate_threshold, 500);
+});
+
+test("a saved run's forwarding never becomes part of the experiment", () => {
+  const settings = {
+    attackers: ["h1"],
+    victims: ["h2"],
+    traffic: ["syn"],
+    rate: 100,
+    duration: 20,
+    baseline: 30,
+    recovery: 30,
+    mitigation: false,
+    confirm_isolated_lab: true,
+    detection: null,
+    forwarding: "port_free",
+  };
+  const experiment = normalizeExperiment(settings);
+  assert.equal("forwarding" in experiment, false);
+  assert.deepEqual(experiment.attackers, ["h1"]);
+  // The saved record itself is left as it was.
+  assert.equal(settings.forwarding, "port_free");
+  assert.equal(
+    "forwarding" in normalizeExperiment({ source: "h1", target: "h2" }),
+    false,
+  );
 });

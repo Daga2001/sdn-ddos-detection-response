@@ -108,6 +108,7 @@ export type ResponseParams = {
   confirm_hits: number;
   confirm_seconds: number;
   protected: string[];
+  protect_victims: boolean;
 };
 /** Which detector judges a run and how it is tuned; saved with the experiment. */
 export type DetectionConfig = {
@@ -183,6 +184,7 @@ export const defaultResponse: ResponseParams = {
   confirm_hits: 1,
   confirm_seconds: 30,
   protected: [],
+  protect_victims: true,
 };
 export const defaultDetection: DetectionConfig = {
   mode: "llm",
@@ -311,7 +313,11 @@ export const emptyExperiment: Experiment = {
  * experiment recorded before this change never crashes the workspace.
  */
 export function normalizeExperiment(settings: unknown): Experiment {
-  const value = (settings ?? {}) as Record<string, any>;
+  const value = { ...((settings ?? {}) as Record<string, any>) };
+  // A saved run's settings also hold how it was forwarded (`forwarding`), which is a
+  // field of the start request, not of the experiment: the server rejects a stray
+  // `experiment.forwarding` (422, "Choose the forwarding rules"), so it never gets in.
+  delete value.forwarding;
   if (Array.isArray(value.attackers) || Array.isArray(value.victims)) {
     return {
       ...emptyExperiment,

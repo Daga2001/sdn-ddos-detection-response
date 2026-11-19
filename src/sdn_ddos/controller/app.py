@@ -12,7 +12,7 @@ import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, ClassVar, Dict, List, Optional, Tuple
+from typing import Any, ClassVar, Dict, List, Optional, Sequence, Tuple
 
 import psutil
 import requests
@@ -459,12 +459,60 @@ class EnterpriseDDoSController(app_manager.RyuApp):
                 "label": 0,
                 "prob_ddos": None,
             }
-            sample = build_model_sample(row)
-            if sample is not None:
+            sample = build_model_sample(
+                row, port_free=not getattr(self, "match_l4_ports", True)
+            )
+            if sample is not None and self._keep_from_the_model(row):
                 samples.append(sample)
                 sample_indexes.append(len(rows))
             rows.append(row)
         return FlowBatch(dpid, observed_at, rows, samples, sample_indexes)
+
+    def _keep_from_the_model(self, row: Dict[str, Any]) -> bool:
+        """True when the model may judge this flow. A flow whose source is a protected
+        host (the victim's replies to a flood) is never judged: it could not be named
+        anyway and it would take a share of the poll's few samples. The row itself is
+        still stored with the others."""
+
+        if not self._is_protected(row["ipv4_src"]):
+            return True
+        if getattr(self, "mode", "llm") in ("llm", "rule"):  # the flow-judging modes
+            self.protected_flows_skipped = (
+                getattr(self, "protected_flows_skipped", 0) + 1
+            )
+        return False
+
+    def _is_protected(self, source: Optional[str]) -> bool:
+        """Whether `source` may never be named as an attacker. The baseline names
+        anyone; `ModeSwitchController` answers from the protected list."""
+
+        return False
+
+    def _name_refused(self, source: Optional[str], detector: str) -> bool:
+        """True when a detector tried to name a protected host: the name is dropped and
+        counted, so a run can say how often the victim would have been named."""
+
+        if not self._is_protected(source):
+            return False
+        counts = getattr(self, "names_suppressed", None)
+        if counts is None:
+            counts = self.names_suppressed = {}
+        key = f"{detector}:{source}"
+        first = key not in counts
+        counts[key] = counts.get(key, 0) + 1
+        if first:
+            self.logger.warning(
+                "NAME SUPPRESSED detector=%s host=%s is protected (counted, "
+                "not logged again)",
+                detector,
+                source,
+            )
+        return True
+
+    def _unprotected(self, sources: Sequence[str], detector: str) -> Tuple[str, ...]:
+        """The sources a detector may name: `sources` minus the protected hosts."""
+
+        return tuple(s for s in sources if not self._name_refused(s, detector))
 
     def _finish_flow_batch(
         self, batch: FlowBatch, predictions: Optional[List[Dict[str, Any]]]
@@ -483,6 +531,8 @@ class EnterpriseDDoSController(app_manager.RyuApp):
                 probability_value = float(probability)
                 row = rows[row_index]
                 row["prob_ddos"] = probability_value
+                if self._name_refused(row["ipv4_src"], getattr(self, "mode", "llm")):
+                    continue  # the model's score stays on the row; nobody is named
                 row["label"] = 1
                 self.store.record_detection(
                     {

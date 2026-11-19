@@ -397,6 +397,36 @@ export function DetectionPanel({
             <button
               type="button"
               disabled={disabled}
+              title="Min-entropy of the destination addresses in 1 s windows, polls every 0.5 s. The band is the median of the windows that look normal plus or minus 5 times their MAD (never narrower than 0.05 bits), a host is named only above 50 packets/s, and one window raises the alarm. Chosen by replaying four calibration runs of this lab (docs/detection-modes.md); it is not a published detector."
+              onClick={() =>
+                set({
+                  poll_seconds: 0.5,
+                  entropy: {
+                    ...defaultEntropy,
+                    window_seconds: 1,
+                    window_mode: "mean",
+                    warmup_windows: 30,
+                    consecutive_windows: 1,
+                    min_rate: 2,
+                    measure: "min",
+                    center: "median",
+                    spread: "mad",
+                    k: 5,
+                    history: 0,
+                    context: "normal",
+                    candidate_min_rate: 50,
+                    candidate_share: 0.3,
+                    watch_pairs: false,
+                    decide: ["dst"],
+                  },
+                })
+              }
+            >
+              Destination entropy (calibrated)
+            </button>
+            <button
+              type="button"
+              disabled={disabled}
               title="Normalised entropy of the (source, destination) pairs in 1 s windows. The alarm threshold comes from a second-order EWMA of the entropy (weight 0.1): its trend minus 4 times its volatility, not updated while an alarm lasts and never falling more than 10 % per window. One window raises the alarm. From Zhang et al. (WF-IoT 2026), spatial part; the fast-reaction timing, 30 warm-up windows are this lab's."
               onClick={() =>
                 set({
@@ -923,9 +953,18 @@ export function DetectionPanel({
                   />
                 )}
               </div>
+              <CheckField
+                disabled={disabled}
+                label="Protect the victims"
+                hint="The experiment's victims are never named as attackers by either detector and the response never touches them. Turn it off to see how often a detector would name the victim (its replies to the flood look like a flood too)."
+                checked={response.protect_victims}
+                onChange={(on) =>
+                  !disabled && setResponse({ protect_victims: on })
+                }
+              />
               <Field
-                label="Never act on · addresses"
-                hint="Comma-separated private addresses or networks the response must never touch, such as 10.0.0.1 or 10.0.0.0/30."
+                label="Never name or act on · addresses"
+                hint="Comma-separated private addresses or networks that no detector may name as an attacker and the response must never touch, such as 10.0.0.1 or 10.0.0.0/30. The victims are added to this list when 'Protect the victims' is on."
               >
                 <input
                   type="text"
