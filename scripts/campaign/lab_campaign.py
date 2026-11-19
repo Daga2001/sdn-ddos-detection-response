@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import functools
 import json
 import os
 import random
@@ -36,6 +35,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -46,11 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lab_runs import Lab
 from scenarios import SCENARIOS, Scenario
 
-# The runner container of the current Compose project (compose.yaml: name
-# sdn-ddos-detection-response, service runner). The retired `sdn-lab` project
-# named it sdn-lab-runner-1; SDN_LAB_RUNNER_CONTAINER overrides the lookup.
-COMPOSE_PROJECT = "sdn-ddos-detection-response"
-DEFAULT_RUNNER = f"{COMPOSE_PROJECT}-runner-1"
+RUNNER = "sdn-lab-runner-1"  # the historical name; see runner_container()
 TERMINAL = ("idle", "stopped", "completed", "failed", "error")
 HERE = Path(__file__).resolve().parent
 
@@ -77,37 +73,44 @@ class Api(Lab):
                 return error.code, text
 
 
-@functools.lru_cache(maxsize=1)
-def runner_container() -> str:
-    """Name of the running lab runner container."""
-    named = os.environ.get("SDN_LAB_RUNNER_CONTAINER", "").strip()
+def runner_container(
+    env: Optional[Mapping[str, str]] = None, running: Optional[str] = None
+) -> str:
+    """The runner container: SDN_RUNNER_CONTAINER, else the only running container whose
+    name ends in -runner-1 (the Compose project name decides the prefix), else the
+    historical name. Without it a missing container reads as an empty lab (no leftover
+    bridges, no rules seen) instead of failing."""
+
+    source = os.environ if env is None else env
+    named = (
+        source.get("SDN_RUNNER_CONTAINER", "")
+        or source.get("SDN_LAB_RUNNER_CONTAINER", "")
+    ).strip()
     if named:
         return named
-    try:
-        out = subprocess.run(
-            [
-                "docker",
-                "ps",
-                "--filter",
-                f"label=com.docker.compose.project={COMPOSE_PROJECT}",
-                "--filter",
-                "label=com.docker.compose.service=runner",
-                "--format",
-                "{{.Names}}",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        ).stdout.split()
-    except (subprocess.TimeoutExpired, OSError):
-        out = []
-    return out[0] if out else DEFAULT_RUNNER
+    if running is None:
+        try:
+            running = subprocess.run(
+                ["docker", "ps", "--format", "{{.Names}}"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            ).stdout
+        except (subprocess.TimeoutExpired, OSError):
+            running = ""
+    matches = [n for n in running.split() if n.endswith("-runner-1")]
+    return matches[0] if len(matches) == 1 else RUNNER
+
+
+_CONTAINER: list[str] = []
 
 
 def runner(command: str, timeout: int = 20) -> str:
+    if not _CONTAINER:
+        _CONTAINER.append(runner_container())
     try:
         return subprocess.run(
-            ["docker", "exec", runner_container(), "sh", "-c", command],
+            ["docker", "exec", _CONTAINER[0], "sh", "-c", command],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -219,6 +222,15 @@ def parse_ts(text: str) -> datetime:
 
 def seconds(first: str, second: str) -> float:
     return (parse_ts(second) - parse_ts(first)).total_seconds()
+
+
+def first_response(
+    responded: dict[str, list[tuple[float, str]]], hosts: list[str]
+) -> Optional[float]:
+    """The earliest response offset (s) against any of `hosts`, or None if none."""
+
+    offsets = [t for host in hosts for t, _ in responded.get(host, [])]
+    return round(min(offsets), 1) if offsets else None
 
 
 def analyse(
@@ -361,15 +373,11 @@ def analyse(
         "responded_attackers": sorted(
             name[a] for a in attackers if a in responded or a in db["mitigations"]
         ),
-        "response_first_s": round(
-            min(
-                (t for items in responded.values() for t, _ in items),
-                default=float("nan"),
-            ),
-            1,
-        )
-        if responded
-        else None,
+        # Seconds from the attack start to the first response against an attacker (None
+        # when none was answered); a legitimate host answered earlier or later is
+        # collateral_first_s, kept apart so it can never pass for the response time.
+        "response_first_s": first_response(responded, attackers),
+        "collateral_first_s": first_response(responded, legit),
         "responded_hosts": sorted(
             name.get(h, h) for h in set(responded) | set(db["mitigations"])
         ),
@@ -934,7 +942,7 @@ def main() -> int:
         raise SystemExit(
             f"cannot reach the lab runner container {runner_container()!r} with "
             "docker exec; start the lab (docker compose up -d) or set "
-            "SDN_LAB_RUNNER_CONTAINER"
+            "SDN_RUNNER_CONTAINER"
         )
     api = Api()
     api.login()

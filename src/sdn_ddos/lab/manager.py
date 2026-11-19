@@ -17,7 +17,7 @@ from sdn_ddos.lab.contracts import (
     probe_pairs,
     validate_experiment,
 )
-from sdn_ddos.lab.detection_settings import DetectorClient
+from sdn_ddos.lab.detection_settings import DetectorClient, victim_addresses
 from sdn_ddos.lab.events import EventJournal, utc_now
 from sdn_ddos.lab.measurements import checks_due
 from sdn_ddos.lab.ownership import OwnerLeases
@@ -244,6 +244,7 @@ class LabManager:
                     data[f"detector_{key}"] = service[key]
         data["mitigation"] = experiment.mitigation
         data["forwarding"] = request.forwarding
+        data["protected_hosts"] = victim_addresses(request.topology, experiment)
         data["purpose"] = experiment.purpose
         data["scenario"] = experiment.scenario
         data["settings_fingerprint"] = settings_fingerprint(
@@ -343,6 +344,10 @@ class LabManager:
                 extra["detection"] = request.experiment.detection
             if request.experiment and request.experiment.flow_table_limit is not None:
                 extra["flow_table_limit"] = request.experiment.flow_table_limit
+            if request.experiment:
+                extra["protected_hosts"] = victim_addresses(
+                    request.topology, request.experiment
+                )
             self.runtime = self.runtime_factory(
                 request.topology,
                 self.run_id,

@@ -329,6 +329,19 @@ def test_remote_entropy_client_roundtrip_and_config_fetch(monkeypatch: Any) -> N
     assert fetch_remote_config("http://detector", "wrong") is None
 
 
+def test_the_packet_rate_rule_is_a_mode_the_controller_accepts(
+    monkeypatch: Any,
+) -> None:
+    api = client("rule")
+
+    def fake_get(url: str, headers: Dict[str, str], timeout: float) -> Any:
+        return Adapter(api.get(url.replace("http://detector", ""), headers=headers))
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    config = fetch_remote_config("http://detector", "secret")
+    assert config is not None and config["mode"] == "rule"
+
+
 def test_prompt_profile_is_selectable_and_validated(monkeypatch: Any) -> None:
     from sdn_ddos.detection import llm_api
 

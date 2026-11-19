@@ -119,6 +119,20 @@ FINE_GRAINED_MATCH = _truthy(os.environ.get("SDN_FINE_GRAINED_MATCH", "true"))
 MATCH_L4_PORTS: Optional[bool] = None
 
 
+def detection_mode(remote: Optional[Dict[str, Any]]) -> str:
+    """The run's detection mode: the one the detector service reports (the
+    packet-rate rule included), or, without a service, the environment's."""
+
+    mode = (
+        str(remote["mode"] if remote else os.environ.get("SDN_DETECTION_MODE", "llm"))
+        .strip()
+        .lower()
+    )
+    if mode not in MODES:
+        raise ValueError(f"detection mode must be one of {MODES}, got {mode!r}")
+    return mode
+
+
 class ModeSwitchController(EnterpriseDDoSController):
     """Baseline controller plus a selectable detection mechanism."""
 
@@ -130,17 +144,7 @@ class ModeSwitchController(EnterpriseDDoSController):
         # fixed for this run; without it (standalone scripts) the env decides.
         detector_base = self.settings.inference_url.rsplit("/", 1)[0]
         remote = fetch_remote_config(detector_base, self.settings.inference_api_key)
-        mode = (
-            str(
-                remote["mode"]
-                if remote
-                else os.environ.get("SDN_DETECTION_MODE", "llm")
-            )
-            .strip()
-            .lower()
-        )
-        if mode not in MODES:
-            raise ValueError(f"detection mode must be one of {MODES}, got {mode!r}")
+        mode = detection_mode(remote)
         self.mode = mode
         # What each decision costs (see controller/cost.py): running totals sent with
         # every controller sample, and the detector service's own CPU time and memory.
@@ -229,6 +233,9 @@ class ModeSwitchController(EnterpriseDDoSController):
             self.settings.allowed_target_networks,
             OpenFlowEnforcer(self.datapaths),
         )
+        # Names a detector gave to a protected host and the controller dropped,
+        # per "detector:address" (see EnterpriseDDoSController._name_refused).
+        self.names_suppressed: Dict[str, int] = {}
         self._limit_seen: Dict[Tuple[int, str], Tuple[int, float]] = {}
         self._offered: Dict[str, Dict[int, float]] = {}
         self.response_thread = hub.spawn(self._response_loop)
@@ -343,6 +350,16 @@ class ModeSwitchController(EnterpriseDDoSController):
         self._window_polls.pop(dpid, None)
         self._window_ports.pop(dpid, None)
 
+    # -- protected hosts ----------------------------------------------------
+
+    def _is_protected(self, source: Optional[str]) -> bool:
+        """The one rule for both detectors: a protected host (the experiment's
+        victims, plus whatever `SDN_RESPONSE_PROTECTED` lists) is never named and
+        never acted on."""
+
+        responder = getattr(self, "responder", None)
+        return responder is not None and responder.is_protected(source)
+
     # -- decision cost ------------------------------------------------------
 
     def _record_cost(
@@ -376,6 +393,12 @@ class ModeSwitchController(EnterpriseDDoSController):
         row: Dict[str, Any] = {"detector": mode}
         row.update(getattr(self, "cost", DecisionCost()).totals())
         row["polls_skipped_total"] = int(getattr(self, "llm_skipped", 0))
+        suppressed = getattr(self, "names_suppressed", {})
+        row["protected_flows_skipped_total"] = int(
+            getattr(self, "protected_flows_skipped", 0)
+        )
+        row["names_suppressed_total"] = sum(suppressed.values())
+        row["names_suppressed"] = dict(suppressed)
         if mode != "off":
             row.update(getattr(self, "_usage_row", {}))
         return row
@@ -752,6 +775,9 @@ class ModeSwitchController(EnterpriseDDoSController):
             observed_at = datetime.now(timezone.utc)
             details = result.as_details()
             details["flows_per_switch"] = {str(d): e[2] for d, e in fresh.items()}
+            protected = [c for c in result.candidates if self._is_protected(c)]
+            if protected:
+                details["protected_candidates"] = protected
             score = (
                 min(1.0, result.consecutive / self.entropy.consecutive_windows)
                 if result.evaluated
@@ -769,10 +795,18 @@ class ModeSwitchController(EnterpriseDDoSController):
             if result.note:
                 self.logger.info("ENTROPY ALARM named nobody: %s", result.note)
                 continue
+            # The same rule as the LLM's: a protected host is never named.
+            named = self._unprotected(result.candidates, "entropy")
+            if result.candidates and not named:
+                self.logger.info(
+                    "ENTROPY ALARM named nobody: every candidate %s is protected",
+                    result.candidates,
+                )
+                continue
             self.logger.warning(
                 "ENTROPY ALARM target=%s candidates=%s h_src=%.3f h_dst=%.3f",
                 result.target_dst,
-                result.candidates,
+                named,
                 result.h_src,
                 result.h_dst,
             )
@@ -780,15 +814,15 @@ class ModeSwitchController(EnterpriseDDoSController):
                 "detection",
                 {
                     "dpid": NETWORK_SCOPE,
-                    "ipv4_src": result.candidates[0] if result.candidates else None,
+                    "ipv4_src": named[0] if named else None,
                     "ipv4_dst": result.target_dst,
                     "probability": score,
                     "threshold": 1.0,
                     "detector": "entropy",
-                    "candidates": list(result.candidates),
+                    "candidates": list(named),
                 },
             )
-            for source in result.candidates:
+            for source in named:
                 if source == result.target_dst:
                     continue  # never act on the address named as the victim
                 self._maybe_block(source, observed_at)

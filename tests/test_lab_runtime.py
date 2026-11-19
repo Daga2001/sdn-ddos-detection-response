@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from sdn_ddos.lab import runtime as module
-from sdn_ddos.lab.contracts import Capture, Diagnostic, Experiment
+from sdn_ddos.lab.contracts import Capture, DetectionConfig, Diagnostic, Experiment
 from sdn_ddos.lab.runtime import PACKET_FIELDS, MininetRuntime, packet_summary
 from sdn_ddos.lab.topology import presets
 
@@ -28,6 +28,21 @@ def runtime(monkeypatch):
     lab.events = events
     yield lab
     lab.close()
+
+
+def test_versions_report_the_poll_interval_the_controller_really_uses(
+    runtime, monkeypatch
+):
+    monkeypatch.setitem(sys.modules, "mininet.net", SimpleNamespace(VERSION="test"))
+    monkeypatch.setattr(
+        module.subprocess, "check_output", lambda *a, **k: "ovs-vsctl 3.0\n"
+    )
+    monkeypatch.setenv("SDN_POLL_INTERVAL", "5")  # the lab process's own environment
+    assert runtime.versions()["poll_interval_seconds"] == "5"  # no detection settings
+    runtime.detection = DetectionConfig(poll_seconds=1.0)
+    assert runtime.versions()["poll_interval_seconds"] == "1.0"
+    runtime.detection = DetectionConfig(poll_seconds=0.5)
+    assert runtime.poll_interval_seconds() == "0.5"
 
 
 def test_header_parser_never_retains_payload():

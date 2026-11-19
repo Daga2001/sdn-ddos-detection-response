@@ -397,11 +397,24 @@ def query_llm(
     return _as_bool(verdict["is_ddos"]), _as_confidence(verdict["confidence"])
 
 
+# A "not DDoS" answer is never worth more than this probability of attack.
+NEGATIVE_PROB_CAP = 0.5
+
+
 def to_prediction(is_ddos: bool, confidence: float) -> PredictItem:
-    # confidence is "how sure the model is about its own verdict", not
-    # directly P(ddos). Normalize both cases onto the same prob_ddos scale
-    # the controller thresholds against.
-    prob_ddos = confidence if is_ddos else (1.0 - confidence)
+    """The model's verdict and confidence on the controller's prob_ddos scale.
+
+    `confidence` is how sure the model is of its own verdict, not P(ddos). A positive
+    verdict keeps it as it is. A negative verdict is 1 - confidence, but never above
+    `NEGATIVE_PROB_CAP`: "is_ddos=false, confidence=0.0" (the model contradicting itself,
+    seen offline on 343 of 503 flagged answers) used to become prob_ddos = 1.0, and a
+    verdict of "not an attack" was thresholded as an attack. The cap keeps a negative
+    answer under any threshold of 0.5 or more and the probability informative. With a
+    configured threshold below 0.5 a negative answer of low confidence can still be
+    flagged: that threshold asks for it.
+    """
+
+    prob_ddos = confidence if is_ddos else min(1.0 - confidence, NEGATIVE_PROB_CAP)
     return PredictItem(pred_label=1 if is_ddos else 0, prob_ddos=prob_ddos)
 
 

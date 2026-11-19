@@ -67,7 +67,9 @@ bash scripts/last_run_report.sh [run_id]   # phases, who was flagged, decisions
 * Decisions are written by the controller to `detection_decisions` in the lab
   PostgreSQL (`postgres` container, no Neon). Fresh databases get the table
   from `database/schema.sql`; apply
-  `database/migrations/001_detection_decisions.sql` to a database created before.
+  `database/migrations/001_detection_decisions.sql` to a database created before. Then apply
+  `database/migrations/003_rule_decisions.sql`, which lets the packet-rate rule arm
+  log its decisions as detector `rule`.
 * Safe lab defaults: prompt `lab` and `SDN_RESPONSE_DRY_RUN=true`, so a mitigated
   run records what it *would* do and enforces nothing. `detector.sh status` then
   shows `"prompt": "lab"` and `"dry_run": true`. Enable enforcement explicitly
@@ -132,6 +134,18 @@ bash scripts/last_run_report.sh [run_id]   # phases, who was flagged, decisions
   one, so an ICMP flood never reached the model (0 of 2 attackers detected in 135 s).
   `build_model_sample` now sends ICMP with `l4_dst_port = 0` (how flow datasets record it):
   2 of 2 detected within 8.5 s, no false positive. The entropy detector never needed this.
+* With `port_free` forwarding no rule matches the layer-4 port, so **every** IPv4 flow
+  reaches the sample builder without `l4_dst_port`, TCP and UDP included, and used to be
+  dropped: the LLM saw only ICMP while the entropy detector counted all of it (campaign R0,
+  3 SYN/UDP attackers at 300 pkt/s: 0 of 3 named, only ICMP replies and pings were judged).
+  `build_model_sample(row, port_free=True)` now sends any IPv4 flow with `l4_dst_port = 0`
+  (`NO_PORT`, the same convention as ICMP), so both detectors judge the same flows.
+  **This is a design decision for the tutor**: it keys only on the one `forwarding` setting
+  every detector shares (there is no per-detector switch), it leaves `per_port` untouched
+  (a TCP/UDP flow without a port is still dropped there) and it does not change the prompt:
+  `lab` decides on `pktrate` and merely prints "Puerto destino L4: 0". The stored flow rows
+  still say "no port" (NULL). The Random Forest model of `detection.api` was trained with real
+  ports, so port 0 is outside its training data; it is not used by the lab.
 
 ## LLM prompt profiles and calibration
 
@@ -202,7 +216,7 @@ on the attacker; `rate_limit` cut the traffic towards the victim from ~800 to
 
 Safety rails: only addresses inside `SDN_ALLOWED_TARGET_CIDRS` are touched,
 `SDN_RESPONSE_PROTECTED` (comma list of IPs/CIDRs, e.g. the victim and
-infrastructure) never is, every action expires by itself, at most
+infrastructure) never is named or touched (see "Protected hosts" below), every action expires by itself, at most
 `SDN_RESPONSE_MAX_ACTIVE` sources are handled at once, and
 `SDN_RESPONSE_DRY_RUN=true` records what *would* be done (`dry_run_*` in
 `mitigation_events.action`, no telemetry, no flows) so detector decisions can
@@ -388,9 +402,75 @@ python3 scripts/replay_entropy.py entropy_windows.jsonl runs.json \
     --detail "measure=renyi,order=10,center=median,spread=mad,context=all"
 ```
 
+Two additions for calibrating without running the lab again. `runs.json` may carry each run's
+`attackers` and `victims` (IP lists; `export_entropy_runs.py --topology project.json` writes them) and
+the tables then also say how many attackers were named, how many legitimate hosts and whether a victim
+was; `--protect` applies the protected-host rule to the replayed names. And when a run has no dump,
+`--from-events events.jsonl` replays the `entropy_window` events stored in `lab_events` (the entropies
+and the rate, not the flows): it re-scores the alarm side with another threshold, margin, `k`, warm-up
+or number of windows, but cannot name anybody and only supports the measures the event's `panel` holds.
+On the two entropy runs of campaign R0 the two modes agree to within one window of false alarms
+(191 against 190 and 118 against 117 with the "Destination entropy" preset; the event export lacks 2 of
+the 486 dumped windows). The replay only judges the settings it is given: choose them on calibration
+runs and score the held-out ones once.
+
 (The flow rows the controller stores in the database are capped by
 `SDN_MAX_FLOW_ROWS_PER_POLL`, so they cannot be used for this: during a flood the cap keeps
 about 300 of tens of thousands of flows and the entropies come out wrong.)
+
+### Destination entropy (calibrated)
+
+The "Destination entropy" preset follows the paper and is what the lab measured first: in the
+university network it named every attacker but also 17 to 19 legitimate hosts per run and raised
+alarms in most baseline windows (campaigns R0 and R1). Cause: the lab's only legitimate traffic is a
+website check once a second from a rotating client (25 to 60 packets/s in one 1 s window, all to one
+destination) plus 5 pings/s, so a window with a check sits far below a threshold of "EWMA minus 0.01" and
+the check's client is the busiest source of that window. "Destination entropy (calibrated)" is the
+setting that results from replaying four calibration runs through a grid fixed beforehand. It is **not** a
+published detector.
+
+* Runs (calibration only, port-free forwarding, 120 s baseline / 60 s attack / 60 s recovery, windows of
+  1 s, polls every 0.5 s, `window_mode` mean): `78746efa` (baseline with a 1 pkt/s ICMP control, scored as a run
+  without attack), `44c49fee` (3 attackers, SYN+UDP, 300 pkt/s), `a728f375` (1 attacker, SYN, 1000 pkt/s)
+  and `06356a99` (3 attackers, SYN+UDP, 30 pkt/s). No held-out run was used.
+* Procedure: `scripts/calibrate_entropy.py` replays every configuration of the grid through the real
+  `EntropyDetector`. Primary grid, 6000 configurations: five measures (`norm`, `shannon`, Renyi and Tsallis of order 2,
+  `min`) x 25 threshold models (EWMA minus a margin of 0.01 to 0.3; EWMA, median+MAD and mean+std with
+  `k` of 2.5 to 10, each learning only normal windows or every window) x warm-up 16 or 30 windows x 1, 2 or 3
+  consecutive windows x a minimum rate to be named of 20, 50, 100 or 200 packets/s x a candidate share of 0.1 or 0.3,
+  with the minimum window rate left at the preset's 2. The secondary grid (24000) also moves that minimum
+  rate (2, 20, 100, 500).
+* Rule, fixed before the sweep: (1) no legitimate host named in any run and any phase, (2) most attackers
+  named (7 in total), (3) shortest mean time to the first alarm that names an attacker, (4) fewest alarms
+  before the attack. 61 of the 6000 configurations tie at the best rank (135 of 24000), so ties are broken by stability: the share of
+  one-step neighbours (one parameter moved to the next value of the grid, or the learning context flipped) that
+  still name all 7 attackers and no legitimate host, then the fewest changes from the original preset,
+  then a median+MAD centre over a mean, then the name.
+* Result, primary: 5169 of 6000 name no legitimate host, 1090 of them also name all 7 attackers; the original
+  preset (norm, EWMA minus 0.01, 1 window, 20 packets/s) names 72 legitimate hosts in total and raises 298 alarms
+  before the attacks. The chosen setting names 7 of 7 attackers, no legitimate host and no victim,
+  raises no alarm in the 4 baselines (0 of about 90 evaluated windows each) nor in recovery, and alarms 59 to 60 of 60
+  attack windows; the first alarm that names an attacker comes 0.8 s (S1), 1.7 s (S2) and 0.7 s (S4) into the attack.
+  Seven of its eight neighbours work too; the one that does not is a minimum rate of 20 packets/s, which names one
+  legitimate client during the 30 pkt/s attack. The working range of that minimum rate is narrow and set by this lab's traffic:
+  200 packets/s misses the 30 pkt/s attackers and 20 names a legitimate client. Freeing the minimum window rate
+  (secondary) reaches the same best rank with a different winner (`min_rate=20`, 16 warm-up windows) and no better
+  outcome.
+
+| Setting | "Destination entropy" | "Destination entropy (calibrated)" |
+| --- | --- | --- |
+| Measure | normalised Shannon | min-entropy (`-log2(max p)`) |
+| Threshold | EWMA (0.13) minus 0.01 | median of the normal windows +/- 5 x MAD (floor 0.05 bits) |
+| Warm-up / windows needed | 30 / 1 | 30 / 1 |
+| Window / poll | 1 s / 0.5 s | 1 s / 0.5 s |
+| Alarm decided by | destination | destination |
+| A host is named from | 20 pkt/s, share 0.3 | 50 pkt/s, share 0.3 |
+
+How to read it: min-entropy looks at the share of the busiest destination, so a flood that concentrates the traffic
+(its replies keep the victim and the attacker at half each) moves it from about 1 bit to 0.5-0.7 bit, while one website check
+(one client, one server) does not; the rate to be named separates the 30 pkt/s attackers from the busiest legitimate clients.
+Both are properties of this lab's traffic. The rule is a rate threshold in part, like the LLM prompt `lab`, and it must be
+validated on held-out runs, on other topologies and with other legitimate traffic before it is reported as a result.
 
 ### Never naming the victim
 
@@ -412,6 +492,41 @@ request (30 packets in a 1 s window) over the victim's last retries to the block
 attackers was enough to put the frozen band out of range again and a legitimate client was
 named and blocked (seen with 8 attackers, 3.8 s and 34.8 s after the flood). A second flood
 bigger than 5 % of the first is still named at once.
+
+### Protected hosts: the victim is never named (both detectors)
+
+A flood is answered, so the victim's replies (RST, ICMP port-unreachable) are flows with a high
+packet rate whose *source* is the victim. Both detectors can therefore name it: the LLM judges
+those flows one by one (campaign R0, run af3baba3: the victim was named about 66 times), and the
+entropy detector only avoids it through its own memory of past victims. Telling an attacker from
+the victim by the traffic alone is ambiguous (a SYN flood is answered one RST per SYN, so both
+directions have the same rate), so the rule uses a list the operator configures.
+
+One rule, applied at the controller to both detectors: **a protected host is never named as an
+attacker and the response never acts on it** (`ResponseManager.is_protected`, the same test the
+response already used; the LLM path is `EnterpriseDDoSController._finish_flow_batch`, the entropy
+path `ModeSwitchController._entropy_loop`, both through `_name_refused`/`_unprotected`).
+The list is `SDN_RESPONSE_PROTECTED` ("Never name or act on" in the Detection tab). The runner adds
+the experiment's victims to it unless `response.protect_victims` is false ("Protect the victims").
+That the victims are known is operator knowledge (the servers to defend), not knowledge of
+the attackers, but it is a design decision for the tutor.
+
+Nothing is hidden: every refused name is counted. The controller sample carries
+`names_suppressed_total` and `names_suppressed` (per `detector:address`), an entropy decision lists
+`protected_candidates`, and the
+first refusal of each host is logged (`NAME SUPPRESSED`). The run's `detection_config` event lists the
+protected networks (`protected_hosts`). To measure how often a detector would have named the
+victim, run once with "Protect the victims" off: with it on the Results tab reports
+"Victim named as a source: no" by construction, and the counter holds the real figure.
+The LLM does not *judge* the flows whose source is protected: they never enter the choice of the
+poll's samples (`_flow_batch`), so the victim's replies to a flood no longer take a share of the
+`SDN_LLM_MAX_SAMPLES` budget or of the GPU (campaign R1, 3 SYN/UDP attackers: 78 of the LLM's names were
+the victim's and 108 polls went unjudged). The rows are still stored in `flows` with no `prob_ddos`,
+nothing else the model sees changes, and the controller sample counts them as
+`protected_flows_skipped_total`. Because they are never judged the LLM no longer shows up in
+`names_suppressed`; the naming test in `_finish_flow_batch` stays as a second guard. Run with
+"Protect the victims" off to see what the model does with those flows. The model's own mistakes on
+legitimate flows (a 0.5 pkt/s flow judged an attack) are not corrected here.
 
 ### Forwarding rules (`forwarding`, `SDN_MATCH_L4_PORTS`)
 
@@ -492,6 +607,40 @@ How it behaves:
   and the model's compute happens on the provider's hardware. Do not compare it with
   the Ollama cost figures.
 
+### A "not DDoS" verdict is never an attack (`to_prediction`)
+
+The model answers `{"comparacion", "is_ddos", "confidence"}` and `llm_api.to_prediction` puts it on the
+controller's `prob_ddos` scale, which the threshold (`SDN_DDOS_THRESHOLD`, 0.8 in the lab) then judges.
+`confidence` is how sure the model is of its own verdict. The conversion used to be
+`prob_ddos = confidence` for `is_ddos=true` and `1 - confidence` for `is_ddos=false`, so the answer
+`{"is_ddos": false, "confidence": 0.0}` became `prob_ddos = 1.0` and was flagged as an attack.
+
+Evidence (offline probe of 880 calls with the exact `lab` prompt, llama3.2:3b, temperature 0, seed 42; the whole
+answers are kept outside the repository, in `resultados/agentes/datos/ollama_offline/probe.jsonl`): `is_ddos=true` only appeared at 50 and 300
+pkt/s (160 of 160 calls) and never below 50 (560 of 560 answered false), but 343 of the 503 calls that
+were flagged were `is_ddos=false` with `confidence=0.0`, e.g. `"0.50 es menor que 10"` at 0.5 pkt/s and
+`"20.00 es menor que 10"` at 20 pkt/s. The port did not matter (0 and 80 gave the same flags in every cell) and
+the false alarms on legitimate hosts at 0.5 pkt/s (a flow of h_moodle with `prob 1.00`) and the "detections" at 20-49
+pkt/s had the same origin. In the database, the positives whose score is exactly 1.00 are this answer: 568 of 573 positives at
+10-50 pkt/s, and all 14 below 10 pkt/s after the port fix; real attacks (at least 50 pkt/s) score 0.98.
+
+New rule, `to_prediction` only: `is_ddos=true` keeps `prob_ddos = confidence`; `is_ddos=false` gives
+`min(1 - confidence, 0.5)` (`NEGATIVE_PROB_CAP`). A negative answer stays informative (confidence 0.9 gives 0.1,
+confidence 0.0 gives 0.5) and can never exceed 0.5.
+
+* With a threshold **above** 0.5 (the lab uses 0.8) a negative answer is never flagged.
+* With a threshold of **exactly** 0.5 the controller's `>=` still flags a negative answer of confidence 0.0 (prob 0.5).
+* With a threshold **below** 0.5 a doubtful negative answer is flagged: 0.3 flags every negative answer of confidence 0.7 or
+  less. That threshold asks for it; the rule does not hide it.
+* A failed or unparsable call keeps its old answer, `pred_label=0, prob_ddos=0.0`. The prompt, the threshold, the poll
+  and the number of samples are untouched.
+
+Consequence to watch: the "ambiguous" band (10 to 50 pkt/s) that the `lab` prompt leaves to the model was flagged
+only through this contradiction. With the rule the offline answers predict no flag below 50 pkt/s, so a flood of
+30 pkt/s per attacker is no longer detected by the LLM unless the model starts answering `is_ddos=true` there. The
+numbers of the calibration tables above (and `scripts/compare_llms.py`, which uses the same function) were measured with
+the old conversion. This is a design decision for the tutor; it was not made to favour either detector.
+
 ## Robustness fixes over the baseline controller
 
 Found while attacking the lab (they only live in the subclass):
@@ -513,7 +662,8 @@ Found while attacking the lab (they only live in the subclass):
 * A SYN flood makes every RST reply a new flow (~1 new flow per attack packet),
   which is the flow-table exhaustion the thesis studies; `flows_per_switch` in
   the entropy decisions records it.
-* ICMP flows have no L4 port; `build_model_sample` sends them to the LLM with port 0 (see above).
+* ICMP flows have no L4 port, and with `port_free` neither has any other flow; `build_model_sample`
+  sends them to the LLM with port 0 (see above).
   The entropy detector does not catch a symmetric ICMP echo flood: the replies mirror the
   requests, so H(src) and H(dst) stay at the baseline's value (campaign E4: 0 of 2).
 * The entropy detector is blind to floods whose source/destination entropy stays inside the
