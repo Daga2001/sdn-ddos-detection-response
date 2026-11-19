@@ -75,12 +75,13 @@ PYTHONPATH=src python3 scripts/campaign/lab_campaign.py --poll 1 --rounds 10 --s
 
 # results: one row per run, then the statistics
 (cd web && node --experimental-strip-types scripts/result_rows.ts ../records/held_out/*.json) > held_out_rows.csv
-python3 scripts/compare_runs.py held_out_rows.csv --frozen-at <freeze time> --out held_out_report.md
+python3 scripts/compare_runs.py held_out_rows.csv --frozen-at <freeze time> \
+  --out held_out_cells.csv > held_out_report.md   # --out: one CSV row per cell; the Markdown report goes to stdout
 ```
 
 Without Node on the VM: `docker run --rm -v "$PWD":/w -w /w/web node:24-bookworm-slim node --experimental-strip-types scripts/result_rows.ts ../records/held_out/*.json > held_out_rows.csv`.
 
-**Send back for the report:** `held_out_rows.csv`, `held_out_report.md`, `held_out.jsonl`,
+**Send back for the report:** `held_out_rows.csv`, `held_out_report.md`, `held_out_cells.csv`, `held_out.jsonl`,
 `smoke.jsonl`, the freeze lines, and the `versions` event of one run (report Appendix B).
 
 **A run marked `valid = no`** is dropped by `compare_runs.py` and listed; do not re-run it
