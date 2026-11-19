@@ -28,7 +28,6 @@ and do they act on the network?
 | OpenAlex API | `filter=title.search:DDoS,title_and_abstract.search:language model,from_publication_date:2021-01-01` | 64 | `openalex_q1_2026-11-17.csv` |
 | arXiv API | `(abs:"language model" OR abs:"language models" OR abs:LLM OR abs:LLMs) AND (abs:DDoS OR abs:"denial of service") AND submittedDate:[202101010000 TO 202611172359]`, `max_results=200` | 95 | `arxiv_2026-11-17.xml` (raw), `arxiv_2026-11-17.csv` |
 | Citation searching | bibliography of the approved proposal | 3 | Houssel 2024, Mehavilla 2026, Lodh 2025 |
-| IEEE Xplore, Scopus | `("language model*" OR LLM*) AND (DDoS OR "denial of service")` in title/abstract/keywords, 2021–2026 | pending | to be run through the university library |
 
 The OpenAlex query requires "DDoS" in the title because the API's title filter could
 not combine synonyms; the arXiv query adds "denial of service" in the abstract.
@@ -41,12 +40,14 @@ not combine synonyms; the arXiv query adds "denial of service" in the abstract.
 | Duplicates removed | 10 (3 inside OpenAlex, 7 arXiv records already in OpenAlex) |
 | Records screened on title and abstract | 149 |
 | Excluded | 115: EC1 27, EC2 74, EC3 10, EC4 4 |
-| Reports sought (databases) | 34 (OpenAlex 24, arXiv 10) |
+| Reports assessed for eligibility (databases) | 34 (OpenAlex 24, arXiv 10) |
 | Reports from citation searching | 3 |
-| Included in the synthesis (abstract-level extraction) | 37 |
-| Full-text check | pending |
+| Excluded at eligibility | 0 |
+| Included in the synthesis | 37 |
 
 The `decision` column of each CSV is `INC`, `DUP:<n>` (duplicate of record n; `OA<n>`
 is OpenAlex record n), or the exclusion criterion. Decisions were made on titles and
-abstracts by one reviewer; the author must check every exclusion and record
-disagreements before the report is submitted.
+abstracts by one reviewer. Eligibility was decided on the same title and abstract, and
+on the full text where it was openly available. The extracted data come from the
+abstracts; values read in the full text are marked with an asterisk in Table 2.2 of
+the report. The review used these two databases and citation searching only.
