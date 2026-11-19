@@ -187,6 +187,28 @@ set -a; . .env; set +a
 
 Start the inference service, controller, and topology in separate terminals as described in the setup guide. Until a project-owned model is supplied with a verified `DDOS_MODEL_SHA256`, the service reports `not_ready` and the controller safely continues in monitoring-only mode.
 
+## Key design decisions
+
+The decisions below shape what the experiments can and cannot show. Each one names the
+reason and where the evidence or the standard is. Change one only together with its
+entry here, its test, and the thesis report.
+
+| # | Decision | Why | Evidence / source |
+|---|---|---|---|
+| 1 | Ryu, OpenFlow 1.3, Mininet and Open vSwitch | Open source, reproducible, real controller and switch code | `docs/decisions/0001`, `0002`; Lantz et al. 2010 |
+| 2 | Two forwarding modes: per-port and port-free, chosen per run (no default) | Per-port rules expose control-plane saturation (SO1); port-free compares detectors on equal terms (SO3) | `src/sdn_ddos/controller/app.py`; report 3.3.3 |
+| 3 | hping3 floods to port 8080 with the source port incremented per packet; every attacker floods every victim; rate is per attack flow | With per-port rules the victim's replies need a new rule per packet; bounded, non-spoofed traffic | `experiments/attack_launcher.py`, `lab/contracts.py` (`attack_plan`); hping3(8) |
+| 4 | Three detectors behind one API: LLM, packet-rate rule, entropy; one at a time | The rule is the LLM prompt's own decision rule, so what the model adds can be measured (Arp et al. 2022) | `detection/service.py`, `detection/rule.py` |
+| 5 | LLM: Llama 3.2 3B local, temperature 0, seed 42, verdict cache, threshold 0.8 fixed in advance | Deterministic, runs on consumer GPU; a threshold tuned on reported runs would be data snooping | `detection/llm_api.py` |
+| 6 | Asynchronous judging, newest poll per switch replaces an unjudged one | Ryu is single-threaded; waiting for the LLM held up legitimate flows | report Appendix C |
+| 7 | One response for every detector: block after 2 detections in 30 s, 300 s, servers protected, never permanent | Same design as Snort `detection_filter`, Suricata `threshold`, fail2ban; one detection blocked legitimate hosts in development | `lab/contracts.py` (`ResponseParams`); `docs/thesis-campaign.md` §6 |
+| 8 | Ground truth from the experiment definition; main unit host per run | Detectors cannot grade themselves; units are never mixed | `web/src/results.ts` |
+| 9 | Run purpose, settings fingerprint, commit and prompt hash recorded per run; only held-out runs reported | Separates tuning from evaluation (Arp et al. 2022) | `lab/provenance.py`, `scripts/compare_runs.py` |
+| 10 | 10 runs per cell in randomized complete blocks | RFC 8456 §4.7; randomized blocks keep an interrupted campaign balanced (NIST/SEMATECH 5.3.3.2) | `scripts/campaign/lab_campaign.py --rounds` |
+| 11 | Wilson intervals for proportions, Mann–Whitney U for comparisons | Small samples, no normality assumed (Wilson 1927; Brown et al. 2001) | `src/sdn_ddos/analysis/compare.py` |
+| 12 | TC-1 emulates a hardware flow table of 1 500 rules (`flow_limit`, `overflow_policy=refuse`) | Open vSwitch keeps rules in RAM with no small limit; 1 500 is the HP ProCurve 5406zl table measured by Kuźniar et al. (PAM 2015) | `lab/runtime.py` (`flow_limit_command`) |
+| 13 | Thesis campaign phases 75/60/60 s with the fast-reaction entropy preset (1 s windows, 30 warm-up) and 1 s polling | Fits 180 runs in one day; warm-up 30 s + 40 s margin; 1 s polling kept the service at 100 % in development (26–37 % at 5 s) | `scripts/campaign/scenarios.py`; `docs/thesis-campaign.md` |
+
 ## Repository map
 
 ```text
