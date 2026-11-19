@@ -88,6 +88,37 @@ Without Node on the VM: `docker run --rm -v "$PWD":/w -w /w/web node:24-bookworm
 by hand. Report how many were dropped. **If a batch stops** (power cut), re-run it with
 `--rounds` = the rounds still missing and a new seed.
 
+## Completing the 18–19 Nov 2026 campaign
+
+The report uses the 170 held-out runs recorded on 18–19 Nov 2026. They followed the
+earlier plan: phases 180/120/120 s (TC-5: 300 s of attack), the original entropy
+preset (Shannon, 5 s windows), 17 cells. Their commit (`fee8ae6`) is a local commit
+on the lab machine. Two additions complete them:
+
+1. **Extra round (one run of each cell that has 9 valid runs).** Run it from the
+   **same local checkout as the 170 runs** (`git rev-parse HEAD` must print `fee8ae6…`).
+   Any other version produces another settings fingerprint, and then the runs cannot
+   be pooled:
+
+   ```bash
+   PYTHONPATH=src python3 scripts/campaign/lab_campaign.py --poll 1 --rounds 1 --seed 2034 \
+     --records records/held_out_extra --out held_out_extra.jsonl \
+     TH2-llm TH4-llm TH5-llm TH5-rule
+   ```
+
+2. **TC-1 (flow table limited to 1 500 rules), 10 runs.** This needs the table limit,
+   which only exists on `main`, so it runs from `main` with the phases of the 170 runs.
+   The code version differs from the 170, and the report says so:
+
+   ```bash
+   git checkout main && git pull
+   PYTHONPATH=src python3 scripts/campaign/lab_campaign.py --poll 1 --rounds 10 --seed 2035 \
+     --phases 180,120,120 --records records/held_out_tc1 --out held_out_tc1.jsonl TH1-none
+   ```
+
+Then build the rows for each folder with `web/scripts/result_rows.ts` (section 3) and
+send them back with the records.
+
 ## 4. Design and its basis
 
 | Decision | Value | Basis |

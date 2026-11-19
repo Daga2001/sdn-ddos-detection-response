@@ -111,3 +111,24 @@ def test_campaign_refuses_to_start_without_the_runner(
     monkeypatch.setattr(sys, "argv", ["lab_campaign.py", "TH1-none", "--poll", "1"])
     with pytest.raises(SystemExit, match="cannot reach the lab runner"):
         lab_campaign.main()
+
+
+def test_phases_override_keeps_the_case_and_reaches_the_request() -> None:
+    tc1 = lab_campaign.with_poll(next(s for s in SCENARIOS if s.id == "TH1-none"), 1.0)
+    longer = lab_campaign.with_phases(tc1, "180,120,120")
+    assert (longer.baseline, longer.duration, longer.recovery) == (180, 120, 120)
+    body = lab_campaign.request_body(longer, TOPOLOGY)
+    experiment = body["experiment"]
+    assert (experiment["baseline"], experiment["duration"], experiment["recovery"]) == (
+        180,
+        120,
+        120,
+    )
+    assert experiment["flow_table_limit"] == 1500
+    assert experiment["scenario"] == "TC-1"
+    request = StartRequest.model_validate(body)
+    validate_experiment(request.topology, request.experiment)
+    with pytest.raises(SystemExit, match="three whole numbers"):
+        lab_campaign.with_phases(tc1, "180,120")
+    with pytest.raises(SystemExit, match="between 10 and 900"):
+        lab_campaign.with_phases(tc1, "5,120,120")

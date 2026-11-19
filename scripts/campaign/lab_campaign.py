@@ -580,6 +580,21 @@ def with_poll(scenario: Scenario, seconds: float) -> Scenario:
     )
 
 
+def with_phases(scenario: Scenario, phases: str) -> Scenario:
+    """The scenario with other phase lengths (recorded with every run)."""
+    try:
+        baseline, duration, recovery = (int(value) for value in phases.split(","))
+    except ValueError:
+        raise SystemExit(
+            "--phases needs three whole numbers: baseline,attack,recovery"
+        ) from None
+    if not (10 <= baseline <= 900 and 10 <= duration <= 900 and 10 <= recovery <= 900):
+        raise SystemExit("--phases values must be between 10 and 900 s")
+    return dataclasses.replace(
+        scenario, baseline=baseline, duration=duration, recovery=recovery
+    )
+
+
 def plan(
     chosen: list[Scenario], repeat: int, rounds: int, seed: Optional[int]
 ) -> list[Scenario]:
@@ -888,6 +903,11 @@ def main() -> int:
         action="store_true",
         help="print the order and the estimated time, run nothing",
     )
+    parser.add_argument(
+        "--phases",
+        help="baseline,attack,recovery seconds for every chosen scenario, e.g. "
+        "180,120,120 to match the runs of the 18-19 Nov 2026 campaign",
+    )
     parser.add_argument("--out", default="campaign_results.jsonl")
     args = parser.parse_args()
     if args.list:
@@ -917,6 +937,8 @@ def main() -> int:
             for s in chosen
             for value in (polls if s.needs_poll else [0.0])
         ]
+    if args.phases:
+        chosen = [with_phases(s, args.phases) for s in chosen]
     order = plan(chosen, args.repeat, args.rounds, args.seed)
     # Setup and teardown take about a minute per run on the lab VM; measure yours.
     seconds = sum(s.baseline + s.duration + s.recovery + 60 for s in order)
