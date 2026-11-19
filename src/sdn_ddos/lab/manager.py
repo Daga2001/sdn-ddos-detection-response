@@ -233,7 +233,13 @@ class LabManager:
                 service = self.detector.config()
             except ValueError:
                 service = {}
-            for key in ("prompt_sha256", "ollama_version", "model_details"):
+            for key in (
+                "prompt_sha256",
+                "ollama_version",
+                "model_details",
+                "llm_backend",
+                "cloud_endpoints",
+            ):
                 if key in service:
                     data[f"detector_{key}"] = service[key]
         data["mitigation"] = experiment.mitigation
