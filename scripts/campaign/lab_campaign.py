@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import functools
 import json
+import os
 import random
 import re
 import subprocess
@@ -44,7 +46,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lab_runs import Lab
 from scenarios import SCENARIOS, Scenario
 
-RUNNER = "sdn-lab-runner-1"
+# The runner container of the current Compose project (compose.yaml: name
+# sdn-ddos-detection-response, service runner). The retired `sdn-lab` project
+# named it sdn-lab-runner-1; SDN_LAB_RUNNER_CONTAINER overrides the lookup.
+COMPOSE_PROJECT = "sdn-ddos-detection-response"
+DEFAULT_RUNNER = f"{COMPOSE_PROJECT}-runner-1"
 TERMINAL = ("idle", "stopped", "completed", "failed", "error")
 HERE = Path(__file__).resolve().parent
 
@@ -71,10 +77,37 @@ class Api(Lab):
                 return error.code, text
 
 
+@functools.lru_cache(maxsize=1)
+def runner_container() -> str:
+    """Name of the running lab runner container."""
+    named = os.environ.get("SDN_LAB_RUNNER_CONTAINER", "").strip()
+    if named:
+        return named
+    try:
+        out = subprocess.run(
+            [
+                "docker",
+                "ps",
+                "--filter",
+                f"label=com.docker.compose.project={COMPOSE_PROJECT}",
+                "--filter",
+                "label=com.docker.compose.service=runner",
+                "--format",
+                "{{.Names}}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        ).stdout.split()
+    except (subprocess.TimeoutExpired, OSError):
+        out = []
+    return out[0] if out else DEFAULT_RUNNER
+
+
 def runner(command: str, timeout: int = 20) -> str:
     try:
         return subprocess.run(
-            ["docker", "exec", RUNNER, "sh", "-c", command],
+            ["docker", "exec", runner_container(), "sh", "-c", command],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -895,6 +928,14 @@ def main() -> int:
         for index, scenario in enumerate(order, 1):
             print(f"{index:>4} {scenario.id:<16} {scenario.title}")
         return 0
+    if runner("echo ready").strip() != "ready":
+        # Without the runner, the per-run checks of the controller settings and of
+        # the switch rules would be skipped without notice.
+        raise SystemExit(
+            f"cannot reach the lab runner container {runner_container()!r} with "
+            "docker exec; start the lab (docker compose up -d) or set "
+            "SDN_LAB_RUNNER_CONTAINER"
+        )
     api = Api()
     api.login()
     out = Path(args.out)
