@@ -118,6 +118,26 @@ PYTHONPATH=src python3 scripts/campaign/lab_campaign.py --poll 1 --rounds 10 --s
 
 The report states that these 20 runs used the commit of `main`, not `fee8ae6`.
 
+## 2c. TC-5 again at 15 SYN/s (after the 190 runs)
+
+The 40 TC-5 runs at 30 SYN/s did not test a flood below the rule's threshold: the
+switches measured 59.3 packets/s per attacker, because each SYN-ACK of the victim gets
+a RST from the attacker's kernel. TC-5 now sends 15 SYN/s, so the flow carries about
+30 packets/s. Run its four cells again, 10 rounds (about 7 h), after rebuilding:
+
+```bash
+git checkout main && git pull
+docker compose up -d --build
+set -a; . ./.env; set +a; export SDN_GIT_COMMIT=$(git rev-parse HEAD)
+PYTHONPATH=src python3 scripts/campaign/lab_campaign.py --poll 1 --rounds 10 --seed 2036 \
+  --records records/held_out_tc5 --out held_out_tc5.jsonl \
+  TH5-none TH5-rule TH5-entropy TH5-llm
+```
+
+The detector settings stay frozen, so the fingerprints equal those of the old TC-5
+cells; the cells differ by `rate_per_s` (15). The report keeps the 30 SYN/s runs as a
+declared deviation and uses these 40 for TC-5.
+
 ## 3. Design and its basis
 
 | Decision | Value | Basis |
