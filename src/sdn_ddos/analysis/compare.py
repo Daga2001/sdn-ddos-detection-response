@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import csv
 import math
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -84,6 +85,24 @@ def t975(df: int) -> float:
     # Cornish-Fisher expansion: within 0.001 of the exact quantile for df > 30.
     z = Z975
     return z + (z**3 + z) / (4 * df) + (5 * z**5 + 16 * z**3 + 3 * z) / (96 * df**2)
+
+
+def parse_utc(text: str) -> datetime:
+    """A run's start time as the Results tab writes it.
+
+    PostgreSQL prints the offset as ``+00`` (``2026-11-18 21:00:38.306682+00``),
+    with as few fraction digits as needed (``.96002``); ``datetime.fromisoformat``
+    rejects both before Python 3.11. ``Z`` and ``+HH:MM`` work too.
+    """
+
+    value = text.strip().replace("Z", "+00:00")
+    if re.search(r"[+-]\d{2}$", value):
+        value += ":00"
+    # PostgreSQL drops trailing zeros of the fraction; fromisoformat wants 3 or 6.
+    value = re.sub(
+        r"\.(\d{1,6})(?=[+-]|$)", lambda m: "." + m.group(1).ljust(6, "0"), value
+    )
+    return datetime.fromisoformat(value)
 
 
 @dataclass(frozen=True)
@@ -276,9 +295,8 @@ def select(
             )
             continue
         if frozen_at is not None:
-            started = row.get("started_utc", "")
             try:
-                moment = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                moment = parse_utc(row.get("started_utc", ""))
             except ValueError:
                 excluded.append((run, "no start time to compare with the freeze"))
                 continue

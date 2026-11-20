@@ -212,3 +212,18 @@ def test_a_file_without_the_header_is_rejected(tmp_path: Path):
     path.write_text("r1,2026,held_out\n")
     with pytest.raises(ValueError, match="no results-row header"):
         read_rows([str(path)])
+
+
+def test_parse_utc_reads_the_postgres_offset_on_every_python() -> None:
+    from datetime import datetime, timezone
+
+    from sdn_ddos.analysis.compare import parse_utc
+
+    expected = datetime(2026, 11, 18, 21, 0, 38, 306682, tzinfo=timezone.utc)
+    assert parse_utc("2026-11-18 21:00:38.306682+00") == expected
+    assert parse_utc("2026-11-18T21:00:38.306682Z") == expected
+    assert parse_utc("2026-11-18T21:00:38.306682+00:00") == expected
+    assert parse_utc("2026-11-18 16:00:38.306682-05") == expected
+    short = datetime(2026, 11, 19, 16, 54, 48, 960020, tzinfo=timezone.utc)
+    assert parse_utc("2026-11-19 16:54:48.96002+00") == short
+    assert parse_utc("2026-11-19 16:54:48+00") == short.replace(microsecond=0)
