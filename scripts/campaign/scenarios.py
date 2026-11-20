@@ -2226,13 +2226,17 @@ THESIS_CASES: dict[str, dict[str, Any]] = {
         "rate": 1000,
         "forwarding": "port_free",
     },
-    # 30 packets/s: the middle of the prompt's ambiguous band (10-50) and below the
-    # rule's threshold; 300 s of attack.
+    # The switches must measure about 30 packets/s per attacker: the middle of the
+    # prompt's ambiguous band (10-50) and below the rule's threshold; 300 s of attack.
+    # hping3 sends 15 SYN/s: the victim answers each with a SYN-ACK and the attacker's
+    # kernel, which never opened the connection, answers that with a RST, so the flow
+    # carries twice what hping3 sends. The 18-19 Nov runs at 30 SYN/s were measured
+    # at 59.3 packets/s per attacker (29.7 SYN-ACK/s back), above the threshold.
     "TC-5": {
         "attackers": ["h_wifi1", "h_lab1"],
         "victims": ["h_web"],
         "traffic": ["syn"],
-        "rate": 30,
+        "rate": 15,
         "forwarding": "port_free",
         "duration": 300,
     },
