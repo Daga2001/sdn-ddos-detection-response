@@ -17,6 +17,7 @@ import {
 } from "../src/detection.ts";
 import type { Experiment, Observation, Topology } from "../src/types.ts";
 import {
+  defaultDetection,
   detectionFromService,
   emptyExperiment,
   normalizeDetection,
@@ -597,4 +598,27 @@ test("a saved run's forwarding never becomes part of the experiment", () => {
     "forwarding" in normalizeExperiment({ source: "h1", target: "h2" }),
     false,
   );
+});
+
+test("protected hosts are not scored as legitimate clients", () => {
+  const guarded: Experiment = {
+    ...experiment,
+    detection: {
+      ...defaultDetection,
+      response: {
+        ...defaultDetection.response,
+        protected: ["10.0.0.5/32", "10.0.0.6"],
+      },
+    },
+  };
+  const events = [
+    ...phases,
+    ev(45, "detection", { ipv4_src: "10.0.0.4", probability: 0.9 }), // c1
+  ];
+  const result = analyzeDetection(events, topology, guarded, false);
+  // c2 and c3 are protected: only c1 is a legitimate client, and it was named.
+  assert.equal(result.confusion.fp, 1);
+  assert.equal(result.confusion.vn, 0);
+  const open = analyzeDetection(events, topology, experiment, false);
+  assert.equal(open.confusion.vn, 2);
 });
