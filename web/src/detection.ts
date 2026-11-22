@@ -124,6 +124,39 @@ export function flaggedAddresses(data: Record<string, any>): string[] {
   return [...names];
 }
 
+/** Whether an IPv4 address falls in one of the protected entries (address or CIDR). */
+export function protectedMatcher(
+  entries: readonly string[] | undefined,
+): (address: string) => boolean {
+  const toInt = (ip: string): number | null => {
+    const parts = ip.split(".").map(Number);
+    if (
+      parts.length !== 4 ||
+      parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)
+    )
+      return null;
+    return (
+      ((parts[0] << 24) >>> 0) + (parts[1] << 16) + (parts[2] << 8) + parts[3]
+    );
+  };
+  const nets = (entries ?? []).flatMap((entry) => {
+    const [ip, bits] = String(entry).trim().split("/");
+    const base = toInt(ip);
+    const size = bits === undefined ? 32 : Number(bits);
+    if (base === null || !Number.isInteger(size) || size < 0 || size > 32)
+      return [];
+    const mask = size === 0 ? 0 : (0xffffffff << (32 - size)) >>> 0;
+    return [{ net: (base & mask) >>> 0, mask }];
+  });
+  return (address) => {
+    const value = toInt(address);
+    return (
+      value !== null &&
+      nets.some(({ net, mask }) => (value & mask) >>> 0 === net)
+    );
+  };
+}
+
 export function analyzeDetection(
   events: Observation[],
   topology: Topology | null,
@@ -139,8 +172,18 @@ export function analyzeDetection(
   const byIp = new Map(hosts.map((h) => [bareIp(h.ip), h]));
   const attackers = new Set(experiment?.attackers ?? []);
   const victims = new Set(experiment?.victims ?? []);
+  // A protected address (the servers) is never sent to a detector nor named by one,
+  // so it cannot be a false positive: counting it as a true negative would only
+  // lower the false-alarm rate. It is left out of the score, like the victims.
+  const guarded = protectedMatcher(experiment?.detection?.response?.protected);
   const legit = new Set(
-    topology && experiment ? legitimateClients(topology, experiment) : [],
+    (topology && experiment
+      ? legitimateClients(topology, experiment)
+      : []
+    ).filter((name) => {
+      const host = hosts.find((h) => h.name === name);
+      return !host || !guarded(bareIp(host.ip));
+    }),
   );
 
   const started = events.find((e) => e.kind === "attack_started");
