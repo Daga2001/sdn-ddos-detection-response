@@ -290,34 +290,30 @@ export function controllerSeries(events: Observation[]): {
       t: at(event),
       rate: finite(event.data.packet_in_handled_per_s),
     }));
-  const bySecond = new Map<
-    number,
-    { sent: number; rules: number; seen: boolean }
-  >();
-  for (const event of events) {
-    if (event.kind !== "switch_table") continue;
-    const t = at(event);
-    const bucket = Math.floor(t / 1000);
-    const row = bySecond.get(bucket) ?? { sent: 0, rules: 0, seen: false };
+  // Network totals: after each switch reply, the sum of every switch's latest value.
+  // Summing the replies that fall in one clock second instead counts a switch twice
+  // when two of its polls land in the same second and misses the switches whose
+  // reply fell in the next one, which under load inflated the rule peak and
+  // understated the Packet-Ins sent.
+  const latestSent = new Map<string, number>();
+  const latestRules = new Map<string, number>();
+  const sent: { t: number; rate: number | null }[] = [];
+  const rules: { t: number; count: number | null }[] = [];
+  const total = (values: Map<string, number>) =>
+    [...values.values()].reduce((sum, value) => sum + value, 0);
+  const tables = events
+    .filter((event) => event.kind === "switch_table")
+    .map((event) => ({ event, t: at(event) }))
+    .sort((a, b) => a.t - b.t);
+  for (const { event, t } of tables) {
+    const dpid = String(event.data.dpid ?? "");
     const rate = finite(event.data.packet_in_sent_per_s);
-    if (rate !== null) row.sent += rate;
-    const rules = finite(event.data.flow_rules);
-    if (rules !== null) row.rules += rules;
-    row.seen = true;
-    bySecond.set(bucket, row);
+    if (rate !== null) latestSent.set(dpid, rate);
+    const count = finite(event.data.flow_rules);
+    if (count !== null) latestRules.set(dpid, count);
+    sent.push({ t, rate: latestSent.size ? total(latestSent) : null });
+    rules.push({ t, count: latestRules.size ? total(latestRules) : null });
   }
-  const sent = [...bySecond.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([second, row]) => ({
-      t: second * 1000,
-      rate: row.seen ? row.sent : null,
-    }));
-  const rules = [...bySecond.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([second, row]) => ({
-      t: second * 1000,
-      count: row.seen ? row.rules : null,
-    }));
   return { handled, sent, rules };
 }
 

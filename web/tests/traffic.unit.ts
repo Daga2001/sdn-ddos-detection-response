@@ -6,6 +6,7 @@ import { emptyExperiment } from "../src/types.ts";
 import {
   RECOVERY,
   checkSeries,
+  controllerSeries,
   judgeController,
   judgeService,
   percentile,
@@ -249,4 +250,30 @@ test("markers use the detection tab's first naming and first response", () => {
   );
   assert.equal(markers[0].t, Date.parse(at(40)));
   assert.equal(markers[1].t, Date.parse(at(45)));
+});
+
+test("network totals add each switch's latest reply, not the replies of a clock second", () => {
+  const table = (ms: number, dpid: number, rules: number, sent: number) =>
+    ({
+      run_id: "r",
+      seq: ++seq,
+      ts: new Date(Date.UTC(2026, 0, 1, 0, 0, 0, ms)).toISOString(),
+      kind: "switch_table",
+      data: { dpid, flow_rules: rules, packet_in_sent_per_s: sent },
+    }) as Observation;
+  // Switch 1 answers twice inside second 0; switch 2 answers in second 1.
+  const events = [
+    table(100, 1, 1000, 10),
+    table(900, 1, 1000, 10),
+    table(1100, 2, 500, 5),
+  ];
+  const series = controllerSeries(events);
+  assert.deepEqual(
+    series.rules.map((p) => p.count),
+    [1000, 1000, 1500],
+  );
+  assert.deepEqual(
+    series.sent.map((p) => p.rate),
+    [10, 10, 15],
+  );
 });
