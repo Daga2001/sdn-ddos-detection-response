@@ -372,3 +372,65 @@ def test_an_experiment_with_detection_is_validated_by_the_api():
         )
         assert refused.status_code == 409
         assert "no detector service" in refused.json()["detail"]
+
+
+def _compare_rows():
+    from test_compare_runs import run
+
+    rows = []
+    for i in range(10):
+        rows.append(run(i, "rule", availability_attack_pct=40 + i))
+        rows.append(run(10 + i, "llm", fp=6, tn=14, availability_attack_pct=30 + i))
+        rows.append(
+            run(
+                20 + i,
+                "off",
+                response="",
+                tp="",
+                fn="",
+                fp="",
+                tn="",
+                mean_detection_s="",
+                availability_attack_pct=1,
+            )
+        )
+    return rows
+
+
+def test_compare_runs_returns_the_acceptance_criteria_and_needs_a_session():
+    client, settings = client_for_lab()
+    with client:
+        assert client.post("/api/compare", json={"rows": []}).status_code == 401
+        client.post("/api/session", json={"token": settings.access_token})
+        response = client.post("/api/compare", json={"rows": _compare_rows()})
+        assert response.status_code == 200
+        report = response.json()
+        assert report["runs"] == 30 and report["cells"] == 3
+        llm = next(v for v in report["verdicts"] if v["detector"] == "llm")
+        assert llm["false_alarm_rate_vs_rule"] == "no"
+        assert llm["availability_vs_no_defense"] == "yes"
+        assert "## Acceptance criteria" in report["markdown"]
+        assert all(t["p_value"] <= t["p_holm"] for t in report["tests"])
+        # the same rows give the same report
+        again = client.post("/api/compare", json={"rows": _compare_rows()}).json()
+        assert again == report
+
+
+def test_compare_runs_rejects_bad_input():
+    client, settings = client_for_lab()
+    with client:
+        client.post("/api/session", json={"token": settings.access_token})
+        assert client.post("/api/compare", json={"rows": []}).status_code == 422
+        bad = client.post(
+            "/api/compare", json={"rows": _compare_rows(), "purposes": ["anything"]}
+        )
+        assert bad.status_code == 422
+        mixed = _compare_rows()
+        mixed[0]["settings_fingerprint"] = "another"
+        refused = client.post("/api/compare", json={"rows": mixed})
+        assert refused.status_code == 409
+        assert "settings fingerprints" in refused.json()["detail"]
+        allowed = client.post(
+            "/api/compare", json={"rows": mixed, "allow_mixed_settings": True}
+        )
+        assert allowed.status_code == 200 and allowed.json()["problems"]

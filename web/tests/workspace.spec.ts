@@ -584,3 +584,65 @@ test("live clock uses runner time and rejects observations from another run", as
   ).toBeVisible();
   await expect(page.locator(".run-clock")).toHaveText("⏱ 06:02");
 });
+
+test("History compares runs from result-row files with the lab's statistics", async ({
+  page,
+}) => {
+  await mockApi(page);
+  let sent: { rows: Record<string, string>[] } | null = null;
+  await page.route("**/api/compare", async (route) => {
+    sent = route.request().postDataJSON();
+    await route.fulfill({
+      json: {
+        markdown: "# Comparison of detectors\n",
+        verdicts: [
+          {
+            scenario: "TC-2",
+            detector: "llm",
+            detection_rate_vs_rule: "yes",
+            false_alarm_rate_vs_rule: "no",
+            mean_detection_s: 2.79,
+            detection_within_limit: "yes",
+            availability_vs_no_defense: "yes",
+          },
+        ],
+        tests: [
+          {
+            scenario: "TC-2",
+            detector: "llm",
+            measure: "false_alarm_rate",
+            value: "109/180",
+            reference: "0/180",
+            p_value: 9.6e-44,
+            p_holm: 8.7e-43,
+            significant: true,
+          },
+        ],
+        cells: 2,
+        runs: 2,
+        excluded: [],
+        problems: [],
+        alpha: 0.05,
+        detection_limit_s: 10,
+      },
+    });
+  });
+  await page.getByRole("button", { name: "History", exact: true }).click();
+  await page.getByText("Add records or result rows").setInputFiles({
+    name: "rows.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from(
+      "run_id,detector,tp,prompt_sha256\nr1,rule,2,abc\nr2,llm,2,abc\n",
+    ),
+  });
+  await expect(page.getByText("2 run(s) added.")).toBeVisible();
+  await page.getByRole("button", { name: "Compare 2 run(s)" }).click();
+  await expect(
+    page.getByRole("cell", { name: "False-alarm rate" }),
+  ).toBeVisible();
+  await expect(page.getByRole("cell", { name: "<0.001" })).toBeVisible();
+  expect(sent!.rows).toHaveLength(2);
+  // only the compared columns leave the browser
+  expect(sent!.rows[0]).not.toHaveProperty("prompt_sha256");
+  expect(sent!.rows[1].detector).toBe("llm");
+});

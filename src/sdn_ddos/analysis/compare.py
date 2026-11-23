@@ -15,6 +15,13 @@ detector, response, traffic, attackers, rate); a cell is one arm of one scenario
   without ties, normal approximation with tie correction otherwise) and the
   rank-biserial correlation as effect size.
 * A cell with fewer than 10 runs is flagged (RFC 8456 §4.7).
+* Acceptance criteria (thesis §3.5.4): every detector is compared with the packet-rate
+  rule of the same scenario (detection rate and false-alarm rate with Fisher's exact
+  test on the pooled counts, detection time with Mann-Whitney U) and with no defense
+  (availability during the attack, Mann-Whitney U), with the Holm correction over the
+  tests of one scenario at alpha = 0.05; the mean detection time must also be at most
+  10 s. Nothing here draws random numbers: the tests are exact or closed-form, so the
+  same rows always give the same report.
 
 Pure standard library, so it runs wherever the CSV is.
 """
@@ -32,6 +39,18 @@ from itertools import combinations
 from typing import Optional
 
 MIN_RUNS = 10  # RFC 8456 §4.7: each test SHOULD be repeated at least 10 times
+# Acceptance criteria (thesis §3.5.4). The references are measured in the same scenario:
+# Arp et al. (2022) call an evaluation without an appropriate baseline a pitfall, and
+# Axelsson (2000) shows that the false-alarm rate limits an intrusion detector, so both
+# rates are compared with the rule. alpha is the conventional two-sided 0.05 and the
+# Holm (1979) correction keeps it for the family of tests of one scenario.
+ALPHA = 0.05
+# The detection-time limit comes from the service: in development runs the website
+# started failing 5.6 to 11.5 s after a flood began, before any detector had acted
+# (thesis Table 4.13); 10 s lies between those times.
+DETECTION_LIMIT_S = 10.0
+REFERENCE_DETECTOR = "rule"
+NO_DEFENSE = "off"
 CELL_KEYS = (
     "scenario",
     "forwarding",
@@ -228,6 +247,42 @@ def mann_whitney(a: Sequence[float], b: Sequence[float]) -> Optional[MannWhitney
     return MannWhitney(u1, min(1.0, p), effect, False)
 
 
+def fisher_exact(a: int, b: int, c: int, d: int) -> float:
+    """Two-sided p of Fisher's exact test for the 2x2 table [[a, b], [c, d]].
+
+    The tables with the observed margins are enumerated with their hypergeometric
+    probabilities; p adds those no more probable than the observed one (the same
+    rule, and the same relative tolerance of 1e-7, as ``scipy.stats.fisher_exact``).
+    """
+
+    if min(a, b, c, d) < 0:
+        raise ValueError("a 2x2 table cannot hold negative counts")
+    row, col, total = a + b, a + c, a + b + c + d
+    if total == 0:
+        return 1.0
+    low, high = max(0, col - (total - row)), min(row, col)
+    denominator = math.comb(total, col)
+    probabilities = {
+        x: math.comb(row, x) * math.comb(total - row, col - x) / denominator
+        for x in range(low, high + 1)
+    }
+    observed = probabilities[a]
+    p = sum(q for q in probabilities.values() if q <= observed * (1 + 1e-7))
+    return min(1.0, p)
+
+
+def holm(p_values: Sequence[float]) -> list[float]:
+    """Holm (1979) step-down adjusted p-values, in the order given."""
+
+    order = sorted(range(len(p_values)), key=lambda i: p_values[i])
+    adjusted = [1.0] * len(p_values)
+    running = 0.0
+    for rank, index in enumerate(order):
+        running = max(running, min(1.0, (len(p_values) - rank) * p_values[index]))
+        adjusted[index] = running
+    return adjusted
+
+
 def _number(text: Optional[str]) -> Optional[float]:
     if text is None or text.strip() == "":
         return None
@@ -396,6 +451,196 @@ def comparisons(
     return results
 
 
+def _values(cell: Cell, name: str) -> list[float]:
+    return [v for v in (_number(run.get(name)) for run in cell.runs) if v is not None]
+
+
+def _add_test(
+    tests: list[dict[str, object]],
+    scenario: str,
+    name: str,
+    measure: str,
+    value: str,
+    reference: str,
+    p: float,
+    sign: int,
+) -> None:
+    tests.append(
+        {
+            "scenario": scenario,
+            "detector": name,
+            "measure": measure,
+            "value": value,
+            "reference": reference,
+            "p_value": p,
+            "direction": sign,  # +1 the detector is better, -1 worse, 0 equal
+        }
+    )
+
+
+def _verdict(tests: Sequence[Mapping[str, object]], name: str, measure: str) -> str:
+    found = [t for t in tests if t["detector"] == name and t["measure"] == measure]
+    if not found:
+        return "n.a."
+    test = found[0]
+    if not test["significant"]:
+        return "yes"
+    return "better" if int(str(test["direction"])) > 0 else "no"
+
+
+@dataclass
+class Criteria:
+    tests: list[dict[str, object]]  # every test, with its Holm-adjusted p
+    verdicts: list[dict[str, object]]  # one row per scenario and detector
+
+
+def acceptance(cells: Sequence[Cell], alpha: float = ALPHA) -> Criteria:
+    """The acceptance criteria of the thesis (§3.5.4), per scenario.
+
+    In each scenario (all cell keys equal except the detector) that has a ``rule``
+    cell, every other detector except ``off`` is compared with the rule: detection rate
+    (Fisher on tp/fn), false-alarm rate (Fisher on fp/tn) and mean detection time
+    (Mann-Whitney U on the per-run means). Where the service was lost without defense
+    (an ``off`` run below 100 % availability during the attack), every detector,
+    the rule included, is compared with ``off`` on the availability during the attack.
+    The p-values of one scenario are Holm-adjusted together. A detector meets a
+    criterion against the rule unless it is significantly worse; ``better`` marks a
+    significant difference in its favour. The detection time must also average at most
+    ``DETECTION_LIMIT_S`` over the runs.
+    """
+
+    detector = CELL_KEYS.index("detector")
+    # The arm is the detector with its response: no defense has no response, so the
+    # response is left out of the scenario key as well.
+    arm_keys = {detector, CELL_KEYS.index("response")}
+    by_scenario: dict[tuple[str, ...], dict[str, Cell]] = {}
+    for cell in cells:
+        rest = tuple(v for i, v in enumerate(cell.key) if i not in arm_keys)
+        if cell.key[detector] in by_scenario.setdefault(rest, {}):
+            raise ValueError(
+                f"{cell.label()}: two cells with the same detector in one scenario "
+                "(different responses); compare them separately"
+            )
+        by_scenario[rest][cell.key[detector]] = cell
+    all_tests: list[dict[str, object]] = []
+    verdicts: list[dict[str, object]] = []
+    for _rest, arms in sorted(by_scenario.items()):
+        rule = arms.get(REFERENCE_DETECTOR)
+        if rule is None:
+            continue
+        scenario = rule.key[0]
+        none = arms.get(NO_DEFENSE)
+        lost = none is not None and any(
+            v < 100 for v in _values(none, "availability_attack_pct")
+        )
+        tests: list[dict[str, object]] = []
+
+        others = sorted(d for d in arms if d not in (REFERENCE_DETECTOR, NO_DEFENSE))
+        for name in others:
+            cell = arms[name]
+            tp, fn = _counts(cell, "tp"), _counts(cell, "fn")
+            rtp, rfn = _counts(rule, "tp"), _counts(rule, "fn")
+            fp, tn = _counts(cell, "fp"), _counts(cell, "tn")
+            rfp, rtn = _counts(rule, "fp"), _counts(rule, "tn")
+            if tp + fn and rtp + rfn:
+                share, ref = tp / (tp + fn), rtp / (rtp + rfn)
+                sign = (share > ref) - (share < ref)
+                _add_test(
+                    tests,
+                    scenario,
+                    name,
+                    "detection_rate",
+                    f"{tp}/{tp + fn}",
+                    f"{rtp}/{rtp + rfn}",
+                    fisher_exact(tp, fn, rtp, rfn),
+                    sign,
+                )
+            if fp + tn and rfp + rtn:
+                share, ref = fp / (fp + tn), rfp / (rfp + rtn)
+                sign = (share < ref) - (share > ref)
+                _add_test(
+                    tests,
+                    scenario,
+                    name,
+                    "false_alarm_rate",
+                    f"{fp}/{fp + tn}",
+                    f"{rfp}/{rfp + rtn}",
+                    fisher_exact(fp, tn, rfp, rtn),
+                    sign,
+                )
+            a, b = _values(cell, "mean_detection_s"), _values(rule, "mean_detection_s")
+            test = mann_whitney(a, b)
+            if test is not None:
+                mean_a, mean_b = sum(a) / len(a), sum(b) / len(b)
+                sign = (mean_a < mean_b) - (mean_a > mean_b)
+                _add_test(
+                    tests,
+                    scenario,
+                    name,
+                    "mean_detection_s",
+                    f"{mean_a:.2f}",
+                    f"{mean_b:.2f}",
+                    test.p_value,
+                    sign,
+                )
+        if lost and none is not None:
+            b = _values(none, "availability_attack_pct")
+            for name in sorted(d for d in arms if d != NO_DEFENSE):
+                a = _values(arms[name], "availability_attack_pct")
+                test = mann_whitney(a, b)
+                if test is None:
+                    continue
+                mean_a, mean_b = sum(a) / len(a), sum(b) / len(b)
+                sign = (mean_a > mean_b) - (mean_a < mean_b)
+                _add_test(
+                    tests,
+                    scenario,
+                    name,
+                    "availability_attack_pct",
+                    f"{mean_a:.2f}",
+                    f"{mean_b:.2f}",
+                    test.p_value,
+                    sign,
+                )
+        raw = [float(str(entry["p_value"])) for entry in tests]
+        for entry, adjusted in zip(tests, holm(raw)):
+            entry["p_holm"] = adjusted
+            entry["significant"] = adjusted < alpha
+        all_tests += tests
+
+        for name in sorted(d for d in arms if d != NO_DEFENSE):
+            times = _values(arms[name], "mean_detection_s")
+            mean_time = sum(times) / len(times) if times else None
+            detected = mean_time is not None and len(times) == len(arms[name].runs)
+            row: dict[str, object] = {
+                "scenario": scenario,
+                "detector": name,
+                "detection_rate_vs_rule": "--"
+                if name == REFERENCE_DETECTOR
+                else _verdict(tests, name, "detection_rate"),
+                "false_alarm_rate_vs_rule": "--"
+                if name == REFERENCE_DETECTOR
+                else _verdict(tests, name, "false_alarm_rate"),
+                "mean_detection_s": mean_time,
+                "detection_within_limit": "yes"
+                if mean_time is not None and mean_time <= DETECTION_LIMIT_S
+                else "no",
+                "detected_in_every_run": detected,
+                "availability_vs_no_defense": _verdict(
+                    tests, name, "availability_attack_pct"
+                )
+                if lost
+                else "n.a.",
+            }
+            if row["availability_vs_no_defense"] == "better":
+                row["availability_vs_no_defense"] = "yes"
+            elif lost and row["availability_vs_no_defense"] == "yes":
+                # not significantly above no defense: the criterion asks for "higher"
+                row["availability_vs_no_defense"] = "no"
+            verdicts.append(row)
+    return Criteria(all_tests, verdicts)
+
+
 def _fmt(value: object) -> str:
     if value is None:
         return "—"
@@ -410,7 +655,11 @@ def _fmt(value: object) -> str:
     return str(value)
 
 
-def markdown_report(selection: Selection, tests: Sequence[Mapping[str, object]]) -> str:
+def markdown_report(
+    selection: Selection,
+    tests: Sequence[Mapping[str, object]],
+    criteria: Optional[Criteria] = None,
+) -> str:
     lines = ["# Comparison of detectors", ""]
     if selection.problems:
         lines += ["## Warnings", ""] + [f"* {p}" for p in selection.problems] + [""]
@@ -467,6 +716,65 @@ def markdown_report(selection: Selection, tests: Sequence[Mapping[str, object]])
                         "p_value",
                         "rank_biserial",
                         "exact",
+                    )
+                )
+                + " |"
+            )
+    if criteria is not None and criteria.verdicts:
+        lines += [
+            "",
+            "## Acceptance criteria",
+            "",
+            "Against the packet-rate rule of the same scenario: detection rate and "
+            "false-alarm rate (Fisher's exact test on the pooled counts) and mean "
+            "detection time (Mann-Whitney U). Against no defense: availability during "
+            "the attack (Mann-Whitney U), only where the service was lost without "
+            f"defense. p is two-sided and Holm-adjusted per scenario; alpha = {ALPHA}. "
+            f"The mean detection time must also be at most {DETECTION_LIMIT_S:g} s. "
+            "yes = met, no = not met, better = significantly better than the rule, "
+            "-- = the rule is the reference, n.a. = not testable.",
+            "",
+            "| Scenario | Detector | DR vs rule | FAR vs rule | Mean detection s | "
+            f"Detection <= {DETECTION_LIMIT_S:g} s | Availability > no defense |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
+        ]
+        for row in criteria.verdicts:
+            lines.append(
+                "| "
+                + " | ".join(
+                    _fmt(row[name])
+                    for name in (
+                        "scenario",
+                        "detector",
+                        "detection_rate_vs_rule",
+                        "false_alarm_rate_vs_rule",
+                        "mean_detection_s",
+                        "detection_within_limit",
+                        "availability_vs_no_defense",
+                    )
+                )
+                + " |"
+            )
+        lines += [
+            "",
+            "### Tests behind the criteria",
+            "",
+            "| Scenario | Detector | Measure | Detector | Reference | p | p (Holm) |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
+        ]
+        for test in criteria.tests:
+            lines.append(
+                "| "
+                + " | ".join(
+                    _fmt(test[name])
+                    for name in (
+                        "scenario",
+                        "detector",
+                        "measure",
+                        "value",
+                        "reference",
+                        "p_value",
+                        "p_holm",
                     )
                 )
                 + " |"

@@ -157,11 +157,20 @@ Markdown report plus one summary row per cell (`--out`).
   Mann–Whitney U if not paired; report the effect size.
 * Two detectors on the same labeled samples (offline replay): McNemar's test.
 * Calibration: reliability diagram plus Brier and ECE, on held-out samples only.
+* Acceptance criteria (`acceptance` in `src/sdn_ddos/analysis/compare.py`, report section
+  *Acceptance criteria*, `--criteria-out` for every test): in each scenario every detector is
+  compared with the packet-rate rule (detection rate and false-alarm rate with Fisher's exact
+  test on the pooled counts, mean detection time with Mann–Whitney U) and, where the service
+  was lost without defense, with no defense (availability during the attack, Mann–Whitney U).
+  The p-values of one scenario are Holm-adjusted together and compared with α = 0.05; the mean
+  detection time must also be at most 10 s. No step draws random numbers, so the same rows
+  always give the same report.
 
-Acceptance thresholds are agreed with the supervisors **before** the held-out runs and written
-in the test plan. Suggested starting values: DR ≥ 0.95; FAR ≤ 0.05; average detection time
-≤ 10 s; legitimate availability during the attack ≥ 90 % with a response and greater than with
-no defense; service recovery ≤ 30 s; zero responses against protected hosts.
+The criteria compare each detector with references measured in the same scenario (the
+packet-rate rule and no defense) rather than with fixed thresholds: see
+`docs/thesis-campaign.md` §5. Zero responses against protected hosts is enforced by the
+code (README decision 16). The earlier fixed thresholds are kept in
+`docs/archive/acceptance-criteria-2026-11-18.md`.
 
 ## 7. Known gaps between the proposal and the lab
 

@@ -5,7 +5,8 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { resultRowCsv, runResults } from "../src/results.ts";
+import { rowFromRecord } from "../src/compare.ts";
+import { resultRow, resultRowCsv, runResults } from "../src/results.ts";
 import { emptyExperiment } from "../src/types.ts";
 import type { Experiment, Observation, Topology } from "../src/types.ts";
 
@@ -96,4 +97,17 @@ test("a saved record gives the same row as the Results tab", () => {
   assert.equal(csv.trim(), resultRowCsv(expected));
   assert.match(csv, /held_out/);
   assert.match(csv, /TC-3/);
+});
+
+test("History > Compare runs scores a record with the same code", () => {
+  const expected = runResults({
+    events,
+    topology,
+    experiment,
+    run,
+    active: false,
+  });
+  assert.ok(expected);
+  const row = rowFromRecord(run as any, [...events].reverse());
+  assert.deepEqual(row, Object.fromEntries(resultRow(expected)));
 });
