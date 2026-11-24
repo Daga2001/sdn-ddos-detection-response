@@ -7,6 +7,7 @@ documents, not these copies.
 | Copy | Replaced on | What changed in the current document |
 | --- | --- | --- |
 | `detection-modes-2026-11-19.md` | 22 Nov 2026 | Development figures recomputed from the run records, with the run identifier of each (first 8 characters of the identifier in the laboratory database). |
+| `prisma-2026-11-17/` (README and OpenAlex record) | 24 Nov 2026 | Four records with no abstract and no open full text moved from included to excluded at eligibility; the synthesis has 33 reports instead of 37 (`docs/prisma/README.md`, "Change of 24 November 2026"). |
 
 Changes in `docs/detection-modes.md` on 22 Nov 2026:
 
