@@ -1967,3 +1967,41 @@ td.not-applicable {
     flex-direction: column;
   }
 }
+
+/* History > Compare runs */
+.compare-runs {
+  margin-top: 1.5rem;
+  border-top: 1px solid var(--line, #d0d7de);
+  padding-top: 0.75rem;
+}
+.compare-runs button,
+.compare-runs .file-button {
+  margin: 0 0.4rem 0.4rem 0;
+}
+.compare-runs .file-button {
+  display: inline-block;
+  cursor: pointer;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+}
+.compare-runs .file-button input {
+  display: none;
+}
+.compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  font-size: 0.8rem;
+}
+.compare-table caption {
+  text-align: left;
+  font-size: 0.75rem;
+  padding-bottom: 0.25rem;
+}
+.compare-table th,
+.compare-table td {
+  border-bottom: 1px solid var(--line, #d0d7de);
+  padding: 0.2rem 0.35rem;
+  text-align: left;
+}

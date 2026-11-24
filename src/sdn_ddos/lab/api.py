@@ -10,7 +10,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Literal, Optional, Union
 from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -19,6 +19,14 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
+from sdn_ddos.analysis.compare import (
+    ALPHA,
+    DETECTION_LIMIT_S,
+    acceptance,
+    comparisons,
+    markdown_report,
+    select,
+)
 from sdn_ddos.config import DatabaseSettings
 from sdn_ddos.lab.browser_ownership import BrowserOwnership
 from sdn_ddos.lab.client import RunnerClient
@@ -46,6 +54,23 @@ def _rejection(errors: list[dict[str, Any]]) -> str:
 
 class Login(BaseModel):
     token: str = Field(max_length=256)
+
+
+Purpose = Literal["held_out", "calibration", "pilot", "exploration"]
+
+
+def _held_out_only() -> list[Purpose]:
+    return ["held_out"]
+
+
+class CompareRequest(BaseModel):
+    """Results-tab rows to compare (History > Compare runs)."""
+
+    rows: list[dict[str, str]] = Field(min_length=1, max_length=5000)
+    purposes: list[Purpose] = Field(
+        default_factory=_held_out_only, min_length=1, max_length=4
+    )
+    allow_mixed_settings: bool = False
 
 
 def create_app(
@@ -275,6 +300,35 @@ def create_app(
     @app.get("/api/runs")
     def runs() -> list[dict[str, Any]]:
         return store.runs()
+
+    @app.post("/api/compare")
+    def compare(payload: CompareRequest) -> dict[str, Any]:
+        """The report of scripts/compare_runs.py for rows sent by the workspace.
+
+        Pure computation on the rows given: nothing is read from or written to the
+        database, and no test draws random numbers, so the same rows always give the
+        same report. A cell with mixed settings is refused (409) unless allowed.
+        """
+
+        selection = select(
+            payload.rows,
+            purposes=payload.purposes,
+            allow_mixed_settings=payload.allow_mixed_settings,
+        )
+        criteria = acceptance(selection.cells)
+        return {
+            "markdown": markdown_report(
+                selection, comparisons(selection.cells), criteria
+            ),
+            "verdicts": criteria.verdicts,
+            "tests": criteria.tests,
+            "cells": len(selection.cells),
+            "runs": sum(len(cell.runs) for cell in selection.cells),
+            "excluded": selection.excluded,
+            "problems": selection.problems,
+            "alpha": ALPHA,
+            "detection_limit_s": DETECTION_LIMIT_S,
+        }
 
     @app.get("/api/runs/{run_id}")
     def run(run_id: UUID) -> dict[str, Any]:

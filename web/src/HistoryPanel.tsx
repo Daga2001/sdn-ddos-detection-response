@@ -1,3 +1,4 @@
+import { CompareRuns } from "./CompareRuns";
 import { describeRun } from "./detection";
 import { activeStates } from "./types";
 import type { Topology, Run, Task } from "./types";
@@ -87,6 +88,7 @@ export function HistoryPanel({
         </div>
       ))}
       {!runs.length && <p>No runs recorded yet.</p>}
+      <CompareRuns runs={runs} busy={busy || active} />
     </div>
   );
 }
