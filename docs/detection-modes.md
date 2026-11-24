@@ -109,9 +109,9 @@ bash scripts/last_run_report.sh [run_id]   # phases, who was flagged, decisions
 * The LLM is deterministic (temperature 0, fixed seed), so the controller caches
   verdicts by the features the model sees (`SDN_LLM_CACHE_SIZE`, default 4096);
   only new samples count against `SDN_LLM_MAX_SAMPLES`. Without the cache each
-  call (~0.3 s) blocked the controller's event queue: in a 97 s run the attacker's
-  flow reached `flow_stats` 36 s after the attack began (76 s spent in LLM calls);
-  with it, 2 s (723 cached answers against 127 real calls).
+  call blocked the controller's event queue. In the 40 held-out runs of the LLM of the
+  thesis (18-22 Nov 2026) a model call took a median of 235 ms and about 98 % of the
+  judgments were answered from the cache.
 * The model is judged **off the event loop** (`SDN_LLM_ASYNC`, default `true`). Ryu
   handles every packet-in and every stats reply on one greenthread, so a call made
   inline holds up new flows: on the university topology (9 switches, 25 hosts) with
@@ -121,19 +121,20 @@ bash scripts/last_run_report.sh [run_id]   # phases, who was flagged, decisions
   a switch replaces its unjudged older one (the older rows are still stored, without a
   verdict), so the backlog never exceeds one poll per switch, and the poll holding the
   busiest flow is judged first. Measured on the same topology with 8 SYN attackers at
-  300 pkt/s: probes through 100 % / 3-12 % / 81-90 % (baseline / attack / recovery).
+  300 pkt/s: probes through 100 % / 3-12 % / 85-95 % (baseline / attack / recovery;
+  runs `188dacab`, `e70ed097`; inline judging, run `bac29399`: 55 / 0 / 5 %).
   Set `SDN_LLM_ASYNC=false` to go back to inline judging.
 * Which flows get the sample budget. Flows are judged busiest first, but a source the
   model flagged in the last `SDN_LLM_REPEAT_SECONDS` (30) goes after the busy
   (`SDN_LLM_BUSY_RATE`, 20 pkt/s) sources it has not flagged yet. Before this, with a
   budget of 2 and SYN floods from two hosts (four flows above 900 pkt/s) a UDP attacker at
   500 pkt/s was never judged in a whole run (2 of 3 attackers found; now 3 of 3, all within
-  10.6 s). Quiet flows still come last, so the budget is not spent on legitimate traffic
+  10.6 s; runs `2fe824f0` before, `7fab9d97` after). Quiet flows still come last, so the budget is not spent on legitimate traffic
   that the model sometimes flags.
 * ICMP flows carry no transport port, and the sample builder used to drop any flow without
-  one, so an ICMP flood never reached the model (0 of 2 attackers detected in 135 s).
+  one, so an ICMP flood never reached the model (0 of 2 attackers named, run `6235a050`).
   `build_model_sample` now sends ICMP with `l4_dst_port = 0` (how flow datasets record it):
-  2 of 2 detected within 8.5 s, no false positive. The entropy detector never needed this.
+  2 of 2 named within 8.5 s (run `60dbc0f0`). The entropy detector never needed this.
 * With `port_free` forwarding no rule matches the layer-4 port, so **every** IPv4 flow
   reaches the sample builder without `l4_dst_port`, TCP and UDP included, and used to be
   dropped: the LLM saw only ICMP while the entropy detector counted all of it (campaign R0,
@@ -251,22 +252,24 @@ response can land. Measured on the same attack (3 SYN attackers at 300 pkt/s, LL
 
 | Poll | First detection | First block | Legitimate probes (baseline / attack / recovery) |
 | --- | --- | --- | --- |
-| 5 s | +11 s | +14 s | 100 / 26-37 / 80 % |
-| 2 s | +5 s | +7,5 s | 100 / 37 / 95 % |
-| 1 s | +1,9 s | +2,9 s | 100 / 100 / 100 % |
+| 5 s | +8.9 to +11.2 s | +14.3 to +14.8 s | 100 / 25-45 / 89-100 % |
+| 2 s | +5.4 s | +7.5 s | 100 / 37 / 95 % |
+| 1 s | +1.8 to +1.9 s | +2.9 to +3.1 s | 100 / 100 / 100 % |
+
+Runs: 5 s `d05fb1c0`, `7e030f9f`, `9c7f0b08`; 2 s `b8bb9bc6`; 1 s `e1b1706f`, `9f06dd2f`.
 
 With 8 attackers on the university network (2400 pkt/s) the service starts failing about
 6 s into the attack, before any detector that needs two 5 s polls can answer, whichever
 detector it is: entropy with `block` straight away (alarm at +12 s) left the probes at
 100 / 3 / 0 %, entropy with `escalate` (alarm at +23 s because the saturated controller
 delays its own windows) at 100 / 9 / 100 %, LLM with `block` and 2 detections at 5 s polling
-100 / 3 / 50 %. Polling every 1 s fixes most of it: LLM + `block` + 2 detections needed
-(all 8 detected by +7,5 s, first block +5,2 s) kept 100 / 86 / 100 %, and entropy with 2 s
+100 / 3 / 53 % (run `29b0d160`). Polling every 1 s fixes most of it: LLM + `block` + 2 detections needed
+(all 8 detected by +7.5 s, first block +5.2 s, run `d1229069`) kept 100 / 86 / 100 %, and entropy with 2 s
 windows (`window_seconds=2`, `warmup_windows=40`) + 1 s polling (all 8 blocked at +3,1 s)
 100 / 69 / 100 %. Neither has been checked against false alarms over many runs.
 
 Acting on the first detection instead (no confirmation) also saves the service (95 %) but
-blocked two legitimate clients on a false alarm. Faster polling keeps the confirmation and
+blocked two legitimate clients on a false alarm (run `e3c7061f`). Faster polling keeps the confirmation and
 the speed. The cost is load: each poll of every switch is parsed in Python, so polling
 faster costs the controller more while the tables are large; if a flood is not stopped
 early the collapse is worse. The flow explosion itself is left as it is: it is the
@@ -477,9 +480,8 @@ validated on held-out runs, on other topologies and with other legitimate traffi
 Once the attackers are answered (blocked), what is left in the window is the victim's
 replies to them: the busiest destination is an attacker and the busiest source is the
 victim. Without memory the detector then named the victim as the new culprit and the
-response blocked the service it was protecting (13 university runs with a response, the
-web server blocked in 2 of them, including an 8-attacker run whose service never came
-back). The detector now remembers, per run, the addresses that were the target of a flood
+response blocked the service it was protecting (university topology with a response, run
+`c15d163d`: the web server was blocked and the probes stayed at 100 / 3 / 0 %). The detector now remembers, per run, the addresses that were the target of a flood
 and the ones it named: a source that was a victim is never a candidate, and an alarm whose
 busiest destination is an attacker already named is the tail of an answered flood and names
 nobody (`note` in the window's details). An attacker that floods a new victim is named
