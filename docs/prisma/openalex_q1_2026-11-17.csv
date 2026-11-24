@@ -1,7 +1,7 @@
 n,year,type,title,doi,decision
 1,2024,conference-paper,Application of Large Language Models to DDoS Attack Detection,10.1007/978-3-031-51630-6_6,INC
 2,2024,conference-paper,Utilizing Large Language Models for DDoS Attack Detection,10.1109/otcon60325.2024.10688345,INC
-3,2026,conference-paper,DDoS-AIDE: towards explainable and automated DDoS defense using large language models,10.1117/12.3112369,INC
+3,2026,conference-paper,DDoS-AIDE: towards explainable and automated DDoS defense using large language models,10.1117/12.3112369,EL:no-abstract-or-full-text
 4,2026,review,Large Language Models for DDoS Attack Detection: A Systematic Literature Review,10.1109/jiot.2026.3712446,EC3
 5,2024,preprint,DoLLM: How Large Language Models Understanding Network Flow Data to Detect Carpet Bombing DDoS,10.48550/arxiv.2405.07638,INC
 6,2025,conference-paper,"Enabling Real-Time, Explainable DDoS Mitigation via On-Premise Large Language Models and Flow Analysis",10.1016/j.procs.2025.09.260,INC
@@ -26,7 +26,7 @@ n,year,type,title,doi,decision
 25,2026,article,DDOS Attack Classification With Hyperparameter Tuning And Enhanced Prediction Technique,10.67440/ahj.v21i6s.1818,EC1
 26,2023,other,Research and software implementation of an intelligent system for detecting DDoS attacks,,EC1
 27,2026,article,A Machine Learning Based Hierarchical Model for DDOS Attack Classification with Hyperparameter Optimization,,EC1
-28,2026,conference-paper,Detection of DDoS Attacks in SDN Using Feature Optimization and FNet-Based Transformer Models,10.1007/978-3-032-15404-0_2,INC
+28,2026,conference-paper,Detection of DDoS Attacks in SDN Using Feature Optimization and FNet-Based Transformer Models,10.1007/978-3-032-15404-0_2,EL:no-abstract-or-full-text
 29,2026,conference-paper,A Federated LLM-Based Framework for DDoS Defense in Mobile Edge Computing,10.1109/icfec69006.2026.00017,INC
 30,2026,article,FORTIFYING FIREWALLS AGAINST EVOLVING DDOS ATTACKS WITH CONTRASTIVE AI AND LLMS,10.5281/zenodo.20253557,EC4
 31,2021,article,DDoS prevention architecture using anomaly detection in fog-empowered networks,10.3233/ais-210600,EC1
@@ -39,7 +39,7 @@ n,year,type,title,doi,decision
 38,2024,conference-paper,Vulnerability Classification for Detecting Threats in Cloud Environments Against DDoS Attacks,10.1109/csnt60213.2024.10546199,EC1
 39,2025,article,"Hybrid Intelligence for DDoS Defense: Combining Generative AI, Resampling, and Ensemble Methods",10.4018/ijaiml.370316,EC1
 40,2024,article,IMPLEMENTATION OF A BAYESIAN NETWORK IN PYTHON FOR ANALYSIS OF CYBERCRIMES ASSOCIATED WITH DDOS ATTACKS,10.28925/2663-4023.2024.24.161171,EC1
-41,2026,conference-paper,DDoS Attacks Detection in SDN Using Multi-feature Selection Approach and LLMs,10.1007/978-3-032-04312-2_7,INC
+41,2026,conference-paper,DDoS Attacks Detection in SDN Using Multi-feature Selection Approach and LLMs,10.1007/978-3-032-04312-2_7,EL:no-abstract-or-full-text
 42,2025,conference-paper,DDO: Dual-Decision Optimization for LLM-Based Medical Consultation via Multi-Agent Collaboration,10.18653/v1/2025.emnlp-main.1340,EC2
 43,2023,conference-paper,3D-PM: A ML-powered Probabilistic Detection of DDoS Attacks in P4 Switches,10.1109/meditcom58224.2023.10266635,EC1
 44,2026,preprint,"ScoutLLM: More than Matching, Analyzing DDoS Attacks with Human Thinking Mode",10.2139/ssrn.6721323,EC4
@@ -59,7 +59,7 @@ n,year,type,title,doi,decision
 58,2026,article,From Vector Space to Symbolic Space: Informational and Semantic Analysis of Benign and DDoS IoT Traffic Using LLMs,10.3390/electronics15081724,EC1
 59,2026,article,Knowledge Graph-Based DDoS Attack Detection for UAV-Assisted Space-Air-Ground Integrated Networks,10.3390/drones10110844,INC
 60,2026,preprint,Explainable AI-Driven Machine Learning Framework for DoS and DDoS Attack Detection Using LIME and SHAP,10.5281/zenodo.20464694,EC4
-61,2026,article,VSID-BERT: A Lightweight SLM Framework for Unmasking VSI-DDoS Attacks in Serverless Cloud-Edge Continuum,10.1007/s11334-026-00660-6,INC
+61,2026,article,VSID-BERT: A Lightweight SLM Framework for Unmasking VSI-DDoS Attacks in Serverless Cloud-Edge Continuum,10.1007/s11334-026-00660-6,EL:no-abstract-or-full-text
 62,2026,preprint,I2C-GRPO: Insight Importance Checklist for Reinforcement Learning in a Multi-Agent DDoS Alert Triage Workflow,10.48550/arxiv.2611.17534,INC
 63,2026,conference-paper,Two-Stage Machine Learning and AI-Agent-Based Detection and Mitigation of DDoS Attacks in Software-Defined Wireless Networks,10.1109/iscit70453.2026.11695354,INC
 64,2026,article,"AI-Native Security for 5G and 6G O-RAN: A Survey of Learning-Based Defense against False Base Stations, DDoS, and Signaling Storms",10.32604/cmes.2026.087445,EC3
