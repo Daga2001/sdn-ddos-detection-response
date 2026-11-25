@@ -12,7 +12,7 @@
     "test:unit": "node --experimental-strip-types --test tests/detection.unit.ts tests/traffic.unit.ts tests/evaluation.unit.ts tests/results.unit.ts tests/result_rows.unit.ts tests/compare.unit.ts"
   },
   "dependencies": {
-    "@xyflow/react": "12.12.0",
+    "@xyflow/react": "13.0.2",
     "echarts": "6.1.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"
